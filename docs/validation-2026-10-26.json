@@ -1,0 +1,1214 @@
+{
+  "verified_at": "2026-10-25T16:07:59.513826+00:00",
+  "scope": "Real Antigravity account; OpenAI Responses and Anthropic Messages; isolated state; synthetic test content.",
+  "sdk_versions": {
+    "openai": "3.37.0",
+    "anthropic": "2.3.0"
+  },
+  "summary": {
+    "total": 101,
+    "pass": 97,
+    "blocked": 2,
+    "partial": 2
+  },
+  "checks": {
+    "go_vet": "passed",
+    "go_test_race": "passed",
+    "official_sdk_smoke": "passed",
+    "cgo_disabled_build": "passed"
+  },
+  "notes": [
+    "This is a dated acceptance snapshot, not a guarantee of future upstream availability.",
+    "Two API_PROVIDER_INTERNAL catalog entries were excluded after upstream rejected them; 17 generative entries remained.",
+    "Gemini 3.8 may return thinking signatures on function-call parts without a visible reasoning block; the signed tool round trip was verified.",
+    "GPT-OSS passed after one transient capacity failure. Gemini 2.5 Pro remained unavailable.",
+    "Image generation passed; the later edit round trip was stopped by an upstream quota response and its Retry-After instruction.",
+    "Stop sequences truncate text, but exact Anthropic stop_reason/stop_sequence metadata remains partial because upstream exposes only STOP.",
+    "Token values are sampled response usage, not total usage across every call in a scenario.",
+    "No credential values, project identifiers, generated image bytes, or opaque replay signatures are included."
+  ],
+  "cases": [
+    {
+      "name": "auth/refresh",
+      "status": "pass",
+      "seconds": 0.46,
+      "evidence": {
+        "real_refresh_succeeded": true,
+        "credentials_saved_privately": true
+      }
+    },
+    {
+      "name": "catalog/claude-opus-4-6-thinking",
+      "status": "pass",
+      "seconds": 1.56,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 15,
+          "output_tokens": 7,
+          "total_tokens": 22
+        }
+      }
+    },
+    {
+      "name": "catalog/claude-sonnet-4-6",
+      "status": "pass",
+      "seconds": 1.09,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 15,
+          "output_tokens": 7,
+          "total_tokens": 22
+        }
+      }
+    },
+    {
+      "name": "catalog/gemini-2.5-flash",
+      "status": "pass",
+      "seconds": 1.19,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 4,
+          "total_tokens": 13
+        }
+      }
+    },
+    {
+      "name": "catalog/gemini-2.5-flash-lite",
+      "status": "pass",
+      "seconds": 1.12,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 4,
+          "total_tokens": 13
+        }
+      }
+    },
+    {
+      "name": "catalog/gemini-2.5-flash-thinking",
+      "status": "pass",
+      "seconds": 0.78,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 4,
+          "total_tokens": 13
+        }
+      }
+    },
+    {
+      "name": "catalog/gemini-2.5-pro",
+      "status": "blocked",
+      "seconds": 0.23,
+      "detail": "Error code: 503 - {'error': {'code': None, 'message': 'Antigravity returned HTTP 503 (UNAVAILABLE: MODEL_CAPACITY_EXHAUSTED)', 'param': None, 'type': 'api_error'}}"
+    },
+    {
+      "name": "catalog/gemini-3-flash",
+      "status": "pass",
+      "seconds": 0.78,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 4,
+          "total_tokens": 13
+        }
+      }
+    },
+    {
+      "name": "catalog/gemini-3.1-flash-lite",
+      "status": "pass",
+      "seconds": 0.95,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 4,
+          "total_tokens": 13
+        }
+      }
+    },
+    {
+      "name": "catalog/gemini-3.5-flash-lite",
+      "status": "pass",
+      "seconds": 0.78,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 4,
+          "total_tokens": 13
+        }
+      }
+    },
+    {
+      "name": "catalog/gemini-3.8-flash-high",
+      "status": "pass",
+      "seconds": 3.11,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 90,
+          "total_tokens": 99
+        }
+      }
+    },
+    {
+      "name": "catalog/gemini-3.8-flash-low",
+      "status": "pass",
+      "seconds": 2.43,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 77,
+          "total_tokens": 86
+        }
+      }
+    },
+    {
+      "name": "catalog/gemini-3.8-flash-medium",
+      "status": "pass",
+      "seconds": 3.4,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 128,
+          "total_tokens": 137
+        }
+      }
+    },
+    {
+      "name": "catalog/gemini-3.8-flash-tiered",
+      "status": "pass",
+      "seconds": 3.0,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 101,
+          "total_tokens": 110
+        }
+      }
+    },
+    {
+      "name": "catalog/gpt-oss-120b-medium",
+      "status": "pass",
+      "seconds": 0.94,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 74,
+          "output_tokens": 82,
+          "total_tokens": 156
+        }
+      }
+    },
+    {
+      "name": "catalog/tab_flash_lite_preview",
+      "status": "pass",
+      "seconds": 0.62,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 4,
+          "total_tokens": 13
+        }
+      }
+    },
+    {
+      "name": "catalog/tab_jump_flash_lite_preview",
+      "status": "pass",
+      "seconds": 0.48,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 4,
+          "total_tokens": 13
+        }
+      }
+    },
+    {
+      "name": "http/cancellation",
+      "status": "pass",
+      "seconds": 1.53,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 4,
+          "total_tokens": 13
+        }
+      }
+    },
+    {
+      "name": "http/concurrency",
+      "status": "pass",
+      "seconds": 1.69,
+      "evidence": {
+        "accepted": 4,
+        "locally_limited": 2,
+        "recovered": true
+      }
+    },
+    {
+      "name": "http/negative",
+      "status": "pass",
+      "seconds": 0.01,
+      "evidence": {
+        "expected_rejections": 6
+      }
+    },
+    {
+      "name": "media/audio_file",
+      "status": "pass",
+      "seconds": 2.0,
+      "evidence": {
+        "file_bytes": 64044,
+        "sampled_tokens": {
+          "input_tokens": 69,
+          "output_tokens": 2,
+          "total_tokens": 71
+        }
+      }
+    },
+    {
+      "name": "media/https_image",
+      "status": "pass",
+      "seconds": 1.15,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 1112,
+          "output_tokens": 1,
+          "total_tokens": 1113
+        }
+      }
+    },
+    {
+      "name": "media/image_edit_roundtrip",
+      "status": "blocked",
+      "seconds": 1.02,
+      "detail": "Error code: 429 - {'error': {'code': None, 'message': 'Antigravity returned HTTP 429 (RESOURCE_EXHAUSTED: QUOTA_EXHAUSTED)', 'param': None, 'type': 'rate_limit_error'}}",
+      "retry_after_seconds": 16808
+    },
+    {
+      "name": "media/image_generation",
+      "status": "pass",
+      "seconds": 11.45,
+      "evidence": {
+        "image_count": 1,
+        "image_bytes": 493283,
+        "sampled_tokens": {
+          "input_tokens": 15,
+          "output_tokens": 1459,
+          "total_tokens": 1474
+        }
+      }
+    },
+    {
+      "name": "media/video_file",
+      "status": "pass",
+      "seconds": 2.3,
+      "evidence": {
+        "file_bytes": 1913,
+        "sampled_tokens": {
+          "input_tokens": 152,
+          "output_tokens": 14,
+          "total_tokens": 166
+        }
+      }
+    },
+    {
+      "name": "messages/claude-opus-4-6-thinking/thinking",
+      "status": "pass",
+      "seconds": 5.75,
+      "evidence": {
+        "thinking_blocks": 1,
+        "sampled_tokens": {
+          "input_tokens": 283,
+          "output_tokens": 37
+        }
+      }
+    },
+    {
+      "name": "messages/claude-opus-4-6-thinking/thinking_tools",
+      "status": "pass",
+      "seconds": 3.9,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 1,
+        "sampled_tokens": {
+          "input_tokens": 762,
+          "output_tokens": 18
+        }
+      }
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/basic",
+      "status": "pass",
+      "seconds": 0.89,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 15,
+          "output_tokens": 7
+        }
+      }
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/count",
+      "status": "pass",
+      "seconds": 0.26,
+      "evidence": {
+        "input_tokens": 6
+      }
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/image_input",
+      "status": "pass",
+      "seconds": 1.33,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 32,
+          "output_tokens": 22
+        }
+      }
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/limit",
+      "status": "pass",
+      "seconds": 0.92,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 23,
+          "output_tokens": 12
+        }
+      }
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/parallel_tools",
+      "status": "pass",
+      "seconds": 3.64,
+      "evidence": {
+        "calls": 2,
+        "thinking_blocks": 0,
+        "sampled_tokens": {
+          "input_tokens": 827,
+          "output_tokens": 68
+        }
+      }
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/pdf_input",
+      "status": "pass",
+      "seconds": 1.72,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 1602,
+          "output_tokens": 21
+        }
+      }
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/stop_sequence",
+      "status": "partial",
+      "seconds": 1.23,
+      "detail": "Text truncation works, but Antigravity reports only STOP without the matched sequence; the response currently has end_turn/null instead of stop_sequence/the matched value."
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/stream",
+      "status": "pass",
+      "seconds": 0.86,
+      "evidence": {
+        "event_count": 9,
+        "sampled_tokens": {
+          "input_tokens": 18,
+          "output_tokens": 10
+        }
+      }
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/structured",
+      "status": "pass",
+      "seconds": 1.34,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 679,
+          "output_tokens": 50
+        }
+      }
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/thinking",
+      "status": "pass",
+      "seconds": 4.36,
+      "evidence": {
+        "thinking_blocks": 1,
+        "sampled_tokens": {
+          "input_tokens": 288,
+          "output_tokens": 39
+        }
+      }
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/thinking_tools",
+      "status": "pass",
+      "seconds": 3.23,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 1,
+        "sampled_tokens": {
+          "input_tokens": 768,
+          "output_tokens": 26
+        }
+      }
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/tool_image",
+      "status": "pass",
+      "seconds": 3.38,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 655,
+          "output_tokens": 23
+        }
+      }
+    },
+    {
+      "name": "messages/claude-sonnet-4-6/tools",
+      "status": "pass",
+      "seconds": 4.36,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 0,
+        "sampled_tokens": {
+          "input_tokens": 691,
+          "output_tokens": 101
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3-flash/basic",
+      "status": "pass",
+      "seconds": 0.64,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 4
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3-flash/count",
+      "status": "pass",
+      "seconds": 0.24,
+      "evidence": {
+        "input_tokens": 6
+      }
+    },
+    {
+      "name": "messages/gemini-3-flash/image_input",
+      "status": "pass",
+      "seconds": 1.91,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 1103,
+          "output_tokens": 13
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3-flash/limit",
+      "status": "pass",
+      "seconds": 0.75,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 16,
+          "output_tokens": 8
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3-flash/parallel_tools",
+      "status": "pass",
+      "seconds": 1.38,
+      "evidence": {
+        "calls": 2,
+        "thinking_blocks": 0,
+        "sampled_tokens": {
+          "input_tokens": 181,
+          "output_tokens": 4
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3-flash/pdf_input",
+      "status": "pass",
+      "seconds": 1.83,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 530,
+          "output_tokens": 9
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3-flash/stop_sequence",
+      "status": "partial",
+      "seconds": 1.22,
+      "detail": "Text truncation works, but Antigravity reports only STOP without the matched sequence; the response currently has end_turn/null instead of stop_sequence/the matched value."
+    },
+    {
+      "name": "messages/gemini-3-flash/stream",
+      "status": "pass",
+      "seconds": 0.72,
+      "evidence": {
+        "event_count": 13,
+        "sampled_tokens": {
+          "input_tokens": 11,
+          "output_tokens": 6
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3-flash/structured",
+      "status": "pass",
+      "seconds": 0.73,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 13,
+          "output_tokens": 18
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3-flash/thinking",
+      "status": "pass",
+      "seconds": 2.71,
+      "evidence": {
+        "thinking_blocks": 2,
+        "sampled_tokens": {
+          "input_tokens": 937,
+          "output_tokens": 87
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3-flash/thinking_tools",
+      "status": "pass",
+      "seconds": 1.5,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 1,
+        "sampled_tokens": {
+          "input_tokens": 266,
+          "output_tokens": 26
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3-flash/tool_image",
+      "status": "pass",
+      "seconds": 2.66,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 1175,
+          "output_tokens": 26
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3-flash/tools",
+      "status": "pass",
+      "seconds": 1.4,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 0,
+        "sampled_tokens": {
+          "input_tokens": 122,
+          "output_tokens": 4
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3.8-flash-medium/thinking",
+      "status": "pass",
+      "seconds": 5.79,
+      "evidence": {
+        "thinking_blocks": 1,
+        "sampled_tokens": {
+          "input_tokens": 382,
+          "output_tokens": 23
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3.8-flash-medium/thinking_tools",
+      "status": "pass",
+      "seconds": 4.7,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 0,
+        "signed_tool_calls": 1,
+        "sampled_tokens": {
+          "input_tokens": 122,
+          "output_tokens": 4
+        }
+      }
+    },
+    {
+      "name": "messages/gpt-oss-120b-medium/basic",
+      "status": "pass",
+      "seconds": 0.65,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 10,
+          "output_tokens": 44
+        }
+      }
+    },
+    {
+      "name": "messages/gpt-oss-120b-medium/stream",
+      "status": "pass",
+      "seconds": 0.71,
+      "evidence": {
+        "event_count": 41,
+        "sampled_tokens": {
+          "input_tokens": 11,
+          "output_tokens": 49
+        }
+      }
+    },
+    {
+      "name": "messages/gpt-oss-120b-medium/tools",
+      "status": "pass",
+      "seconds": 1.52,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 1,
+        "sampled_tokens": {
+          "input_tokens": 8,
+          "output_tokens": 40
+        }
+      }
+    },
+    {
+      "name": "messages/long_context",
+      "status": "pass",
+      "seconds": 2.1,
+      "evidence": {
+        "input_bytes": 189052,
+        "sampled_tokens": {
+          "input_tokens": 48018,
+          "output_tokens": 11
+        }
+      }
+    },
+    {
+      "name": "messages/schema_tool_fields",
+      "status": "pass",
+      "seconds": 1.49,
+      "evidence": {
+        "tool_parameters_preserved": true
+      }
+    },
+    {
+      "name": "messages/search",
+      "status": "pass",
+      "seconds": 3.03,
+      "evidence": {
+        "citation_count": 1,
+        "sampled_tokens": {
+          "input_tokens": 25,
+          "output_tokens": 80
+        }
+      }
+    },
+    {
+      "name": "messages/search_stream_unicode",
+      "status": "pass",
+      "seconds": 5.73,
+      "evidence": {
+        "citations": 12,
+        "events": 97,
+        "sampled_tokens": {
+          "input_tokens": 21,
+          "output_tokens": 792
+        }
+      }
+    },
+    {
+      "name": "messages/system_priority",
+      "status": "pass",
+      "seconds": 0.69,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 17,
+          "output_tokens": 6
+        }
+      }
+    },
+    {
+      "name": "responses/claude-opus-4-6-thinking/thinking",
+      "status": "pass",
+      "seconds": 6.19,
+      "evidence": {
+        "thinking_blocks": 1,
+        "sampled_tokens": {
+          "input_tokens": 278,
+          "output_tokens": 37,
+          "total_tokens": 315
+        }
+      }
+    },
+    {
+      "name": "responses/claude-opus-4-6-thinking/thinking_tools",
+      "status": "pass",
+      "seconds": 3.96,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 1,
+        "sampled_tokens": {
+          "input_tokens": 762,
+          "output_tokens": 24,
+          "total_tokens": 786
+        }
+      }
+    },
+    {
+      "name": "responses/claude-sonnet-4-6/basic",
+      "status": "pass",
+      "seconds": 0.98,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 15,
+          "output_tokens": 7,
+          "total_tokens": 22
+        }
+      }
+    },
+    {
+      "name": "responses/claude-sonnet-4-6/count",
+      "status": "pass",
+      "seconds": 0.35,
+      "evidence": {
+        "input_tokens": 6
+      }
+    },
+    {
+      "name": "responses/claude-sonnet-4-6/image_input",
+      "status": "pass",
+      "seconds": 1.46,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 32,
+          "output_tokens": 22,
+          "total_tokens": 54
+        }
+      }
+    },
+    {
+      "name": "responses/claude-sonnet-4-6/limit",
+      "status": "pass",
+      "seconds": 1.39,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 23,
+          "output_tokens": 12,
+          "total_tokens": 35
+        }
+      }
+    },
+    {
+      "name": "responses/claude-sonnet-4-6/parallel_tools",
+      "status": "pass",
+      "seconds": 4.55,
+      "evidence": {
+        "calls": 2,
+        "thinking_blocks": 0,
+        "sampled_tokens": {
+          "input_tokens": 827,
+          "output_tokens": 62,
+          "total_tokens": 889
+        }
+      }
+    },
+    {
+      "name": "responses/claude-sonnet-4-6/pdf_input",
+      "status": "pass",
+      "seconds": 1.81,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 1602,
+          "output_tokens": 21,
+          "total_tokens": 1623
+        }
+      }
+    },
+    {
+      "name": "responses/claude-sonnet-4-6/stream",
+      "status": "pass",
+      "seconds": 1.05,
+      "evidence": {
+        "event_count": 10,
+        "sampled_tokens": {
+          "input_tokens": 18,
+          "output_tokens": 10,
+          "total_tokens": 28
+        }
+      }
+    },
+    {
+      "name": "responses/claude-sonnet-4-6/structured",
+      "status": "pass",
+      "seconds": 1.77,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 679,
+          "output_tokens": 50,
+          "total_tokens": 729
+        }
+      }
+    },
+    {
+      "name": "responses/claude-sonnet-4-6/thinking",
+      "status": "pass",
+      "seconds": 6.72,
+      "evidence": {
+        "thinking_blocks": 1,
+        "sampled_tokens": {
+          "input_tokens": 417,
+          "output_tokens": 45,
+          "total_tokens": 462
+        }
+      }
+    },
+    {
+      "name": "responses/claude-sonnet-4-6/thinking_tools",
+      "status": "pass",
+      "seconds": 3.42,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 1,
+        "sampled_tokens": {
+          "input_tokens": 768,
+          "output_tokens": 26,
+          "total_tokens": 794
+        }
+      }
+    },
+    {
+      "name": "responses/claude-sonnet-4-6/tool_image",
+      "status": "pass",
+      "seconds": 3.38,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 655,
+          "output_tokens": 24,
+          "total_tokens": 679
+        }
+      }
+    },
+    {
+      "name": "responses/claude-sonnet-4-6/tools",
+      "status": "pass",
+      "seconds": 2.22,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 0,
+        "sampled_tokens": {
+          "input_tokens": 691,
+          "output_tokens": 7,
+          "total_tokens": 698
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3-flash/basic",
+      "status": "pass",
+      "seconds": 0.79,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 9,
+          "output_tokens": 4,
+          "total_tokens": 13
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3-flash/count",
+      "status": "pass",
+      "seconds": 0.37,
+      "evidence": {
+        "input_tokens": 6
+      }
+    },
+    {
+      "name": "responses/gemini-3-flash/image_input",
+      "status": "pass",
+      "seconds": 0.88,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 1103,
+          "output_tokens": 13,
+          "total_tokens": 1116
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3-flash/limit",
+      "status": "pass",
+      "seconds": 0.75,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 16,
+          "output_tokens": 8,
+          "total_tokens": 24
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3-flash/parallel_tools",
+      "status": "pass",
+      "seconds": 1.57,
+      "evidence": {
+        "calls": 2,
+        "thinking_blocks": 0,
+        "sampled_tokens": {
+          "input_tokens": 181,
+          "output_tokens": 4,
+          "total_tokens": 185
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3-flash/pdf_input",
+      "status": "pass",
+      "seconds": 2.13,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 530,
+          "output_tokens": 9,
+          "total_tokens": 539
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3-flash/stream",
+      "status": "pass",
+      "seconds": 0.96,
+      "evidence": {
+        "event_count": 12,
+        "sampled_tokens": {
+          "input_tokens": 11,
+          "output_tokens": 6,
+          "total_tokens": 17
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3-flash/structured",
+      "status": "pass",
+      "seconds": 0.92,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 13,
+          "output_tokens": 18,
+          "total_tokens": 31
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3-flash/thinking",
+      "status": "pass",
+      "seconds": 3.24,
+      "evidence": {
+        "thinking_blocks": 2,
+        "sampled_tokens": {
+          "input_tokens": 1130,
+          "output_tokens": 113,
+          "total_tokens": 1243
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3-flash/thinking_tools",
+      "status": "pass",
+      "seconds": 2.26,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 1,
+        "sampled_tokens": {
+          "input_tokens": 246,
+          "output_tokens": 26,
+          "total_tokens": 272
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3-flash/tool_image",
+      "status": "pass",
+      "seconds": 3.62,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 1175,
+          "output_tokens": 30,
+          "total_tokens": 1205
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3-flash/tools",
+      "status": "pass",
+      "seconds": 1.52,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 0,
+        "sampled_tokens": {
+          "input_tokens": 122,
+          "output_tokens": 4,
+          "total_tokens": 126
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3.8-flash-medium/thinking",
+      "status": "pass",
+      "seconds": 7.97,
+      "evidence": {
+        "thinking_blocks": 2,
+        "sampled_tokens": {
+          "input_tokens": 749,
+          "output_tokens": 65,
+          "total_tokens": 814
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3.8-flash-medium/thinking_tools",
+      "status": "pass",
+      "seconds": 6.47,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 0,
+        "signed_tool_calls": 1,
+        "sampled_tokens": {
+          "input_tokens": 168,
+          "output_tokens": 19,
+          "total_tokens": 187
+        }
+      }
+    },
+    {
+      "name": "responses/gpt-oss-120b-medium/basic",
+      "status": "pass",
+      "seconds": 1.42,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 74,
+          "output_tokens": 55,
+          "total_tokens": 129
+        }
+      }
+    },
+    {
+      "name": "responses/gpt-oss-120b-medium/stream",
+      "status": "pass",
+      "seconds": 0.87,
+      "evidence": {
+        "event_count": 34,
+        "sampled_tokens": {
+          "input_tokens": 75,
+          "output_tokens": 54,
+          "total_tokens": 129
+        }
+      }
+    },
+    {
+      "name": "responses/gpt-oss-120b-medium/tools",
+      "status": "pass",
+      "seconds": 3.04,
+      "evidence": {
+        "calls": 1,
+        "thinking_blocks": 1,
+        "signed_tool_calls": 0,
+        "sampled_tokens": {
+          "input_tokens": 200,
+          "output_tokens": 39,
+          "total_tokens": 239
+        }
+      }
+    },
+    {
+      "name": "responses/long_context",
+      "status": "pass",
+      "seconds": 1.48,
+      "evidence": {
+        "input_bytes": 189052,
+        "sampled_tokens": {
+          "input_tokens": 54013,
+          "output_tokens": 12,
+          "total_tokens": 54025
+        }
+      }
+    },
+    {
+      "name": "responses/schema_tool_fields",
+      "status": "pass",
+      "seconds": 0.87,
+      "evidence": {
+        "tool_parameters_preserved": true
+      }
+    },
+    {
+      "name": "responses/search",
+      "status": "pass",
+      "seconds": 2.5,
+      "evidence": {
+        "citation_count": 3,
+        "sampled_tokens": {
+          "input_tokens": 25,
+          "output_tokens": 100,
+          "total_tokens": 125
+        }
+      }
+    },
+    {
+      "name": "responses/search_stream_unicode",
+      "status": "pass",
+      "seconds": 4.71,
+      "evidence": {
+        "citations": 17,
+        "events": 63,
+        "sampled_tokens": {
+          "input_tokens": 21,
+          "output_tokens": 803,
+          "total_tokens": 824
+        }
+      }
+    },
+    {
+      "name": "responses/system_priority",
+      "status": "pass",
+      "seconds": 0.91,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 17,
+          "output_tokens": 6,
+          "total_tokens": 23
+        }
+      }
+    },
+    {
+      "name": "state/reasoning_tamper",
+      "status": "pass",
+      "seconds": 2.34,
+      "evidence": {
+        "tampering_rejected": true,
+        "store_false_verified": true
+      }
+    },
+    {
+      "name": "state/restart",
+      "status": "pass",
+      "seconds": 2.07,
+      "evidence": {
+        "restart_recovered": true,
+        "deleted": true
+      }
+    }
+  ]
+}

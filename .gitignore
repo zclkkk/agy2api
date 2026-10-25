@@ -1,0 +1,27 @@
+/agy2api
+/agy2api.exe
+/bin/
+/data/
+/config.json
+/.cache/
+
+# Local credentials and runtime files, including custom data directories.
+credentials.json
+*.db
+*.db-*
+*.log
+*.pid
+.env
+.env.*
+!.env.example
+
+# Generated validation output and local Python environments.
+/tests/live-report*.json
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+
+# Go test artifacts.
+*.test
+coverage.out
