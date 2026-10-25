@@ -383,7 +383,7 @@ class Live:
             for call in calls:
                 call_id = call.call_id if proto == "responses" else call.id
                 row = db.execute(
-                    "SELECT data FROM records WHERE kind='tool' AND id=?", (call_id,)
+                    "SELECT data FROM entries WHERE kind='tool' AND id=?", (call_id,)
                 ).fetchone()
                 signed_tools += bool(row and json.loads(row[0]).get("signature"))
         # Some Gemini versions expose opaque thinking only on function-call parts.
@@ -775,17 +775,14 @@ class Live:
             ),
             (
                 "/v1/responses",
+                {"model": "gemini-3-flash", "input": "hello", "conversation": "conv_1"},
+                400,
+            ),
+            (
+                "/v1/responses",
                 {
                     "model": "gemini-3-flash",
-                    "input": "hello",
-                    "tools": [
-                        {
-                            "type": "function",
-                            "name": "x",
-                            "parameters": {"type": "object"},
-                            "strict": True,
-                        }
-                    ],
+                    "input": [{"type": "item_reference", "id": "msg_1"}],
                 },
                 400,
             ),
@@ -1124,19 +1121,17 @@ class Live:
             + value[position + 1 :]
         )
         history.append({"role": "user", "content": "Continue."})
-        try:
-            self.o.responses.create(model="gemini-3-flash", input=history, store=False)
-        except openai.BadRequestError:
-            pass
-        else:
-            raise AssertionError("tampered reasoning was accepted")
+        self.o.responses.create(model="gemini-3-flash", input=history, store=False)
+        self.log.flush()
+        self.log.seek(0)
+        assert "dropped a reasoning item" in self.log.read(), "tampering not detected"
         try:
             self.o.responses.retrieve(r.id)
         except openai.NotFoundError:
             pass
         else:
             raise AssertionError("store=false response was persisted")
-        return {"tampering_rejected": True, "store_false_verified": True}
+        return {"tampered_reasoning_dropped": True, "store_false_verified": True}
 
     def refresh(self):
         self.process.terminate()
@@ -1157,31 +1152,313 @@ class Live:
         return {"real_refresh_succeeded": True, "credentials_saved_privately": True}
 
     def concurrency(self):
-        barrier = threading.Barrier(6)
+        workers = int(self.source.get("max_concurrent_requests", 4)) + 2
+        barrier = threading.Barrier(workers)
 
         def request():
             barrier.wait()
-            try:
-                r = self.o.responses.create(
-                    model="gemini-3-flash",
-                    input="Reply exactly CONCURRENT_OK.",
-                    store=False,
-                )
-                assert "CONCURRENT_OK" in r.output_text
-                return "accepted"
-            except openai.RateLimitError as error:
-                assert "concurrency limit" in str(error)
-                return "limited"
+            r = self.o.responses.create(
+                model="gemini-3-flash",
+                input="Reply exactly CONCURRENT_OK.",
+                store=False,
+            )
+            assert "CONCURRENT_OK" in r.output_text
+            return "accepted"
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
-            results = list(pool.map(lambda _: request(), range(6)))
-        assert results.count("accepted") > 0 and results.count("limited") > 0
-        self.basic("responses", "gemini-3-flash")
-        return {
-            "accepted": results.count("accepted"),
-            "locally_limited": results.count("limited"),
-            "recovered": True,
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(lambda _: request(), range(workers)))
+        assert results.count("accepted") == workers, results
+        return {"burst": workers, "accepted": results.count("accepted"), "queued": True}
+
+    def raw(self, path, payload):
+        req = urllib.request.Request(
+            self.base + path,
+            data=json.dumps(payload).encode(),
+            headers={
+                "Authorization": "Bearer " + self.key,
+                "Content-Type": "application/json",
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=180) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"HTTP {error.code}: {error.read()[:400]!r}") from None
+
+    # Real client request shapes: Claude Code 2.1 (minus its identity lines,
+    # which Antigravity rejects) and Codex CLI 0.164.
+    LOOKUP_SCHEMA = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "examples": ["/etc/hosts"]},
+            "mode": {"type": ["string", "null"], "enum": ["read", "stat", None]},
+            "depth": {"type": "integer", "exclusiveMinimum": 0},
+            "target": {"$ref": "#/$defs/Target"},
+            "filter": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        },
+        "required": ["path"],
+        "additionalProperties": False,
+        "$defs": {
+            "Target": {"type": "object", "properties": {"host": {"type": "string"}}}
+        },
+    }
+
+    def claude_code_shape(self, model):
+        payload = {
+            "model": model,
+            "max_tokens": 16000,
+            "system": [
+                {
+                    "type": "text",
+                    "text": "You are a coding agent. Use tools when asked.",
+                },
+                {
+                    "type": "text",
+                    "text": "Be brief.",
+                    "cache_control": {"type": "ephemeral"},
+                },
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Call mcp__fs.local__lookup with path /etc/hosts and mode read.",
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                },
+                {
+                    "role": "system",
+                    "content": [{"type": "text", "text": "Environment: linux."}],
+                },
+            ],
+            "tools": [
+                {
+                    "name": "mcp__fs.local__lookup",
+                    "description": "Look up a file",
+                    "input_schema": self.LOOKUP_SCHEMA,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "name": "Deferred",
+                    "description": "not loaded",
+                    "input_schema": {"type": "object"},
+                    "defer_loading": True,
+                },
+            ],
+            "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
+            "thinking": {"type": "adaptive", "display": "omitted"},
+            "output_config": {"effort": "medium"},
+            "context_management": {
+                "edits": [{"type": "clear_thinking_20251015", "keep": "all"}]
+            },
+            "metadata": {"user_id": "live-validation"},
         }
+        r = self.raw("/v1/messages", payload)
+        calls = [b for b in r["content"] if b["type"] == "tool_use"]
+        assert calls and calls[0]["name"] == "mcp__fs.local__lookup", r["content"]
+        assert calls[0]["input"].get("path") == "/etc/hosts", calls[0]["input"]
+        assert not any(
+            b["type"] == "thinking" and b["thinking"] for b in r["content"]
+        ), "hidden thinking exposed"
+        payload["messages"] += [
+            {"role": "assistant", "content": r["content"]},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": calls[0]["id"],
+                        "content": "127.0.0.1 localhost",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+        ]
+        r = self.raw("/v1/messages", payload)
+        assert r["stop_reason"] == "end_turn", r
+        return {"tool_name_restored": True, "schema_features_cleaned": True, "turns": 2}
+
+    def codex_shape(self, model):
+        tools = [
+            {
+                "type": "function",
+                "name": "exec_command",
+                "description": "Run a shell command",
+                "strict": False,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"cmd": {"type": "string"}},
+                    "required": ["cmd"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "description": "Agents",
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "close_agent",
+                        "description": "Close an agent",
+                        "strict": False,
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"target": {"type": "string"}},
+                            "required": ["target"],
+                            "additionalProperties": False,
+                        },
+                    }
+                ],
+            },
+            {
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "Apply a patch",
+                "format": {
+                    "type": "grammar",
+                    "syntax": "lark",
+                    "definition": "start: /.+/",
+                },
+            },
+            {"type": "web_search", "external_web_access": False},
+        ]
+        history = [
+            {
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": "You are a coding agent."}],
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Call close_agent with target A1."}
+                ],
+            },
+        ]
+        payload = {
+            "model": model,
+            "stream": False,
+            "store": False,
+            "tools": tools,
+            "tool_choice": "auto",
+            "parallel_tool_calls": False,
+            "include": ["reasoning.encrypted_content"],
+            "reasoning": {"effort": "xhigh", "summary": "auto"},
+            "prompt_cache_key": "live",
+            "client_metadata": {"session_id": "live"},
+            "input": history,
+        }
+        r = self.raw("/v1/responses", payload)
+        calls = [i for i in r["output"] if i["type"] == "function_call"]
+        assert (
+            calls
+            and calls[0]["name"] == "close_agent"
+            and calls[0].get("namespace") == "multi_agent_v1"
+        ), r["output"]
+        payload["input"] = (
+            history
+            + r["output"]
+            + [
+                {
+                    "type": "function_call_output",
+                    "call_id": calls[0]["call_id"],
+                    "output": "closed",
+                }
+            ]
+        )
+        r = self.raw("/v1/responses", payload)
+        assert r["status"] == "completed" and any(
+            i["type"] == "message" for i in r["output"]
+        ), r
+        return {"namespace_restored": True, "turns": 2}
+
+    def tool_turn(self, model):
+        tools = [
+            {
+                "name": "add",
+                "description": "Add two integers",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}},
+                    "required": ["a", "b"],
+                },
+            }
+        ]
+        prompt = "Use the add tool for 17+25, then reply with ANSWER=<n>."
+        first = self.a.messages.create(
+            model=model,
+            max_tokens=8000,
+            tools=tools,
+            messages=[{"role": "user", "content": prompt}],
+            thinking={"type": "enabled", "budget_tokens": 2048},
+        )
+        use = next(b for b in first.content if b.type == "tool_use")
+        return tools, [
+            {"role": "user", "content": prompt},
+            {
+                "role": "assistant",
+                "content": [b.model_dump(exclude_none=True) for b in first.content],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": use.id, "content": "42"}
+                ],
+            },
+        ]
+
+    def lost_state(self):
+        turns = {}
+        for model in ["gemini-3-flash", "claude-sonnet-4-6"]:
+            turns[model] = self.tool_turn(model)
+        # Losing state.db drops every replay record and the sealing key.
+        self.process.terminate()
+        self.process.wait(timeout=10)
+        (self.root / "data" / "state.db").unlink()
+        self.start()
+        for model, (tools, messages) in turns.items():
+            r = self.a.messages.create(
+                model=model,
+                max_tokens=8000,
+                tools=tools,
+                messages=messages,
+                thinking={"type": "enabled", "budget_tokens": 2048},
+            )
+            assert "42" in self.text(r), f"{model}: {self.text(r)}"
+        return {"continued_after_state_loss": list(turns)}
+
+    def model_switch(self):
+        tools, messages = self.tool_turn("gemini-3-flash")
+        r = self.a.messages.create(
+            model="claude-sonnet-4-6", max_tokens=8000, tools=tools, messages=messages
+        )
+        assert "42" in self.text(r)
+        tools, messages = self.tool_turn("claude-sonnet-4-6")
+        r = self.a.messages.create(
+            model="gemini-3-flash", max_tokens=8000, tools=tools, messages=messages
+        )
+        assert "42" in self.text(r)
+        return {"gemini_to_claude": True, "claude_to_gemini": True}
+
+    def search_routed(self):
+        r = self.request(
+            "messages",
+            "claude-sonnet-4-6",
+            "Search the web for the official Python documentation for the json module and give its URL.",
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+        )
+        citations = [
+            c for b in r.content if b.type == "text" for c in (b.citations or [])
+        ]
+        assert citations, "no citations after routing search"
+        return dict(self.details(r), citation_count=len(citations))
 
 
 def main():
@@ -1291,6 +1568,18 @@ def main():
             ("http/cancellation", suite.cancellation),
             ("http/negative", suite.negative),
         ]
+        for model in ["gemini-3-flash", "claude-sonnet-4-6"]:
+            cases += [
+                (
+                    f"compat/claude_code/{model}",
+                    lambda m=model: suite.claude_code_shape(m),
+                ),
+                (f"compat/codex/{model}", lambda m=model: suite.codex_shape(m)),
+            ]
+        cases += [
+            ("compat/model_switch", suite.model_switch),
+            ("messages/search_routed", suite.search_routed),
+        ]
         cases += [
             ("media/audio_file", lambda: suite.av_file("audio")),
             ("media/video_file", lambda: suite.av_file("video")),
@@ -1308,6 +1597,7 @@ def main():
                 future.result()
         for name, fn in [
             ("state/restart", suite.persistence),
+            ("state/lost_state", suite.lost_state),
             ("auth/refresh", suite.refresh),
             ("http/concurrency", suite.concurrency),
         ]:
