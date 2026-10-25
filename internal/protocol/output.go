@@ -17,6 +17,7 @@ import (
 type OutputBlock struct {
 	Kind, ID, CallID, Name, Text, Signature string
 	NativeID                                string
+	Public                                  ToolName
 	Args                                    json.RawMessage
 	Parts                                   []ag.Part
 	Blob                                    *ag.Blob
@@ -38,7 +39,32 @@ type Renderer struct {
 	grounding *ag.Grounding
 	Native    []ag.Part
 	Result    json.RawMessage
+	Warnings  []string
 	bytes     int
+}
+
+// model is the upstream model; replay state is bound to it.
+func (r *Renderer) model() string { return r.Input.UpstreamModel() }
+
+func (r *Renderer) warn(format string, args ...any) {
+	message := fmt.Sprintf(format, args...)
+	for _, w := range r.Warnings {
+		if w == message {
+			return
+		}
+	}
+	r.Warnings = append(r.Warnings, message)
+}
+
+// customInput returns the raw text argument of a custom (freeform) tool call.
+func customInput(args json.RawMessage) string {
+	var v struct {
+		Input *string `json:"input"`
+	}
+	if json.Unmarshal(args, &v) == nil && v.Input != nil {
+		return *v.Input
+	}
+	return string(args)
 }
 
 func NewRenderer(format string, in Input, s *state.Store, emit func(string, map[string]any) error) *Renderer {
@@ -107,6 +133,12 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 		return err
 	}
 	for _, part := range chunk.Parts {
+		if len(part.Unknown) > 0 {
+			r.warn("ignored upstream part fields: %s", strings.Join(part.Unknown, ", "))
+		}
+		if part.Empty() {
+			continue
+		}
 		if len(part.ExecutableCode) > 0 || len(part.CodeExecutionResult) > 0 || part.FileData != nil {
 			return errors.New("upstream returned a content type that cannot be represented by this endpoint")
 		}
@@ -147,7 +179,12 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 				nativeID := call.ID
 				call.ID = ag.ID(prefix)
 				part.FunctionCall = &call
-				r.active = &OutputBlock{Kind: kind, ID: ag.ID("fc_"), CallID: call.ID, NativeID: nativeID, Name: call.Name, Args: call.Args}
+				public := r.Input.PublicTool(call.Name)
+				itemPrefix := "fc_"
+				if public.Custom {
+					itemPrefix = "ctc_"
+				}
+				r.active = &OutputBlock{Kind: kind, ID: ag.ID(itemPrefix), CallID: call.ID, NativeID: nativeID, Name: call.Name, Public: public, Args: call.Args}
 				if err := r.startBlock(); err != nil {
 					return err
 				}
@@ -172,18 +209,23 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 				return errors.New("upstream returned malformed function arguments")
 			}
 			b.Args = args
-			if r.Format == "messages" {
-				if err := r.event("content_block_delta", map[string]any{"index": len(r.items), "delta": map[string]any{"type": "input_json_delta", "partial_json": string(args)}}); err != nil {
-					return err
-				}
-			} else {
-				if err := r.event("response.function_call_arguments.delta", map[string]any{"item_id": b.ID, "output_index": len(r.items), "delta": string(args)}); err != nil {
-					return err
-				}
+			switch {
+			case r.Format == "messages":
+				err = r.event("content_block_delta", map[string]any{"index": len(r.items), "delta": map[string]any{"type": "input_json_delta", "partial_json": string(args)}})
+			case b.Public.Custom:
+				err = r.event("response.custom_tool_call_input.delta", map[string]any{"item_id": b.ID, "output_index": len(r.items), "delta": customInput(args)})
+			default:
+				err = r.event("response.function_call_arguments.delta", map[string]any{"item_id": b.ID, "output_index": len(r.items), "delta": string(args)})
+			}
+			if err != nil {
+				return err
 			}
 			continue
 		}
 		b.Text += part.Text
+		if kind == "thinking" && r.Input.HideThinking {
+			continue
+		}
 		if r.Format == "messages" {
 			typeName, key := "text_delta", "text"
 			if kind == "thinking" {
@@ -217,6 +259,26 @@ func (r *Renderer) open(kind string) error {
 	return r.startBlock()
 }
 
+// toolItem fills a Responses function or custom tool call item. arguments is
+// empty while the call is in progress.
+func (r *Renderer) toolItem(item map[string]any, b *OutputBlock, arguments string) {
+	item["call_id"] = b.CallID
+	item["name"] = b.Public.Name
+	if b.Public.Namespace != "" {
+		item["namespace"] = b.Public.Namespace
+	}
+	if b.Public.Custom {
+		item["type"] = "custom_tool_call"
+		item["input"] = ""
+		if arguments != "" {
+			item["input"] = customInput(json.RawMessage(arguments))
+		}
+		return
+	}
+	item["type"] = "function_call"
+	item["arguments"] = arguments
+}
+
 func (r *Renderer) startBlock() error {
 	b := r.active
 	index := len(r.items)
@@ -228,7 +290,7 @@ func (r *Renderer) startBlock() error {
 		case "thinking":
 			content = map[string]any{"type": "thinking", "thinking": "", "signature": ""}
 		case "tool":
-			content = map[string]any{"type": "tool_use", "id": b.CallID, "name": b.Name, "input": map[string]any{}}
+			content = map[string]any{"type": "tool_use", "id": b.CallID, "name": b.Public.Name, "input": map[string]any{}}
 		}
 		return r.event("content_block_start", map[string]any{"index": index, "content_block": content})
 	}
@@ -242,10 +304,7 @@ func (r *Renderer) startBlock() error {
 		item["type"] = "reasoning"
 		item["summary"] = []any{}
 	case "tool":
-		item["type"] = "function_call"
-		item["name"] = b.Name
-		item["call_id"] = b.CallID
-		item["arguments"] = ""
+		r.toolItem(item, b, "")
 	case "image":
 		item["type"] = "image_generation_call"
 		item["result"] = nil
@@ -274,7 +333,7 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 		b.Parts = []ag.Part{{Text: b.Text, Thought: b.Kind == "thinking", Signature: b.Signature}}
 	}
 	if b.Kind == "tool" {
-		if err := r.State.Put(ctx, "tool", b.CallID, SignatureRecord{Model: r.Input.Model, Name: b.Name, Digest: digest(b.Args), Signature: b.Signature, NativeID: b.NativeID, SessionID: r.Input.Request.SessionID}); err != nil {
+		if err := r.State.Put(ctx, "tool", b.CallID, SignatureRecord{Model: r.model(), Name: b.Name, Digest: digest(b.Args), Signature: b.Signature, NativeID: b.NativeID, SessionID: r.Input.Request.SessionID}); err != nil {
 			return err
 		}
 		b.Parts = []ag.Part{{FunctionCall: &ag.Call{ID: b.CallID, Name: b.Name, Args: b.Args}, Signature: b.Signature}}
@@ -286,7 +345,7 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 		if _, err := base64.StdEncoding.DecodeString(b.Blob.Data); err != nil {
 			return errors.New("upstream returned invalid image data")
 		}
-		if err := r.State.Put(ctx, "image", b.ID, ImageRecord{Model: r.Input.Model, MIMEType: b.Blob.MIMEType, Digest: digest(raw(b.Blob.Data)), Signature: b.Signature, SessionID: r.Input.Request.SessionID}); err != nil {
+		if err := r.State.Put(ctx, "image", b.ID, ImageRecord{Model: r.model(), MIMEType: b.Blob.MIMEType, Digest: digest(raw(b.Blob.Data)), Signature: b.Signature, SessionID: r.Input.Request.SessionID}); err != nil {
 			return err
 		}
 	}
@@ -307,16 +366,20 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 				}
 			}
 		case "thinking":
-			sealed, err := r.State.Seal(r.Input.Model, Replay{Parts: b.Parts, SessionID: r.Input.Request.SessionID})
+			sealed, err := r.State.Seal(r.model(), Replay{Parts: b.Parts, SessionID: r.Input.Request.SessionID})
 			if err != nil {
 				return err
 			}
-			item = map[string]any{"type": "thinking", "thinking": b.Text, "signature": sealed}
+			visible := b.Text
+			if r.Input.HideThinking {
+				visible = ""
+			}
+			item = map[string]any{"type": "thinking", "thinking": visible, "signature": sealed}
 			if err := r.event("content_block_delta", map[string]any{"index": index, "delta": map[string]any{"type": "signature_delta", "signature": sealed}}); err != nil {
 				return err
 			}
 		case "tool":
-			item = map[string]any{"type": "tool_use", "id": b.CallID, "name": b.Name, "input": b.Args}
+			item = map[string]any{"type": "tool_use", "id": b.CallID, "name": b.Public.Name, "input": b.Args}
 		}
 		if err := r.event("content_block_stop", map[string]any{"index": index}); err != nil {
 			return err
@@ -325,11 +388,12 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 		item = map[string]any{"id": b.ID, "status": "completed"}
 		switch b.Kind {
 		case "text":
-			part := map[string]any{"type": "output_text", "text": b.Text, "annotations": r.annotations(b.Text), "logprobs": []any{}}
+			annotations := r.annotations(b.Text)
+			part := map[string]any{"type": "output_text", "text": b.Text, "annotations": annotations, "logprobs": []any{}}
 			item["type"] = "message"
 			item["role"] = "assistant"
 			item["content"] = []any{part}
-			for i, annotation := range r.annotations(b.Text) {
+			for i, annotation := range annotations {
 				if err := r.event("response.output_text.annotation.added", map[string]any{"item_id": b.ID, "output_index": index, "content_index": 0, "annotation_index": i, "annotation": annotation}); err != nil {
 					return err
 				}
@@ -341,7 +405,7 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 				return err
 			}
 		case "thinking":
-			sealed, err := r.State.Seal(r.Input.Model, Replay{Parts: b.Parts, SessionID: r.Input.Request.SessionID})
+			sealed, err := r.State.Seal(r.model(), Replay{Parts: b.Parts, SessionID: r.Input.Request.SessionID})
 			if err != nil {
 				return err
 			}
@@ -356,11 +420,14 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 				return err
 			}
 		case "tool":
-			item["type"] = "function_call"
-			item["call_id"] = b.CallID
-			item["name"] = b.Name
-			item["arguments"] = string(b.Args)
-			if err := r.event("response.function_call_arguments.done", map[string]any{"item_id": b.ID, "output_index": index, "arguments": string(b.Args)}); err != nil {
+			r.toolItem(item, b, string(b.Args))
+			var err error
+			if b.Public.Custom {
+				err = r.event("response.custom_tool_call_input.done", map[string]any{"item_id": b.ID, "output_index": index, "input": customInput(b.Args)})
+			} else {
+				err = r.event("response.function_call_arguments.done", map[string]any{"item_id": b.ID, "output_index": index, "arguments": string(b.Args)})
+			}
+			if err != nil {
 				return err
 			}
 		case "image":
@@ -378,7 +445,7 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 	r.active = nil
 	if b.Kind == "text" && b.Signature != "" {
 		// A carrier after the text restores a signature on that exact native part.
-		sealed, err := r.State.Seal(r.Input.Model, Replay{PreviousText: digest(raw(b.Text)), Signature: b.Signature, SessionID: r.Input.Request.SessionID})
+		sealed, err := r.State.Seal(r.model(), Replay{PreviousText: digest(raw(b.Text)), Signature: b.Signature, SessionID: r.Input.Request.SessionID})
 		if err != nil {
 			return err
 		}
@@ -443,7 +510,7 @@ func (r *Renderer) messageCitations(text string) ([]any, error) {
 	for _, v := range r.annotations(text) {
 		a := v.(map[string]any)
 		start, end := a["start_index"].(int), a["end_index"].(int)
-		sealed, err := r.State.Seal(r.Input.Model, a)
+		sealed, err := r.State.Seal(r.model(), a)
 		if err != nil {
 			return nil, err
 		}
@@ -526,18 +593,22 @@ func (r *Renderer) Finish(ctx context.Context) error {
 	}
 	status, stop := "completed", "end_turn"
 	var incomplete any
-	switch strings.ToUpper(r.finish) {
-	case "STOP":
+	switch reason := strings.ToUpper(r.finish); reason {
+	case "STOP", "FINISH_REASON_UNSPECIFIED", "NO_IMAGE":
 	case "MAX_TOKENS":
 		status = "incomplete"
 		stop = "max_tokens"
 		incomplete = map[string]string{"reason": "max_output_tokens"}
-	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII":
+	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "LANGUAGE",
+		"IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION", "IMAGE_OTHER":
 		status = "incomplete"
 		stop = "refusal"
 		incomplete = map[string]string{"reason": "content_filter"}
+	case "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL", "TOO_MANY_TOOL_CALLS", "MALFORMED_RESPONSE", "MISSING_THOUGHT_SIGNATURE":
+		// The model produced an unusable turn; a retry usually succeeds.
+		return &ag.HTTPError{Status: 502, Message: "Antigravity ended generation with " + reason + "; retry the request"}
 	default:
-		return fmt.Errorf("unsupported upstream finish reason %q", r.finish)
+		r.warn("treated upstream finish reason %s as a normal stop", reason)
 	}
 	if err := r.closeBlock(ctx); err != nil {
 		return err
@@ -546,7 +617,7 @@ func (r *Renderer) Finish(ctx context.Context) error {
 		return err
 	}
 	if len(r.items) == 0 && status == "completed" {
-		return errors.New("upstream completed without content")
+		r.warn("upstream completed without content")
 	}
 	if r.Format == "messages" {
 		if stop == "end_turn" {

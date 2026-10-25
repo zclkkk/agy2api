@@ -3,7 +3,9 @@ package antigravity
 
 import (
 	"encoding/json"
-	"fmt"
+	"slices"
+	"sort"
+	"strings"
 )
 
 type Blob struct {
@@ -35,6 +37,9 @@ type Part struct {
 	FunctionResponse    *Result         `json:"functionResponse,omitempty"`
 	ExecutableCode      json.RawMessage `json:"executableCode,omitempty"`
 	CodeExecutionResult json.RawMessage `json:"codeExecutionResult,omitempty"`
+	// Unknown lists fields this bridge does not model. They are reported, not
+	// fatal, so new upstream metadata does not break generation.
+	Unknown []string `json:"-"`
 }
 
 func (p *Part) UnmarshalJSON(data []byte) error {
@@ -57,11 +62,18 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 				}
 			}
 		default:
-			return fmt.Errorf("unsupported native content field %q", key)
+			value.Unknown = append(value.Unknown, key)
 		}
 	}
+	sort.Strings(value.Unknown)
 	*p = Part(value)
 	return nil
+}
+
+// Empty reports whether the part carries nothing this bridge can represent.
+func (p Part) Empty() bool {
+	return p.Text == "" && p.Signature == "" && p.InlineData == nil && p.FileData == nil && p.FunctionCall == nil &&
+		p.FunctionResponse == nil && len(p.ExecutableCode) == 0 && len(p.CodeExecutionResult) == 0
 }
 
 type Content struct {
@@ -160,4 +172,44 @@ type Chunk struct {
 type Catalog struct {
 	Models       map[string]json.RawMessage `json:"models"`
 	SearchModels []string                   `json:"webSearchModelIds"`
+	ImageModels  []string                   `json:"imageGenerationModelIds"`
 }
+
+// ModelInfo is the subset of catalog metadata used to shape requests.
+type ModelInfo struct {
+	ID                string `json:"-"`
+	DisplayName       string `json:"displayName"`
+	Provider          string `json:"modelProvider"`
+	MaxOutputTokens   int    `json:"maxOutputTokens"`
+	MinThinkingBudget int    `json:"minThinkingBudget"`
+	Search            bool   `json:"-"`
+	Image             bool   `json:"-"`
+}
+
+func (c Catalog) Info(id string) (ModelInfo, bool) {
+	raw, ok := c.Models[id]
+	if !ok {
+		return ModelInfo{ID: id}, false
+	}
+	var info ModelInfo
+	_ = json.Unmarshal(raw, &info)
+	info.ID = id
+	info.Search = slices.Contains(c.SearchModels, id)
+	info.Image = slices.Contains(c.ImageModels, id) || (len(c.ImageModels) == 0 && strings.Contains(id, "image"))
+	return info, true
+}
+
+// Claude reports whether Antigravity serves the model through Anthropic.
+func (m ModelInfo) Claude() bool {
+	if m.Provider != "" {
+		return m.Provider == "MODEL_PROVIDER_ANTHROPIC"
+	}
+	return strings.Contains(strings.ToLower(m.ID), "claude")
+}
+
+// Request types understood by streamGenerateContent.
+const (
+	KindAgent  = "agent"
+	KindSearch = "web_search"
+	KindImage  = "image_gen"
+)

@@ -66,6 +66,16 @@ func Load(path string, client *http.Client) (*Manager, error) {
 
 func (m *Manager) ProjectID() string { m.mu.Lock(); defer m.mu.Unlock(); return m.creds.ProjectID }
 
+// Invalidate forces the next AccessToken call to refresh when token is still
+// the cached access token, e.g. after the upstream rejected it with HTTP 401.
+func (m *Manager) Invalidate(token string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.creds.Token.AccessToken == token {
+		m.creds.Token.Expiry = time.Time{}
+	}
+}
+
 func (m *Manager) AccessToken(ctx context.Context) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

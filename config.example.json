@@ -8,5 +8,6 @@
   "max_body_bytes": 33554432,
   "max_concurrent_requests": 4,
   "state_ttl_hours": 168,
-  "max_state_entries": 10000
+  "max_state_entries": 10000,
+  "max_state_bytes": 1073741824
 }

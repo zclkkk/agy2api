@@ -99,7 +99,7 @@ func run(ctx context.Context, args []string) error {
 		}
 		return nil
 	}
-	store, err := state.Open(cfg.DataDir, time.Duration(cfg.StateTTLHours)*time.Hour, cfg.MaxStateEntries)
+	store, err := state.Open(cfg.DataDir, time.Duration(cfg.StateTTLHours)*time.Hour, cfg.MaxStateEntries, cfg.MaxStateBytes)
 	if err != nil {
 		return err
 	}

@@ -51,7 +51,7 @@ func setup(t *testing.T, generate http.HandlerFunc) (*httptest.Server, *atomic.I
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
 	cfg.APIKey = "local-key"
-	store, err := state.Open(cfg.DataDir, time.Hour, 1000)
+	store, err := state.Open(cfg.DataDir, time.Hour, 1000, 1<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestAuthenticationUnsupportedRequestsAndTokenCount(t *testing.T) {
 	if res.StatusCode != 401 {
 		t.Fatal(res.StatusCode)
 	}
-	res, body := post(t, s, "/v1/responses", map[string]any{"model": "gemini-test", "input": "hello", "unexpected": true})
+	res, body := post(t, s, "/v1/responses", map[string]any{"model": "gemini-test", "input": "hello", "background": true})
 	if res.StatusCode != 400 {
 		t.Fatal(string(body))
 	}

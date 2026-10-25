@@ -19,42 +19,45 @@ type Source struct {
 	Text      string `json:"text,omitempty"`
 }
 type Block struct {
-	Type         string          `json:"type"`
-	Text         string          `json:"text,omitempty"`
-	Thinking     string          `json:"thinking,omitempty"`
-	Signature    string          `json:"signature,omitempty"`
-	ID           string          `json:"id,omitempty"`
-	Name         string          `json:"name,omitempty"`
-	Input        json.RawMessage `json:"input,omitempty"`
-	ToolUseID    string          `json:"tool_use_id,omitempty"`
-	Content      json.RawMessage `json:"content,omitempty"`
-	IsError      bool            `json:"is_error,omitempty"`
-	Source       *Source         `json:"source,omitempty"`
-	ImageURL     string          `json:"image_url,omitempty"`
-	Detail       string          `json:"detail,omitempty"`
-	FileData     string          `json:"file_data,omitempty"`
-	FileURL      string          `json:"file_url,omitempty"`
-	Filename     string          `json:"filename,omitempty"`
-	FileID       string          `json:"file_id,omitempty"`
-	Annotations  json.RawMessage `json:"annotations,omitempty"`
-	Logprobs     json.RawMessage `json:"logprobs,omitempty"`
-	Citations    json.RawMessage `json:"citations,omitempty"`
-	CacheControl json.RawMessage `json:"cache_control,omitempty"`
+	Type        string          `json:"type"`
+	Text        string          `json:"text,omitempty"`
+	Thinking    string          `json:"thinking,omitempty"`
+	Signature   string          `json:"signature,omitempty"`
+	ID          string          `json:"id,omitempty"`
+	Name        string          `json:"name,omitempty"`
+	Input       json.RawMessage `json:"input,omitempty"`
+	ToolUseID   string          `json:"tool_use_id,omitempty"`
+	Content     json.RawMessage `json:"content,omitempty"`
+	IsError     bool            `json:"is_error,omitempty"`
+	Source      *Source         `json:"source,omitempty"`
+	ImageURL    string          `json:"image_url,omitempty"`
+	Detail      string          `json:"detail,omitempty"`
+	FileData    string          `json:"file_data,omitempty"`
+	FileURL     string          `json:"file_url,omitempty"`
+	Filename    string          `json:"filename,omitempty"`
+	FileID      string          `json:"file_id,omitempty"`
+	Annotations json.RawMessage `json:"annotations,omitempty"`
+	Logprobs    json.RawMessage `json:"logprobs,omitempty"`
+	Citations   json.RawMessage `json:"citations,omitempty"`
+	Refusal     string          `json:"refusal,omitempty"`
+	ToolName    string          `json:"tool_name,omitempty"`
 }
 
+// blocks decodes string or block-array content. Unknown block fields such as
+// cache_control are hints without effect on the output, so they are ignored.
 func blocks(content json.RawMessage) ([]Block, error) {
 	var text string
 	if json.Unmarshal(content, &text) == nil {
 		return []Block{{Type: "text", Text: text}}, nil
 	}
 	var out []Block
-	if err := strict(content, &out); err != nil {
-		return nil, err
+	if err := json.Unmarshal(content, &out); err != nil {
+		return nil, invalid("content", "content must be a string or an array of content blocks")
 	}
 	return out, nil
 }
 
-func mediaParts(content json.RawMessage, param string) ([]ag.Part, error) {
+func mediaParts(content json.RawMessage) ([]ag.Part, error) {
 	items, err := blocks(content)
 	if err != nil {
 		return nil, err
@@ -71,12 +74,18 @@ func mediaParts(content json.RawMessage, param string) ([]ag.Part, error) {
 }
 
 func mediaPart(b Block) (ag.Part, error) {
-	if present(b.CacheControl) {
-		return ag.Part{}, unsupported("cache_control")
-	}
 	switch b.Type {
 	case "text", "input_text", "output_text":
 		return ag.Part{Text: b.Text}, nil
+	case "refusal":
+		return ag.Part{Text: b.Refusal}, nil
+	case "tool_reference":
+		// Claude Code's tool search result; the referenced tool is declared.
+		name := b.ToolName
+		if name == "" {
+			name = b.Name
+		}
+		return ag.Part{Text: "Tool " + name + " is now available."}, nil
 	case "image", "document":
 		if b.Source == nil {
 			return ag.Part{}, invalid("source", "media source is required")

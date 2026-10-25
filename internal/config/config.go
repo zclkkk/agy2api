@@ -24,10 +24,11 @@ type Config struct {
 	MaxConcurrentRequests int    `json:"max_concurrent_requests"`
 	StateTTLHours         int    `json:"state_ttl_hours"`
 	MaxStateEntries       int    `json:"max_state_entries"`
+	MaxStateBytes         int64  `json:"max_state_bytes"`
 }
 
 func Default() Config {
-	return Config{Listen: "127.0.0.1:8080", DataDir: "./data", UpstreamURL: "https://daily-cloudcode-pa.googleapis.com", UserAgent: "antigravity/2.24.0", MaxBodyBytes: 32 << 20, MaxConcurrentRequests: 4, StateTTLHours: 168, MaxStateEntries: 10000}
+	return Config{Listen: "127.0.0.1:8080", DataDir: "./data", UpstreamURL: "https://daily-cloudcode-pa.googleapis.com", UserAgent: "antigravity/2.24.0", MaxBodyBytes: 32 << 20, MaxConcurrentRequests: 4, StateTTLHours: 168, MaxStateEntries: 10000, MaxStateBytes: 1 << 30}
 }
 
 func Load(path string) (Config, error) {
@@ -78,6 +79,9 @@ func (c Config) Validate() error {
 	}
 	if c.StateTTLHours < 1 || c.MaxStateEntries < 1 {
 		return errors.New("state retention limits must be positive")
+	}
+	if c.MaxStateBytes < 64<<20 {
+		return errors.New("max_state_bytes must be at least 67108864")
 	}
 	u, err := url.Parse(c.UpstreamURL)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {

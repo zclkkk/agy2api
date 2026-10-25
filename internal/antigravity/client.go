@@ -24,6 +24,9 @@ type TokenSource interface {
 	AccessToken(context.Context) (string, error)
 	ProjectID() string
 }
+
+// invalidator is implemented by token sources that can drop a rejected token.
+type invalidator interface{ Invalidate(token string) }
 type Client struct {
 	HTTP      *http.Client
 	BaseURL   string
@@ -34,6 +37,9 @@ type HTTPError struct {
 	Status     int
 	Message    string
 	RetryAfter string
+	// Detail is the upstream's own error text, for the local log only. It can
+	// echo request content, so it is never returned to API clients.
+	Detail string
 }
 
 func (e *HTTPError) Error() string { return e.Message }
@@ -68,7 +74,17 @@ func (c *Client) post(ctx context.Context, method string, payload any) (*http.Re
 	if err != nil {
 		return nil, err
 	}
-	return c.postToken(ctx, method, payload, token)
+	resp, err := c.postToken(ctx, method, payload, token)
+	// A token can be revoked before its expiry; refresh once and retry.
+	var status *HTTPError
+	if inv, ok := c.Auth.(invalidator); ok && errors.As(err, &status) && status.Status == http.StatusUnauthorized {
+		inv.Invalidate(token)
+		if token, err = c.Auth.AccessToken(ctx); err != nil {
+			return nil, err
+		}
+		return c.postToken(ctx, method, payload, token)
+	}
+	return resp, err
 }
 
 func (c *Client) postToken(ctx context.Context, method string, payload any, token string) (*http.Response, error) {
@@ -90,7 +106,7 @@ func (c *Client) postToken(ctx context.Context, method string, payload any, toke
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return nil, &HTTPError{Status: resp.StatusCode, Message: upstreamErrorMessage(resp.StatusCode, data), RetryAfter: upstreamRetryAfter(resp.Header.Get("Retry-After"), data)}
+		return nil, &HTTPError{Status: resp.StatusCode, Message: upstreamErrorMessage(resp.StatusCode, data), RetryAfter: upstreamRetryAfter(resp.Header.Get("Retry-After"), data), Detail: upstreamErrorDetail(data)}
 	}
 	return resp, nil
 }
@@ -122,6 +138,22 @@ func upstreamRetryAfter(header string, data []byte) string {
 		}
 	}
 	return ""
+}
+
+func upstreamErrorDetail(data []byte) string {
+	var body struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	detail := strings.TrimSpace(string(data))
+	if json.Unmarshal(data, &body) == nil && body.Error.Message != "" {
+		detail = body.Error.Message
+	}
+	if len(detail) > 500 {
+		detail = detail[:500] + "…"
+	}
+	return detail
 }
 
 func upstreamErrorMessage(status int, data []byte) string {
@@ -192,7 +224,9 @@ func (c *Client) Models(ctx context.Context) (Catalog, error) {
 	return catalog, err
 }
 
-func (c *Client) Count(ctx context.Context, model string, request Request) (int, error) {
+// Count returns Antigravity's token estimate. The endpoint takes no model, so the
+// estimate is the same for every model.
+func (c *Client) Count(ctx context.Context, request Request) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	request.SessionID = ""
@@ -217,16 +251,12 @@ func (c *Client) Count(ctx context.Context, model string, request Request) (int,
 
 // Generate consumes the upstream stream in order. Success requires a finish reason;
 // EOF and [DONE] alone are not proof that generation completed.
-func (c *Client) Generate(ctx context.Context, model string, request Request, search bool, emit func(Chunk) error) error {
-	kind := "agent"
-	if strings.Contains(model, "image") {
-		kind = "image_gen"
-		if len(request.Generation.Modalities) == 0 {
-			request.Generation.Modalities = []string{"TEXT", "IMAGE"}
-		}
+func (c *Client) Generate(ctx context.Context, model string, request Request, kind string, emit func(Chunk) error) error {
+	if kind == "" {
+		kind = KindAgent
 	}
-	if search {
-		kind = "web_search"
+	if kind == KindImage && len(request.Generation.Modalities) == 0 {
+		request.Generation.Modalities = []string{"TEXT", "IMAGE"}
 	}
 	if request.SessionID == "" {
 		request.SessionID = ID("session-")

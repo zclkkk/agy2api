@@ -2,7 +2,9 @@ package protocol
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"strings"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
@@ -34,17 +36,29 @@ type ResponsesRequest struct {
 			Description string          `json:"description,omitempty"`
 		} `json:"format,omitempty"`
 	} `json:"text,omitempty"`
-	Metadata   json.RawMessage `json:"metadata,omitempty"`
-	Include    []string        `json:"include,omitempty"`
-	Background bool            `json:"background,omitempty"`
-	Truncation string          `json:"truncation,omitempty"`
+	Metadata     json.RawMessage `json:"metadata,omitempty"`
+	Include      []string        `json:"include,omitempty"`
+	Background   bool            `json:"background,omitempty"`
+	Truncation   string          `json:"truncation,omitempty"`
+	Conversation json.RawMessage `json:"conversation,omitempty"`
+	Prompt       json.RawMessage `json:"prompt,omitempty"`
 }
+
+// Fields with no effect on what the model generates.
+var quietResponseFields = map[string]bool{"prompt_cache_key": true, "prompt_cache_retention": true, "client_metadata": true,
+	"user": true, "safety_identifier": true, "service_tier": true, "stream_options": true, "top_logprobs": true}
+
 type ResponseTool struct {
 	Type        string          `json:"type"`
 	Name        string          `json:"name,omitempty"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
-	Strict      bool            `json:"strict,omitempty"`
+	Format      *struct {
+		Type       string `json:"type"`
+		Syntax     string `json:"syntax,omitempty"`
+		Definition string `json:"definition,omitempty"`
+	} `json:"format,omitempty"`
+	Tools []ResponseTool `json:"tools,omitempty"`
 }
 type ResponseItem struct {
 	Type         string          `json:"type,omitempty"`
@@ -53,7 +67,9 @@ type ResponseItem struct {
 	ID           string          `json:"id,omitempty"`
 	CallID       string          `json:"call_id,omitempty"`
 	Name         string          `json:"name,omitempty"`
+	Namespace    string          `json:"namespace,omitempty"`
 	Arguments    string          `json:"arguments,omitempty"`
+	Input        string          `json:"input,omitempty"`
 	Output       json.RawMessage `json:"output,omitempty"`
 	Encrypted    string          `json:"encrypted_content,omitempty"`
 	Summary      json.RawMessage `json:"summary,omitempty"`
@@ -72,22 +88,28 @@ type StoredResponse struct {
 
 func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 	var r ResponsesRequest
-	if err := strict(data, &r); err != nil {
+	ignored, err := decodeRequest(data, &r, quietResponseFields)
+	if err != nil {
 		return Input{}, err
 	}
 	in := Input{Model: r.Model, Stream: r.Stream, Store: r.Store == nil || *r.Store, PreviousID: r.PreviousID, Metadata: r.Metadata, Options: data, Request: ag.Request{Generation: ag.Generation{MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP}}}
-	if r.Background {
-		return in, unsupported("background")
+	if len(ignored) > 0 {
+		in.warn("ignored request fields: %s", strings.Join(ignored, ", "))
 	}
-	if r.Truncation != "" && r.Truncation != "disabled" {
-		return in, unsupported("truncation")
+	switch {
+	case r.Background:
+		return in, unsupported("background")
+	case present(r.Conversation):
+		return in, unsupported("conversation")
+	case present(r.Prompt):
+		return in, unsupported("prompt")
 	}
 	if r.Parallel != nil && !*r.Parallel {
-		return in, unsupported("parallel_tool_calls=false")
+		in.warn("parallel_tool_calls=false is best effort")
 	}
 	for _, v := range r.Include {
 		if v != "reasoning.encrypted_content" {
-			return in, unsupported("include " + v)
+			in.warn("ignored include %s", v)
 		}
 	}
 	if r.PreviousID != "" {
@@ -95,10 +117,11 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 		if err := d.State.Get(ctx, "response", r.PreviousID, &previous); err != nil {
 			return in, invalid("previous_response_id", "previous response is missing, expired, or was not stored")
 		}
-		if previous.Model != in.Model {
-			return in, invalid("model", "cannot change models within a stored response chain")
-		}
 		in.Request.Contents = previous.Contents
+		if previous.Model != in.Model {
+			in.Request.Contents = stripSignatures(previous.Contents)
+			in.warn("model changed within a stored response chain; prior reasoning was dropped")
+		}
 		in.Request.SessionID = previous.SessionID
 		in.OriginalItems = previous.Items
 		var priorOutput struct {
@@ -126,12 +149,12 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 	in.OriginalItems = append(in.OriginalItems, items...)
 	for _, item := range items {
 		var v ResponseItem
-		if err := strict(item, &v); err != nil {
-			return in, err
+		if err := json.Unmarshal(item, &v); err != nil {
+			return in, invalid("input", "invalid input item: "+err.Error())
 		}
 		switch v.Type {
 		case "", "message":
-			parts, err := mediaParts(v.Content, "input.content")
+			parts, err := mediaParts(v.Content)
 			if err != nil {
 				return in, err
 			}
@@ -150,21 +173,21 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 			default:
 				return in, invalid("role", "unsupported message role")
 			}
-		case "function_call":
+		case "function_call", "custom_tool_call":
 			if v.CallID == "" || v.Name == "" {
-				return in, invalid("function_call", "call_id and name are required")
+				return in, invalid(v.Type, "call_id and name are required")
 			}
-			args, err := objectArguments(json.RawMessage(v.Arguments))
+			args := json.RawMessage(v.Arguments)
+			if v.Type == "custom_tool_call" {
+				args = raw(map[string]string{"input": v.Input})
+			}
+			args, err := objectArguments(args)
 			if err != nil {
 				return in, err
 			}
-			call := &ag.Call{ID: v.CallID, Name: v.Name, Args: args}
-			sig, err := d.RestoreCall(ctx, in.Model, call)
-			if err != nil {
-				return in, err
-			}
-			appendContent(&in.Request, "model", []ag.Part{{FunctionCall: call, Signature: sig}})
-		case "function_call_output":
+			call := &ag.Call{ID: v.CallID, Name: nativeName(qualify(v.Namespace, v.Name)), Args: args}
+			appendContent(&in.Request, "model", []ag.Part{{FunctionCall: call, Signature: d.restoreCall(ctx, &in, call)}})
+		case "function_call_output", "custom_tool_call_output":
 			name, err := toolName(v.CallID, in.Request.Contents)
 			if err != nil {
 				return in, err
@@ -175,114 +198,38 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 			}
 			appendContent(&in.Request, "user", []ag.Part{p})
 		case "reasoning":
-			if v.Encrypted == "" {
-				return in, invalid("encrypted_content", "reasoning replay requires encrypted_content")
+			var prev []ag.Part
+			if n := len(in.Request.Contents); n > 0 {
+				prev = in.Request.Contents[n-1].Parts
 			}
-			var replay Replay
-			if err := d.State.Unseal(in.Model, v.Encrypted, &replay); err != nil {
-				return in, invalid("encrypted_content", err.Error())
-			}
-			if in.Request.SessionID == "" {
-				in.Request.SessionID = replay.SessionID
-			}
-			if replay.PreviousText != "" {
-				n := len(in.Request.Contents)
-				if n == 0 {
-					return in, invalid("reasoning", "missing signed text")
-				}
-				parts := in.Request.Contents[n-1].Parts
-				if len(parts) == 0 || digest(raw(parts[len(parts)-1].Text)) != replay.PreviousText {
-					return in, invalid("reasoning", "signed text was changed")
-				}
-				in.Request.Contents[n-1].Parts[len(parts)-1].Signature = replay.Signature
-			} else {
-				appendContent(&in.Request, "model", replay.Parts)
-			}
+			appendContent(&in.Request, "model", d.replay(&in, v.Encrypted, "", prev))
 		case "image_generation_call":
-			var record ImageRecord
-			if err := d.State.Get(ctx, "image", v.ID, &record); err != nil {
-				return in, invalid("image_generation_call", "image replay metadata is missing or expired")
-			}
-			if record.Model != in.Model || record.Digest != digest(raw(v.Result)) {
-				return in, invalid("image_generation_call", "generated image was changed or belongs to another model")
-			}
-			appendContent(&in.Request, "model", []ag.Part{{InlineData: &ag.Blob{MIMEType: record.MIMEType, Data: v.Result}, Signature: record.Signature}})
-			if in.Request.SessionID == "" {
-				in.Request.SessionID = record.SessionID
-			}
+			appendContent(&in.Request, "model", []ag.Part{d.restoreImage(ctx, &in, v)})
 		case "web_search_call":
-			// This is a server-side tool trace. Its answer and citations are carried
-			// by adjacent message items; it is not a client-executed function call.
-			if !strings.HasPrefix(v.ID, "ws_agy_") {
-				return in, unsupported("foreign web_search_call")
-			}
+			// A server-side tool trace. Its answer and citations are carried by
+			// adjacent message items; it is not a client-executed function call.
 		default:
 			return in, unsupported("input item " + v.Type)
 		}
 	}
-	for _, t := range r.Tools {
-		switch t.Type {
-		case "function":
-			if t.Strict {
-				return in, unsupported("tools.strict")
-			}
-			if t.Name == "" {
-				return in, invalid("tools.name", "tool name is required")
-			}
-			params, err := objectArguments(t.Parameters)
-			if err != nil {
-				return in, err
-			}
-			in.Request.Tools = append(in.Request.Tools, ag.Tool{Functions: []ag.Function{{Name: t.Name, Description: t.Description, Parameters: params}}})
-		case "web_search", "web_search_preview":
-			in.Search = true
-			in.Request.Tools = append(in.Request.Tools, ag.Tool{GoogleSearch: raw(map[string]any{})})
-		default:
-			return in, unsupported("tool type " + t.Type)
-		}
+	if err := declareResponseTools(&in, r.Tools, ""); err != nil {
+		return in, err
 	}
 	if present(r.ToolChoice) {
-		var choice string
-		if json.Unmarshal(r.ToolChoice, &choice) == nil {
-			if err := setChoice(&in, choice, ""); err != nil {
-				return in, err
-			}
-		} else {
-			var t struct {
-				Type string `json:"type"`
-				Name string `json:"name"`
-			}
-			if err := strict(r.ToolChoice, &t); err != nil {
-				return in, err
-			}
-			if err := setChoice(&in, t.Type, t.Name); err != nil {
-				return in, err
-			}
+		if err := responseChoice(&in, r.ToolChoice); err != nil {
+			return in, err
 		}
 	}
 	if r.Reasoning != nil {
 		if r.Reasoning.Effort != "" {
-			if err := effort(&in, r.Reasoning.Effort); err != nil {
-				return in, err
-			}
+			applyEffort(&in, r.Reasoning.Effort)
 		}
-		if r.Reasoning.Summary != "" {
-			switch r.Reasoning.Summary {
-			case "auto", "concise", "detailed":
-				if in.Request.Generation.Thinking == nil {
-					n := -1
-					in.Request.Generation.Thinking = &ag.Thinking{Budget: &n, Include: true}
-				}
-			default:
-				return in, unsupported("reasoning.summary")
-			}
+		if r.Reasoning.Summary != "" && r.Reasoning.Summary != "none" && in.Thinking.Mode == "" {
+			in.Thinking = ThinkingIntent{Mode: "adaptive"}
 		}
 	}
 	if r.Text != nil && r.Text.Format != nil {
 		f := r.Text.Format
-		if f.Strict {
-			return in, unsupported("text.format.strict")
-		}
 		switch f.Type {
 		case "text":
 		case "json_object":
@@ -298,4 +245,100 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 		}
 	}
 	return in, validate(&in)
+}
+
+// restoreImage rebuilds a generated image turn. Without replay metadata the
+// image is still sent with its type detected; NativeRequest adds the Gemini
+// placeholder signature.
+func (d Decoder) restoreImage(ctx context.Context, in *Input, v ResponseItem) ag.Part {
+	var record ImageRecord
+	if err := d.State.Get(ctx, "image", v.ID, &record); err == nil && record.Model == in.Model && record.Digest == digest(raw(v.Result)) {
+		if in.Request.SessionID == "" {
+			in.Request.SessionID = record.SessionID
+		}
+		return ag.Part{InlineData: &ag.Blob{MIMEType: record.MIMEType, Data: v.Result}, Signature: record.Signature}
+	}
+	in.warn("image replay metadata for %s is missing or changed", v.ID)
+	head := v.Result[:min(len(v.Result), 1024)]
+	head = head[:len(head)/4*4]
+	sample, _ := base64.StdEncoding.DecodeString(head)
+	return ag.Part{InlineData: &ag.Blob{MIMEType: http.DetectContentType(sample), Data: v.Result}}
+}
+
+// declareResponseTools flattens namespaces and maps custom (freeform) tools to
+// functions with a single string argument.
+func declareResponseTools(in *Input, tools []ResponseTool, namespace string) error {
+	for _, t := range tools {
+		switch t.Type {
+		case "function":
+			if t.Name == "" {
+				return invalid("tools.name", "tool name is required")
+			}
+			params, err := objectArguments(t.Parameters)
+			if err != nil {
+				return err
+			}
+			in.Request.Tools = append(in.Request.Tools, ag.Tool{Functions: []ag.Function{{Name: in.declare(ToolName{Name: t.Name, Namespace: namespace}), Description: t.Description, Parameters: params}}})
+		case "custom":
+			if t.Name == "" {
+				return invalid("tools.name", "tool name is required")
+			}
+			desc := "Raw text input for the tool."
+			if t.Format != nil && t.Format.Type == "grammar" && t.Format.Definition != "" {
+				desc = "Raw text input that must follow this " + t.Format.Syntax + " grammar:\n" + t.Format.Definition
+			}
+			params := raw(map[string]any{"type": "object", "properties": map[string]any{"input": map[string]any{"type": "string", "description": desc}}, "required": []string{"input"}})
+			in.Request.Tools = append(in.Request.Tools, ag.Tool{Functions: []ag.Function{{Name: in.declare(ToolName{Name: t.Name, Namespace: namespace, Custom: true}), Description: t.Description, Parameters: params}}})
+		case "namespace":
+			if namespace != "" || t.Name == "" {
+				return invalid("tools", "namespaces must be named and cannot be nested")
+			}
+			if err := declareResponseTools(in, t.Tools, t.Name); err != nil {
+				return err
+			}
+		case "web_search", "web_search_preview", "web_search_2025_08_26", "web_search_preview_2025_03_11":
+			in.Search = true
+		default:
+			return unsupported("tool type " + t.Type)
+		}
+	}
+	return nil
+}
+
+func responseChoice(in *Input, value json.RawMessage) error {
+	var choice string
+	if json.Unmarshal(value, &choice) == nil {
+		return setChoice(in, choice, "")
+	}
+	var t struct {
+		Type      string `json:"type"`
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+		Mode      string `json:"mode"`
+		Tools     []struct {
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(value, &t); err != nil {
+		return invalid("tool_choice", "tool_choice must be a string or an object")
+	}
+	switch t.Type {
+	case "function", "custom":
+		return setChoice(in, t.Type, qualify(t.Namespace, t.Name))
+	case "allowed_tools":
+		if t.Mode != "required" {
+			return setChoice(in, "auto", "")
+		}
+		var names []string
+		for _, tool := range t.Tools {
+			if tool.Name != "" {
+				names = append(names, nativeName(qualify(tool.Namespace, tool.Name)))
+			}
+		}
+		in.Request.ToolConfig = &ag.ToolConfig{FunctionCallingConfig: ag.CallingConfig{Mode: "ANY", AllowedNames: names}}
+		return nil
+	}
+	return setChoice(in, t.Type, t.Name)
 }

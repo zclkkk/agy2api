@@ -73,3 +73,30 @@ func TestConcurrentRefreshPersistsRotatedTokenOnce(t *testing.T) {
 		t.Fatalf("permissions=%v", info.Mode())
 	}
 }
+
+func TestInvalidateForcesRefreshOnlyForCurrentToken(t *testing.T) {
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"next-access","expires_in":3600,"token_type":"Bearer"}`)
+	}))
+	defer up.Close()
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	if err := Save(path, Credentials{ProjectID: "project", Token: oauth2.Token{AccessToken: "valid", RefreshToken: "refresh", Expiry: time.Now().Add(time.Hour)}}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Load(path, up.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.config.Endpoint.TokenURL = up.URL
+	m.Invalidate("some-older-token")
+	if token, _ := m.AccessToken(context.Background()); token != "valid" || calls.Load() != 0 {
+		t.Fatalf("stale invalidation refreshed: %q", token)
+	}
+	m.Invalidate("valid")
+	if token, err := m.AccessToken(context.Background()); err != nil || token != "next-access" || calls.Load() != 1 {
+		t.Fatalf("%q %v calls=%d", token, err, calls.Load())
+	}
+}

@@ -13,7 +13,7 @@ import (
 
 func testStore(t *testing.T) *state.Store {
 	t.Helper()
-	s, err := state.Open(t.TempDir(), time.Hour, 1000)
+	s, err := state.Open(t.TempDir(), time.Hour, 1000, 1<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestResponsesFullOutputReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	native, err := d.NativeRequest(ctx, next.Model, next.Request)
+	native, err := d.NativeRequest(ctx, next.Request, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestMessagesFullOutputReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	native, err := d.NativeRequest(ctx, next.Model, next.Request)
+	native, err := d.NativeRequest(ctx, next.Request, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,8 @@ func TestUnsupportedInputIsRejectedWithoutDroppingAttachment(t *testing.T) {
 	for _, request := range []string{
 		`{"model":"gemini-test","input":"hello","background":true}`,
 		`{"model":"gemini-test","input":[{"role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_image","file_id":"missing"}]}]}`,
-		`{"model":"gemini-test","input":"hello","unknown":true}`,
+		`{"model":"gemini-test","input":"hello","conversation":"conv_1"}`,
+		`{"model":"gemini-test","input":[{"type":"item_reference","id":"msg_1"}]}`,
 	} {
 		if _, err := d.Responses(context.Background(), []byte(request)); err == nil {
 			t.Fatalf("accepted unsupported input: %s", request)
@@ -226,7 +227,7 @@ func TestParallelResultsAreReorderedWithoutMutatingCallerHistory(t *testing.T) {
 		{Role: "model", Parts: []ag.Part{{FunctionCall: &ag.Call{ID: "a", Name: "first", Args: raw(map[string]any{})}}, {FunctionCall: &ag.Call{ID: "b", Name: "second", Args: raw(map[string]any{})}}}},
 		{Role: "user", Parts: []ag.Part{{FunctionResponse: &ag.Result{ID: "b", Name: "second", Response: raw(map[string]string{"title": "untouched"})}}, {Text: "keep this text"}, {FunctionResponse: &ag.Result{ID: "a", Name: "first", Response: raw(map[string]string{"format": "untouched"})}}}},
 	}}
-	native, err := d.NativeRequest(context.Background(), "gemini-test", request)
+	native, err := d.NativeRequest(context.Background(), request, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,11 +249,33 @@ func TestClaudeResponsesEffortUsesBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	thinking := in.Request.Generation.Thinking
-	if thinking == nil || thinking.Budget == nil || *thinking.Budget != 8192 || thinking.Level != "" || !thinking.Include {
-		t.Fatalf("incorrect Claude thinking config: %+v", thinking)
+	if err := in.Prepare(testCatalog); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := d.Responses(context.Background(), []byte(`{"model":"claude-sonnet-4-6","input":"think","max_output_tokens":1024,"reasoning":{"effort":"high"}}`)); err == nil {
-		t.Fatal("incompatible reasoning budget and output limit accepted")
+	g := in.Request.Generation
+	if g.Thinking == nil || g.Thinking.Budget == nil || *g.Thinking.Budget != 8192 || g.Thinking.Level != "" || !g.Thinking.Include {
+		t.Fatalf("incorrect Claude thinking config: %+v", g.Thinking)
+	}
+	if g.MaxTokens == nil || *g.MaxTokens != 64000 {
+		t.Fatal("advertised output limit not applied")
+	}
+	// A budget that cannot fit is reduced, and below Claude's minimum thinking
+	// is turned off, instead of failing the request.
+	in, err = d.Responses(context.Background(), []byte(`{"model":"claude-sonnet-4-6","input":"think","max_output_tokens":1024,"reasoning":{"effort":"high"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := in.Prepare(testCatalog); err != nil {
+		t.Fatal(err)
+	}
+	if b := in.Request.Generation.Thinking.Budget; b == nil || *b != 0 || len(in.Warnings) == 0 {
+		t.Fatalf("expected thinking off with a warning: %+v %v", in.Request.Generation.Thinking, in.Warnings)
+	}
+	in, _ = d.Responses(context.Background(), []byte(`{"model":"claude-sonnet-4-6","input":"think","max_output_tokens":4000,"reasoning":{"effort":"high"}}`))
+	if err := in.Prepare(testCatalog); err != nil {
+		t.Fatal(err)
+	}
+	if b := in.Request.Generation.Thinking.Budget; b == nil || *b != 3999 {
+		t.Fatalf("budget not reduced to fit: %+v", in.Request.Generation.Thinking)
 	}
 }

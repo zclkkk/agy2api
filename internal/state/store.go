@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -27,9 +28,24 @@ type Store struct {
 	aead     cipher.AEAD
 	ttl      time.Duration
 	capacity int
+	maxBytes int64
+
+	mu          sync.Mutex // guards the eviction counters below
+	writes      int
+	writtenSize int64
 }
 
-func Open(dir string, ttl time.Duration, capacity int) (*Store, error) {
+// The data column is last so scans of the small columns never touch BLOB
+// overflow pages; the created index covers count and size eviction.
+const schema = `PRAGMA busy_timeout=5000; PRAGMA journal_mode=DELETE;
+CREATE TABLE IF NOT EXISTS entries(kind TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,created INTEGER NOT NULL,size INTEGER NOT NULL,data BLOB NOT NULL,PRIMARY KEY(kind,id));
+CREATE INDEX IF NOT EXISTS entries_expiry ON entries(expires);
+CREATE INDEX IF NOT EXISTS entries_created ON entries(created,size);
+CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value BLOB NOT NULL);`
+
+// Open opens the state database. capacity bounds the number of records and
+// maxBytes bounds their total payload size; the oldest records go first.
+func Open(dir string, ttl time.Duration, capacity int, maxBytes int64) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
 	}
@@ -48,11 +64,11 @@ func Open(dir string, ttl time.Duration, capacity int) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 	fail := func(err error) (*Store, error) { db.Close(); return nil, err }
-	if _, err := db.Exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=DELETE;
-CREATE TABLE IF NOT EXISTS records(kind TEXT NOT NULL,id TEXT NOT NULL,data BLOB NOT NULL,expires INTEGER NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(kind,id));
-CREATE INDEX IF NOT EXISTS records_expiry ON records(expires);
-CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value BLOB NOT NULL);`); err != nil {
+	if _, err := db.Exec(schema); err != nil {
 		return fail(err)
+	}
+	if err := migrate(db); err != nil {
+		return fail(fmt.Errorf("migrate state: %w", err))
 	}
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -72,11 +88,32 @@ CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value BLOB NOT NULL);`)
 	if err != nil {
 		return fail(err)
 	}
-	s := &Store{db: db, aead: aead, ttl: ttl, capacity: capacity}
+	s := &Store{db: db, aead: aead, ttl: ttl, capacity: capacity, maxBytes: maxBytes}
 	if err := s.Prune(context.Background()); err != nil {
 		return fail(err)
 	}
 	return s, nil
+}
+
+// migrate moves rows from the first release's table, whose BLOB column came
+// before the columns used for eviction.
+func migrate(db *sql.DB) error {
+	var legacy int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='records'`).Scan(&legacy); err != nil || legacy == 0 {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO entries(kind,id,expires,created,size,data) SELECT kind,id,expires,created,length(data),data FROM records`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE records`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -98,7 +135,7 @@ func (s *Store) BindAccount(ctx context.Context, project string) error {
 	return nil
 }
 func (s *Store) Prune(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM records WHERE expires<=?`, time.Now().Unix())
+	_, err := s.db.ExecContext(ctx, `DELETE FROM entries WHERE expires<=?`, time.Now().Unix())
 	return err
 }
 
@@ -116,21 +153,47 @@ func (s *Store) Put(ctx context.Context, kind, id string, value any) error {
 	}
 	defer tx.Rollback()
 	now := time.Now()
-	if _, err = tx.ExecContext(ctx, `DELETE FROM records WHERE expires<=?`, now.Unix()); err != nil {
+	if _, err = tx.ExecContext(ctx, `DELETE FROM entries WHERE expires<=?`, now.Unix()); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO records(kind,id,data,expires,created) VALUES(?,?,?,?,?)`, kind, id, data, now.Add(s.ttl).Unix(), now.UnixNano()); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO entries(kind,id,expires,created,size,data) VALUES(?,?,?,?,?,?)`, kind, id, now.Add(s.ttl).Unix(), now.UnixNano(), len(data), data); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `DELETE FROM records WHERE rowid IN (SELECT rowid FROM records ORDER BY created DESC LIMIT -1 OFFSET ?)`, s.capacity); err != nil {
+	evict := s.dueForEviction(len(data))
+	if evict {
+		// Keep the newest records within both limits. The newest record always
+		// survives so a single large response is never discarded on write.
+		if _, err = tx.ExecContext(ctx, `DELETE FROM entries WHERE rowid IN (
+SELECT rowid FROM (SELECT rowid, ROW_NUMBER() OVER w AS n, SUM(size) OVER w AS total FROM entries WINDOW w AS (ORDER BY created DESC ROWS UNBOUNDED PRECEDING))
+WHERE n > 1 AND (n > ? OR total > ?))`, s.capacity, s.maxBytes); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if evict {
+		s.mu.Lock()
+		s.writes, s.writtenSize = 0, 0
+		s.mu.Unlock()
+	}
+	return nil
+}
+
+// dueForEviction amortizes the limit scan, which reads the whole created index.
+// Limits are therefore soft by at most a few dozen small records.
+func (s *Store) dueForEviction(size int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writes++
+	s.writtenSize += int64(size)
+	every := min(32, max(1, s.capacity/100))
+	return s.writes >= every || s.writtenSize*32 >= s.maxBytes
 }
 
 func (s *Store) Get(ctx context.Context, kind, id string, value any) error {
 	var data []byte
-	err := s.db.QueryRowContext(ctx, `SELECT data FROM records WHERE kind=? AND id=? AND expires>?`, kind, id, time.Now().Unix()).Scan(&data)
+	err := s.db.QueryRowContext(ctx, `SELECT data FROM entries WHERE kind=? AND id=? AND expires>?`, kind, id, time.Now().Unix()).Scan(&data)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
@@ -140,7 +203,7 @@ func (s *Store) Get(ctx context.Context, kind, id string, value any) error {
 	return json.Unmarshal(data, value)
 }
 func (s *Store) Delete(ctx context.Context, kind, id string) (bool, error) {
-	r, err := s.db.ExecContext(ctx, `DELETE FROM records WHERE kind=? AND id=? AND expires>?`, kind, id, time.Now().Unix())
+	r, err := s.db.ExecContext(ctx, `DELETE FROM entries WHERE kind=? AND id=? AND expires>?`, kind, id, time.Now().Unix())
 	if err != nil {
 		return false, err
 	}

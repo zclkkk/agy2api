@@ -51,7 +51,7 @@ func TestGenerateDoesNotTreatTruncationOrTrailingErrorAsSuccess(t *testing.T) {
 			}))
 			defer up.Close()
 			client := Client{HTTP: up.Client(), BaseURL: up.URL, UserAgent: "test", Auth: testToken{}}
-			err := client.Generate(context.Background(), "gemini-test", Request{}, false, func(Chunk) error { return nil })
+			err := client.Generate(context.Background(), "gemini-test", Request{}, KindAgent, func(Chunk) error { return nil })
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("error=%v, wantErr=%v", err, tc.wantErr)
 			}
@@ -77,10 +77,73 @@ func TestUpstreamErrorDoesNotLeakBody(t *testing.T) {
 	}
 }
 
-func TestUnknownNativeContentIsNotSilentlyDiscarded(t *testing.T) {
+func TestUnknownNativeFieldsAreReportedNotFatal(t *testing.T) {
 	var part Part
-	if err := json.Unmarshal([]byte(`{"newMediaType":{"data":"opaque"}}`), &part); err == nil {
-		t.Fatal("unknown upstream content accepted")
+	if err := json.Unmarshal([]byte(`{"text":"hi","videoMetadata":{"fps":1},"thought_signature":"sig"}`), &part); err != nil {
+		t.Fatal(err)
+	}
+	if part.Text != "hi" || part.Signature != "sig" || len(part.Unknown) != 1 || part.Unknown[0] != "videoMetadata" || part.Empty() {
+		t.Fatalf("%+v", part)
+	}
+	part = Part{}
+	if err := json.Unmarshal([]byte(`{"newMediaType":{"data":"opaque"}}`), &part); err != nil {
+		t.Fatal(err)
+	}
+	if !part.Empty() || len(part.Unknown) != 1 {
+		t.Fatalf("unknown-only part should be empty and reported: %+v", part)
+	}
+}
+
+type rotatingToken struct {
+	current     string
+	invalidated []string
+}
+
+func (r *rotatingToken) AccessToken(context.Context) (string, error) { return r.current, nil }
+func (r *rotatingToken) ProjectID() string                           { return "test-project" }
+func (r *rotatingToken) Invalidate(token string) {
+	r.invalidated = append(r.invalidated, token)
+	r.current = "fresh-token"
+}
+
+func TestRejectedTokenIsRefreshedOnce(t *testing.T) {
+	calls := 0
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Header.Get("Authorization") != "Bearer fresh-token" {
+			w.WriteHeader(401)
+			return
+		}
+		io.WriteString(w, `{"models":{"m":{}}}`)
+	}))
+	defer up.Close()
+	auth := &rotatingToken{current: "revoked-token"}
+	c := Client{HTTP: up.Client(), BaseURL: up.URL, Auth: auth}
+	if _, err := c.Models(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(auth.invalidated) != 1 || auth.invalidated[0] != "revoked-token" {
+		t.Fatalf("calls=%d invalidated=%v", calls, auth.invalidated)
+	}
+}
+
+func TestCatalogInfoUsesProviderAndModelLists(t *testing.T) {
+	catalog := Catalog{
+		Models:       map[string]json.RawMessage{"claude-x": json.RawMessage(`{"modelProvider":"MODEL_PROVIDER_ANTHROPIC","maxOutputTokens":64000}`), "painter": json.RawMessage(`{}`), "finder": json.RawMessage(`{"modelProvider":"MODEL_PROVIDER_GOOGLE"}`)},
+		SearchModels: []string{"finder"},
+		ImageModels:  []string{"painter"},
+	}
+	if info, ok := catalog.Info("claude-x"); !ok || !info.Claude() || info.MaxOutputTokens != 64000 || info.Image {
+		t.Fatalf("%+v", info)
+	}
+	if info, _ := catalog.Info("painter"); !info.Image || info.Search {
+		t.Fatalf("%+v", info)
+	}
+	if info, _ := catalog.Info("finder"); !info.Search || info.Claude() {
+		t.Fatalf("%+v", info)
+	}
+	if _, ok := catalog.Info("missing"); ok {
+		t.Fatal("unknown model reported as available")
 	}
 }
 
