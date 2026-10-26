@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
@@ -24,7 +23,6 @@ type ToolName struct {
 type ToolChoice struct {
 	Mode    string
 	Allowed []ToolName
-	Search  bool
 }
 
 func (in *RequestIntent) declare(t ToolName) (string, error) {
@@ -125,7 +123,6 @@ func (in *RequestIntent) selectTools() error {
 	if mode == "" {
 		mode = "auto"
 	}
-	search := in.Search
 	if choice.Allowed != nil {
 		allowed := map[string]bool{}
 		for _, tool := range choice.Allowed {
@@ -136,10 +133,6 @@ func (in *RequestIntent) selectTools() error {
 			}
 			allowed[name] = true
 		}
-		if choice.Search && !search {
-			return invalid("tool_choice", "selected search tool is not declared")
-		}
-		search = choice.Search
 		var filtered []ag.Tool
 		for _, tool := range in.Request.Tools {
 			var functions []ag.Function
@@ -152,24 +145,13 @@ func (in *RequestIntent) selectTools() error {
 				filtered = append(filtered, ag.Tool{Functions: functions})
 			}
 		}
-		if in.Search && choice.Search && hasFunctions(in.Request.Tools) && !hasFunctions(filtered) {
-			in.warn("function tools omitted: tool_choice selects web search, which Antigravity cannot combine with function tools")
-		}
 		in.Request.Tools = filtered
 	}
-	if mode == "none" {
-		search = false
-	}
-	if search && hasFunctions(in.Request.Tools) {
-		search = false
-		in.warn("web search ignored: Antigravity cannot combine it with function tools")
-	}
-	in.Search = search
 	in.Request.ToolConfig = nil
-	if mode == "required" && !search && !hasFunctions(in.Request.Tools) {
+	if mode == "required" && !hasFunctions(in.Request.Tools) {
 		return invalid("tool_choice", "required tool choice has no callable tools")
 	}
-	if !search && (hasFunctions(in.Request.Tools) || mode == "none") {
+	if hasFunctions(in.Request.Tools) || mode == "none" {
 		nativeMode := "VALIDATED"
 		if mode == "required" {
 			nativeMode = "ANY"
@@ -247,22 +229,7 @@ func setChoice(in *RequestIntent, choice, name string) error {
 		}
 		in.Choice = ToolChoice{Mode: "required", Allowed: []ToolName{{Name: name, Custom: choice == "custom"}}}
 	default:
-		in.warn("ignored tool_choice type %q", choice)
+		return invalid("tool_choice", "unsupported tool choice type: "+choice)
 	}
 	return nil
-}
-
-// ignoreSearchOptions reports the web search options a request set. Gemini
-// search accepts domain filters but does not apply them, so none are sent.
-func (in *RequestIntent) ignoreSearchOptions(options map[string]bool) {
-	var set []string
-	for name, ok := range options {
-		if ok {
-			set = append(set, name)
-		}
-	}
-	if len(set) > 0 {
-		sort.Strings(set)
-		in.warn("web search options ignored because Antigravity search does not apply them: %s", strings.Join(set, ", "))
-	}
 }

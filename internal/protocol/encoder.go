@@ -18,18 +18,11 @@ type wireState struct {
 	usage    ag.Usage
 }
 
-type searchPage struct{ URL, Title, Token string }
-type searchTrace struct {
-	Queries []string
-	Pages   []searchPage
-}
-
 type wireEncoder interface {
 	start(*wireState) error
 	open(*wireState, *outputBlock) error
 	delta(*wireState, *outputBlock, string) error
 	close(*wireState, *outputBlock) error
-	search(*wireState, searchTrace) error
 	result(*wireState, string, string, any) json.RawMessage
 	finish(*wireState, string, string, json.RawMessage) error
 	fail(*wireState, string) error

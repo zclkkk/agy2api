@@ -29,22 +29,21 @@ const (
 // PreparedRequest is a snapshot ready for the upstream. It has no tool-choice
 // intent or deferred replay references and is not mutated by output encoders.
 type PreparedRequest struct {
-	Format                Format
-	Model, Upstream, Kind string
-	Request               ag.Request
-	Stream, Store, Search bool
-	PreviousID            string
-	OriginalItems         []json.RawMessage
-	Metadata              json.RawMessage
-	Options               map[string]json.RawMessage
-	HideThinking          bool
-	Tools                 map[string]ToolName
-	Compact               string
-	Warnings              []string
-	HistorySystem         *ag.Content
+	Format        Format
+	Model         string
+	Request       ag.Request
+	Stream, Store bool
+	PreviousID    string
+	OriginalItems []json.RawMessage
+	Metadata      json.RawMessage
+	Options       map[string]json.RawMessage
+	HideThinking  bool
+	Tools         map[string]ToolName
+	Compact       string
+	Warnings      []string
+	HistorySystem *ag.Content
 }
 
-func (in PreparedRequest) UpstreamModel() string { return in.Upstream }
 func (in PreparedRequest) PublicTool(native string) ToolName {
 	if name, ok := in.Tools[native]; ok {
 		return name
@@ -52,19 +51,10 @@ func (in PreparedRequest) PublicTool(native string) ToolName {
 	return ToolName{Name: native}
 }
 
-// requestPlan is private working state. Routing never becomes a property of
-// the decoded client intent.
+// requestPlan is private working state, separate from decoded client intent.
 type requestPlan struct {
 	RequestIntent
-	upstream, kind string
-	toolRecords    map[string]SignatureRecord // replay records read while resolving history
-}
-
-func (in *requestPlan) UpstreamModel() string {
-	if in.upstream != "" {
-		return in.upstream
-	}
-	return in.Model
+	toolRecords map[string]SignatureRecord // replay records read while resolving history
 }
 
 // Planner is the only entry point from a decoded request to an upstream request.
@@ -78,8 +68,8 @@ type Planner struct {
 func (p Planner) Prepare(ctx context.Context, intent RequestIntent, catalog ag.Catalog, operation Operation, headers http.Header) (PreparedRequest, error) {
 	in := requestPlan{RequestIntent: cloneIntent(intent)}
 	finish := func() PreparedRequest {
-		return PreparedRequest{Format: in.Format, Model: in.Model, Upstream: in.UpstreamModel(), Kind: in.kind,
-			Request: in.Request, Stream: in.Stream, Store: in.Store, Search: in.Search,
+		return PreparedRequest{Format: in.Format, Model: in.Model,
+			Request: in.Request, Stream: in.Stream, Store: in.Store,
 			PreviousID: in.PreviousID, OriginalItems: in.OriginalItems, Metadata: in.Metadata, Options: in.Options,
 			HideThinking: in.HideThinking, Tools: in.Tools, Compact: in.Compact,
 			Warnings: in.Warnings, HistorySystem: in.HistorySystem}

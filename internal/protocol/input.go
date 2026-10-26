@@ -45,7 +45,6 @@ type RequestIntent struct {
 	Store         bool
 	PreviousID    string
 	OriginalItems []json.RawMessage
-	Search        bool
 	Choice        ToolChoice
 	Metadata      json.RawMessage
 	Options       map[string]json.RawMessage

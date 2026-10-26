@@ -12,10 +12,8 @@ import (
 
 var testCatalog = ag.Catalog{
 	Models: map[string]json.RawMessage{
-		"gemini-test":   json.RawMessage(`{"minThinkingBudget":128}`),
-		"gemini-search": json.RawMessage(`{}`),
+		"gemini-test": json.RawMessage(`{"minThinkingBudget":128}`),
 	},
-	SearchModels: []string{"gemini-search"},
 }
 
 // A trimmed copy of the request shape Claude Code 2.1 sends.
@@ -78,7 +76,7 @@ func TestClaudeCodeRequestShapeIsAccepted(t *testing.T) {
 	}
 }
 
-// A trimmed copy of the request shape Codex CLI 0.164 sends.
+// A trimmed Codex CLI 0.164 request with hosted web search disabled.
 const codexRequest = `{
  "model":"gemini-test","stream":true,"store":false,"parallel_tool_calls":false,"tool_choice":"auto",
  "include":["reasoning.encrypted_content"],"prompt_cache_key":"k","client_metadata":{"session_id":"s"},
@@ -87,8 +85,7 @@ const codexRequest = `{
  "tools":[
   {"type":"function","name":"exec_command","strict":false,"parameters":{"type":"object","properties":{"cmd":{"type":"string"}},"required":["cmd"],"additionalProperties":false}},
   {"type":"namespace","name":"multi_agent_v1","description":"agents","tools":[{"type":"function","name":"close_agent","strict":false,"parameters":{"type":"object","properties":{"target":{"type":"string"}}}}]},
-  {"type":"custom","name":"apply_patch","description":"patch","format":{"type":"grammar","syntax":"lark","definition":"start: line+"}},
-  {"type":"web_search","external_web_access":false}
+  {"type":"custom","name":"apply_patch","description":"patch","format":{"type":"grammar","syntax":"lark","definition":"start: line+"}}
  ]
 }`
 
@@ -98,14 +95,8 @@ func TestCodexRequestShapeIsAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if in.Search || in.Kind != ag.KindAgent {
-		t.Fatal("web search should be dropped next to function tools")
-	}
 	names := map[string]ToolName{}
 	for _, tool := range in.Request.Tools {
-		if tool.GoogleSearch != nil {
-			t.Fatal("search tool sent with functions")
-		}
 		for _, f := range tool.Functions {
 			names[f.Name] = in.PublicTool(f.Name)
 		}
@@ -311,7 +302,7 @@ func TestFinishReasonsAndUnknownParts(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	run := func(chunk ag.Chunk) (*Renderer, error) {
-		r := NewRenderer(PreparedRequest{Format: Messages, Model: "gemini-test", Upstream: "gemini-test"}, s, nil)
+		r := NewRenderer(PreparedRequest{Format: Messages, Model: "gemini-test"}, s, nil)
 		if err := r.Add(ctx, chunk); err != nil {
 			return r, err
 		}
@@ -340,15 +331,7 @@ func TestFinishReasonsAndUnknownParts(t *testing.T) {
 	}
 }
 
-func TestSearchRoutingAndToolNames(t *testing.T) {
-	d := testPipeline{State: testStore(t)}
-	in, err := d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"news"}],"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":5}]}`), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if in.UpstreamModel() != "gemini-search" || in.Kind != ag.KindSearch || in.Request.Tools[0].GoogleSearch == nil {
-		t.Fatalf("search not routed: %+v", in)
-	}
+func TestToolNames(t *testing.T) {
 	for public, want := range map[string]string{"Bash": "Bash", "mcp.srv:do-it": "mcp.srv:do-it", "agy_read": "agy_read", "a b": "a_b_", "1tool": "_1tool_", strings.Repeat("x", 130): strings.Repeat("x", 121) + "_"} {
 		got := nativeName(public)
 		if !strings.HasPrefix(got, want) || len(got) > 128 || invalidNameChars.MatchString(got) || (want == public) != (got == public) {
@@ -382,143 +365,5 @@ func TestToolCallingModes(t *testing.T) {
 	if got := mode(`{"model":"gemini-test","input":"x"}`); got != "" {
 		t.Errorf("no tools: mode %q", got)
 	}
-	if got := mode(`{"model":"gemini-test","input":"x","tools":[{"type":"web_search"}]}`); got != "" {
-		t.Errorf("search only: mode %q", got)
-	}
-}
 
-func TestIgnoredSearchOptionsAreReported(t *testing.T) {
-	d := Decoder{}
-	in, err := d.Messages([]byte(`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"x"}],
-		"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":3,"allowed_domains":["python.org"],"user_location":{"type":"approximate","country":"US"}}]}`), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(in.Warnings) != 1 || !strings.Contains(in.Warnings[0], "allowed_domains, user_location") {
-		t.Fatalf("warnings: %v", in.Warnings)
-	}
-	in, err = d.Responses([]byte(`{"model":"gemini-test","input":"x","tools":[{"type":"web_search","filters":{"allowed_domains":["python.org"]}}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(in.Warnings) != 1 || !strings.Contains(in.Warnings[0], "filters") {
-		t.Fatalf("warnings: %v", in.Warnings)
-	}
-	in, _ = d.Responses([]byte(`{"model":"gemini-test","input":"x","tools":[{"type":"web_search"}]}`))
-	if len(in.Warnings) != 0 {
-		t.Fatalf("plain search should not warn: %v", in.Warnings)
-	}
-}
-
-func TestForcedSearchChoiceIsAccepted(t *testing.T) {
-	d := testPipeline{State: testStore(t)}
-	in, err := d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"news"}],
-		"tools":[{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"tool","name":"web_search"}}`), false)
-	if err != nil || !in.Search || in.Request.ToolConfig != nil {
-		t.Fatalf("Messages forced search: %v %+v", err, in.Request.ToolConfig)
-	}
-	if _, err := d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"news"}],
-		"tools":[{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"tool","name":"missing"}}`), false); err == nil {
-		t.Fatal("choosing an undeclared tool must still fail")
-	}
-	in, err = d.Responses(context.Background(), []byte(`{"model":"gemini-test","input":"news","tools":[{"type":"web_search"}],"tool_choice":{"type":"web_search"}}`))
-	if err != nil || !in.Search || strings.Contains(strings.Join(in.Warnings, ";"), "ignored tool_choice") {
-		t.Fatalf("Responses forced search: %v %v", err, in.Warnings)
-	}
-}
-
-func TestMessagesSearchReturnsResultBlocks(t *testing.T) {
-	s := testStore(t)
-	ctx := context.Background()
-	var grounding ag.Grounding
-	if err := json.Unmarshal([]byte(`{"webSearchQueries":["latest python"],"groundingChunks":[{"web":{"uri":"https://www.python.org/downloads/","title":"python.org"}},{"web":{"uri":"https://www.python.org/downloads/","title":"python.org"}},{"web":{"uri":"https://docs.python.org/3/","title":"docs.python.org"}}],
-		"groundingSupports":[{"segment":{"startIndex":0,"endIndex":6,"text":"Python"},"groundingChunkIndices":[0]}]}`), &grounding); err != nil {
-		t.Fatal(err)
-	}
-	var events []string
-	var starts []string
-	r := NewRenderer(PreparedRequest{Format: Messages, Model: "gemini-test", Upstream: "gemini-test", Search: true}, s, func(name string, v map[string]any) error {
-		events = append(events, name)
-		if block, ok := v["content_block"].(map[string]any); ok {
-			starts = append(starts, block["type"].(string))
-		}
-		return nil
-	})
-	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "Python 3.15 is current."}}, Finish: "STOP", Grounding: &grounding}); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Finish(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(starts, ",") != "text,server_tool_use,web_search_tool_result" || events[len(events)-1] != "message_stop" {
-		t.Fatalf("blocks %v events %v", starts, events)
-	}
-	var out struct {
-		Content []struct {
-			Type      string          `json:"type"`
-			ID        string          `json:"id"`
-			ToolUseID string          `json:"tool_use_id"`
-			Input     json.RawMessage `json:"input"`
-			Content   []struct {
-				Type, URL, Title, EncryptedContent string
-			} `json:"content"`
-		} `json:"content"`
-		Stop string `json:"stop_reason"`
-	}
-	if err := json.Unmarshal(r.Result, &out); err != nil {
-		t.Fatal(err)
-	}
-	use, result := out.Content[1], out.Content[2]
-	if use.Type != "server_tool_use" || string(use.Input) != `{"query":"latest python"}` || result.ToolUseID != use.ID || out.Stop != "end_turn" {
-		t.Fatalf("search blocks: %s", r.Result)
-	}
-	if len(result.Content) != 2 || result.Content[0].URL != "https://www.python.org/downloads/" || result.Content[1].Title != "docs.python.org" {
-		t.Fatalf("results should be the distinct cited pages: %+v", result.Content)
-	}
-	// Without cited pages there is nothing to report.
-	r = NewRenderer(PreparedRequest{Format: Messages, Model: "gemini-test", Upstream: "gemini-test", Search: true}, s, nil)
-	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "no sources"}}, Finish: "STOP", Grounding: &ag.Grounding{Queries: []string{"q"}}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Finish(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(r.Result), "server_tool_use") {
-		t.Fatalf("empty search reported blocks: %s", r.Result)
-	}
-}
-
-func TestChosenSearchDropsFunctionTools(t *testing.T) {
-	d := testPipeline{State: testStore(t)}
-	prepared := func(name, body string) PreparedRequest {
-		t.Helper()
-		var in PreparedRequest
-		var err error
-		if name == "messages" {
-			in, err = d.Messages(context.Background(), []byte(body), false)
-		} else {
-			in, err = d.Responses(context.Background(), []byte(body))
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		return in
-	}
-	for name, body := range map[string]string{
-		"messages":  `{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"news"}],"tools":[{"type":"web_search_20250305","name":"web_search"},{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"web_search"}}`,
-		"responses": `{"model":"gemini-test","input":"news","tools":[{"type":"web_search"},{"type":"function","name":"lookup","parameters":{"type":"object"}}],"tool_choice":{"type":"web_search"}}`,
-	} {
-		in := prepared(name, body)
-		if !in.Search || in.Kind != ag.KindSearch || in.Request.ToolConfig != nil || len(in.Request.Tools) != 1 || in.Request.Tools[0].GoogleSearch == nil {
-			t.Errorf("%s: chosen search must replace the functions: %+v", name, in.Request.Tools)
-		}
-		if len(in.Warnings) == 0 || !strings.Contains(in.Warnings[0], "function tools omitted") {
-			t.Errorf("%s: warnings %v", name, in.Warnings)
-		}
-	}
-	// Without an explicit choice the functions win, as Codex expects.
-	in := prepared("responses", `{"model":"gemini-test","input":"news","tools":[{"type":"web_search"},{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`)
-	if in.Search || !hasFunctions(in.Request.Tools) {
-		t.Fatalf("auto choice must keep the functions: %+v", in.Request.Tools)
-	}
 }

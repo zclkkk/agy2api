@@ -10,7 +10,7 @@ import (
 )
 
 // testPipeline exercises the same decode/plan boundary as HTTP requests.
-// A catalog and headers may be supplied for routing and session tests.
+// A catalog and headers may be supplied for model and session tests.
 type testPipeline struct {
 	State   *state.Store
 	catalog *ag.Catalog

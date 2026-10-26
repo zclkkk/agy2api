@@ -8,7 +8,6 @@ import argparse
 import base64
 import concurrent.futures
 import datetime
-import hashlib
 import io
 import json
 import os
@@ -680,52 +679,6 @@ class Live:
         assert "google" in self.text(r).lower()
         return self.details(r)
 
-    def search(self, proto):
-        model = "gemini-3.5-flash-lite"
-        prompt = "Search the web for the official Python documentation for the json module. Give its URL and one sentence describing json.loads."
-        tools = (
-            [{"type": "web_search"}]
-            if proto == "responses"
-            else [{"type": "web_search_20250305", "name": "web_search"}]
-        )
-        r = self.request(proto, model, prompt, tools=tools)
-        if proto == "responses":
-            citations = [
-                a
-                for item in r.output
-                if item.type == "message"
-                for p in item.content
-                if p.type == "output_text"
-                for a in p.annotations
-            ]
-        else:
-            citations = [
-                c for b in r.content if b.type == "text" for c in (b.citations or [])
-            ]
-        assert citations, "no search citations returned"
-        type(r).model_validate(r.model_dump())
-        if proto == "messages":
-            # Anthropic clients read source links from the search result block.
-            results = [
-                item.url
-                for b in r.content
-                if b.type == "web_search_tool_result"
-                for item in b.content
-            ]
-            assert results and all(
-                "grounding-api-redirect" not in u for u in results
-            ), f"search result block missing or unresolved: {results}"
-        # Search redirect links are replaced by the pages they point to.
-        urls = [c.url for c in citations]
-        resolved = [u for u in urls if "grounding-api-redirect" not in u]
-        assert resolved, f"citation links were not resolved: {urls}"
-        return dict(
-            self.details(r),
-            citation_count=len(citations),
-            resolved_links=f"{len(resolved)}/{len(urls)}",
-            sample_url=resolved[0],
-        )
-
     def count(self, proto, model):
         if proto == "messages":
             r = self.a.messages.count_tokens(
@@ -787,100 +740,6 @@ class Live:
         else:
             assert r.stop_reason == "max_tokens", "output limit not reflected"
         return self.details(r)
-
-    def image_generation(self):
-        r = self.o.responses.create(
-            model="gemini-3.1-flash-image",
-            input="Generate a simple image of a red circle on a plain white background.",
-            store=False,
-            timeout=180,
-        )
-        images = [item for item in r.output if item.type == "image_generation_call"]
-        assert images and images[0].result, "no generated image returned"
-        data = base64.b64decode(images[0].result)
-        assert len(data) > 100
-        type(r).model_validate(r.model_dump())
-        return {
-            "image_count": len(images),
-            "image_bytes": len(data),
-            "image_sha256": hashlib.sha256(data).hexdigest(),
-            "usage": r.usage.model_dump(),
-        }
-
-    def image_edit_roundtrip(self):
-        def generate(**kwargs):
-            for attempt in range(3):
-                try:
-                    return self.o.responses.create(**kwargs)
-                except openai.RateLimitError as error:
-                    delay = error.response.headers.get("retry-after")
-                    delay = float(delay) if delay and delay.isdigit() else 60
-                    if attempt == 2 or delay > 180:
-                        raise
-                    print(
-                        json.dumps(
-                            {
-                                "name": "media/image_edit_roundtrip",
-                                "waiting_for_upstream_seconds": delay,
-                            }
-                        ),
-                        flush=True,
-                    )
-                    remaining = max(delay, 1)
-                    while remaining > 0:
-                        step = min(remaining, 30)
-                        time.sleep(step)
-                        remaining -= step
-
-        original = (
-            "Generate a simple image of one red circle on a plain white background."
-        )
-        first = generate(
-            model="gemini-3.1-flash-image", input=original, store=False, timeout=180
-        )
-        assert any(v.type == "image_generation_call" for v in first.output)
-        history = (
-            [{"role": "user", "content": original}]
-            + [v.model_dump(exclude_none=True) for v in first.output]
-            + [
-                {
-                    "role": "user",
-                    "content": "Edit that image: change the circle to blue and keep the white background.",
-                }
-            ]
-        )
-        second = generate(
-            model="gemini-3.1-flash-image", input=history, store=False, timeout=180
-        )
-        images = [v for v in second.output if v.type == "image_generation_call"]
-        assert images and images[0].result
-        checked = self.o.responses.create(
-            model="gemini-3-flash",
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": "What color is the circle in this image? Answer in English.",
-                        },
-                        {
-                            "type": "input_image",
-                            "image_url": "data:image/png;base64," + images[0].result,
-                        },
-                    ],
-                }
-            ],
-            store=False,
-        )
-        assert "blue" in checked.output_text.lower(), (
-            "edited image did not reflect the requested change"
-        )
-        return {
-            "image_edit_roundtrip": True,
-            "image_bytes": len(base64.b64decode(images[0].result)),
-            "vision_check": checked.output_text[:160],
-        }
 
     def cancellation(self):
         with self.o.responses.stream(
@@ -1051,46 +910,6 @@ class Live:
             )
         )
         return dict(self.details(r), file_bytes=len(data))
-
-    def search_stream(self, proto):
-        prompt = "搜索 Python json 模块的官方文档，用中文介绍 json.loads，并引用来源。"
-        if proto == "responses":
-            with self.o.responses.stream(
-                model="gemini-3.5-flash-lite",
-                input=prompt,
-                tools=[{"type": "web_search"}],
-                store=False,
-            ) as stream:
-                events = list(stream)
-                r = stream.get_final_response()
-            count = 0
-            for item in r.output:
-                if item.type != "message":
-                    continue
-                for part in item.content:
-                    if part.type != "output_text":
-                        continue
-                    for citation in part.annotations:
-                        assert (
-                            0
-                            <= citation.start_index
-                            <= citation.end_index
-                            <= len(part.text)
-                        )
-                        count += 1
-        else:
-            with self.a.messages.stream(
-                model="gemini-3.5-flash-lite",
-                max_tokens=4096,
-                messages=[{"role": "user", "content": prompt}],
-                tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            ) as stream:
-                events = list(stream)
-                r = stream.get_final_message()
-            count = sum(len(b.citations or []) for b in r.content if b.type == "text")
-        type(r).model_validate(r.model_dump())
-        assert count > 0
-        return dict(self.details(r), citations=count, events=len(events))
 
     def schema_tool(self, proto):
         schema = {
@@ -1469,7 +1288,6 @@ class Live:
                     "definition": "start: /.+/",
                 },
             },
-            {"type": "web_search", "external_web_access": False},
         ]
         history = [
             {
@@ -1726,21 +1544,6 @@ class Live:
                 }
         raise AssertionError("no version check logged")
 
-    def search_routed(self):
-        # gemini-3-flash is not a search model; the search goes to one that is.
-        r = self.request(
-            "messages",
-            "gemini-3-flash",
-            "Search the web: what is the latest stable Python release and when was it released? Cite your sources.",
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-        )
-        citations = [
-            c for b in r.content if b.type == "text" for c in (b.citations or [])
-        ]
-        assert citations, "no citations after routing search"
-        assert self.logged("web search routed"), "search was not routed"
-        return dict(self.details(r), citation_count=len(citations))
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -1828,14 +1631,9 @@ def main():
                             lambda m=model: suite.stop_sequence(m),
                         )
                     )
-            cases.append((f"{proto}/search", lambda p=proto: suite.search(p)))
             cases += [
                 (f"{proto}/system_priority", lambda p=proto: suite.system(p)),
                 (f"{proto}/long_context", lambda p=proto: suite.long_context(p)),
-                (
-                    f"{proto}/search_stream_unicode",
-                    lambda p=proto: suite.search_stream(p),
-                ),
                 (f"{proto}/schema_tool_fields", lambda p=proto: suite.schema_tool(p)),
             ]
             for model in ["gemini-3.8-flash-high", "gemini-2.5-flash"]:
@@ -1851,7 +1649,6 @@ def main():
                 ]
         cases += [
             ("media/https_image", suite.remote_image),
-            ("media/image_generation", suite.image_generation),
             ("http/cancellation", suite.cancellation),
             ("http/negative", suite.negative),
         ]
@@ -1880,7 +1677,6 @@ def main():
         cases += [
             ("compat/model_switch", suite.model_switch),
             ("catalog/gemini_only", suite.gemini_only),
-            ("messages/search_routed", suite.search_routed),
             ("compat/trailing_reasoning", suite.trailing_reasoning),
             ("upstream/user_agent", suite.user_agent),
         ]
@@ -1908,7 +1704,6 @@ def main():
             ("media/video_file", lambda: suite.av_file("video")),
             ("state/reasoning_tamper", suite.reasoning_tamper),
         ]
-        cases.append(("media/image_edit_roundtrip", suite.image_edit_roundtrip))
         selected = [
             (name, fn)
             for name, fn in cases

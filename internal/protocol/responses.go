@@ -58,27 +58,21 @@ type ResponseTool struct {
 		Definition string `json:"definition,omitempty"`
 	} `json:"format,omitempty"`
 	Tools []ResponseTool `json:"tools,omitempty"`
-	// Web search options.
-	Filters      json.RawMessage `json:"filters,omitempty"`
-	UserLocation json.RawMessage `json:"user_location,omitempty"`
 }
 type ResponseItem struct {
-	Type         string          `json:"type,omitempty"`
-	Role         string          `json:"role,omitempty"`
-	Content      json.RawMessage `json:"content,omitempty"`
-	ID           string          `json:"id,omitempty"`
-	CallID       string          `json:"call_id,omitempty"`
-	Name         string          `json:"name,omitempty"`
-	Namespace    string          `json:"namespace,omitempty"`
-	Arguments    string          `json:"arguments,omitempty"`
-	Input        string          `json:"input,omitempty"`
-	Output       json.RawMessage `json:"output,omitempty"`
-	Encrypted    string          `json:"encrypted_content,omitempty"`
-	Summary      json.RawMessage `json:"summary,omitempty"`
-	Status       string          `json:"status,omitempty"`
-	Result       string          `json:"result,omitempty"`
-	OutputFormat string          `json:"output_format,omitempty"`
-	Action       json.RawMessage `json:"action,omitempty"`
+	Type      string          `json:"type,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	CallID    string          `json:"call_id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Namespace string          `json:"namespace,omitempty"`
+	Arguments string          `json:"arguments,omitempty"`
+	Input     string          `json:"input,omitempty"`
+	Output    json.RawMessage `json:"output,omitempty"`
+	Encrypted string          `json:"encrypted_content,omitempty"`
+	Summary   json.RawMessage `json:"summary,omitempty"`
+	Status    string          `json:"status,omitempty"`
 }
 
 func (d Decoder) Responses(data []byte) (RequestIntent, error) {
@@ -170,11 +164,6 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 			appendContent(&in.Request, "user", []ag.Part{p})
 		case "reasoning":
 			in.deferReplay(v.Encrypted, "")
-		case "image_generation_call":
-			in.deferImage(v.ID, v.Result)
-		case "web_search_call":
-			// A server-side tool trace. Its answer and citations are carried by
-			// adjacent message items; it is not a client-executed function call.
 		case "compaction", "compaction_summary":
 			summary, ok := openCompaction(v.Encrypted)
 			if !ok {
@@ -264,9 +253,6 @@ func declareResponseTools(in *RequestIntent, tools []ResponseTool, namespace str
 			if err := declareResponseTools(in, t.Tools, t.Name); err != nil {
 				return err
 			}
-		case "web_search", "web_search_preview", "web_search_2025_08_26", "web_search_preview_2025_03_11":
-			in.Search = true
-			in.ignoreSearchOptions(map[string]bool{"filters": present(t.Filters), "user_location": present(t.UserLocation)})
 		default:
 			return unsupported("tool type " + t.Type)
 		}
@@ -306,15 +292,10 @@ func responseChoice(in *RequestIntent, value json.RawMessage) error {
 			switch tool.Type {
 			case "function", "custom":
 				in.Choice.Allowed = append(in.Choice.Allowed, ToolName{Name: tool.Name, Namespace: tool.Namespace, Custom: tool.Type == "custom"})
-			case "web_search", "web_search_preview", "web_search_2025_08_26", "web_search_preview_2025_03_11":
-				in.Choice.Search = true
 			default:
 				return unsupported("allowed tool type " + tool.Type)
 			}
 		}
-		return nil
-	case "web_search", "web_search_preview", "web_search_2025_08_26", "web_search_preview_2025_03_11":
-		in.Choice = ToolChoice{Mode: "required", Allowed: []ToolName{}, Search: true}
 		return nil
 	}
 	return setChoice(in, t.Type, t.Name)

@@ -48,15 +48,11 @@ type MessageTool struct {
 	Description  string          `json:"description,omitempty"`
 	InputSchema  json.RawMessage `json:"input_schema,omitempty"`
 	DeferLoading bool            `json:"defer_loading,omitempty"`
-	// Web search options.
-	AllowedDomains []string        `json:"allowed_domains,omitempty"`
-	BlockedDomains []string        `json:"blocked_domains,omitempty"`
-	UserLocation   json.RawMessage `json:"user_location,omitempty"`
 }
 
 // Assistant blocks produced by Anthropic server tools. They carry no state this
 // bridge can replay, so they are dropped from history.
-var serverToolBlocks = map[string]bool{"server_tool_use": true, "web_search_tool_result": true, "web_fetch_tool_result": true,
+var serverToolBlocks = map[string]bool{"web_fetch_tool_result": true,
 	"code_execution_tool_result": true, "bash_code_execution_tool_result": true, "text_editor_code_execution_tool_result": true,
 	"mcp_tool_use": true, "mcp_tool_result": true, "container_upload": true, "redacted_thinking": true}
 
@@ -155,14 +151,7 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 			}
 		}
 	}
-	searchTools := map[string]bool{}
 	for _, t := range r.Tools {
-		if strings.HasPrefix(t.Type, "web_search_") {
-			in.Search = true
-			searchTools[t.Name] = true
-			in.ignoreSearchOptions(map[string]bool{"allowed_domains": len(t.AllowedDomains) > 0, "blocked_domains": len(t.BlockedDomains) > 0, "user_location": present(t.UserLocation)})
-			continue
-		}
 		if t.Type != "" && t.Type != "custom" {
 			return in, unsupported("tool type " + t.Type)
 		}
@@ -192,11 +181,7 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 		if err := json.Unmarshal(r.ToolChoice, &choice); err != nil {
 			return in, invalid("tool_choice", "tool_choice must be an object")
 		}
-		// Choosing the search tool needs no function config: a search request
-		// is sent with Google Search as its tool.
-		if choice.Type == "tool" && searchTools[choice.Name] {
-			in.Choice = ToolChoice{Mode: "required", Allowed: []ToolName{}, Search: true}
-		} else if err := setChoice(&in, choice.Type, choice.Name); err != nil {
+		if err := setChoice(&in, choice.Type, choice.Name); err != nil {
 			return in, err
 		}
 	}

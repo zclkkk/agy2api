@@ -62,7 +62,6 @@ func summaryPart(summary string) ag.Part {
 // Tools stay declared because the history may contain calls to them, but the
 // model may not call any.
 func (in *RequestIntent) disableTools() {
-	in.Search = false
 	in.Request.Generation.MIMEType = ""
 	in.Request.Generation.Schema = nil
 	in.Choice = ToolChoice{Mode: "none"}

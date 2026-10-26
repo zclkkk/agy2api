@@ -3,8 +3,6 @@ package protocol
 import (
 	"encoding/json"
 	"errors"
-
-	ag "github.com/zclkkk/agy2api/internal/antigravity"
 )
 
 type messagesEncoder struct{}
@@ -23,7 +21,7 @@ func (messagesEncoder) open(r *wireState, b *outputBlock) error {
 	case "tool":
 		block = map[string]any{"type": "tool_use", "id": b.CallID, "name": b.Public.Name, "input": map[string]any{}}
 	default:
-		return errors.New("generated images require the Responses endpoint")
+		return errors.New("unsupported output block type")
 	}
 	return r.event("content_block_start", map[string]any{"index": len(r.items), "content_block": block})
 }
@@ -50,14 +48,6 @@ func (messagesEncoder) close(r *wireState, b *outputBlock) error {
 	switch b.Kind {
 	case "text":
 		item = map[string]any{"type": "text", "text": b.Text}
-		if len(b.Citations) > 0 {
-			item["citations"] = b.Citations
-			for _, citation := range b.Citations {
-				if err := r.event("content_block_delta", map[string]any{"index": index, "delta": map[string]any{"type": "citations_delta", "citation": citation}}); err != nil {
-					return err
-				}
-			}
-		}
 	case "thinking":
 		visible := b.Text
 		if r.input.HideThinking {
@@ -74,41 +64,6 @@ func (messagesEncoder) close(r *wireState, b *outputBlock) error {
 		return err
 	}
 	r.items = append(r.items, item)
-	return nil
-}
-
-func (messagesEncoder) search(r *wireState, trace searchTrace) error {
-	if len(trace.Pages) == 0 {
-		return nil
-	}
-	query := ""
-	if len(trace.Queries) > 0 {
-		query = trace.Queries[0]
-	}
-	results := []any{}
-	for _, page := range trace.Pages {
-		results = append(results, map[string]any{"type": "web_search_result", "url": page.URL, "title": page.Title, "encrypted_content": page.Token, "page_age": nil})
-	}
-	id := ag.ID("srvtoolu_agy_")
-	index := len(r.items)
-	use := map[string]any{"type": "server_tool_use", "id": id, "name": "web_search", "input": map[string]any{"query": query}}
-	if err := r.event("content_block_start", map[string]any{"index": index, "content_block": map[string]any{"type": "server_tool_use", "id": id, "name": "web_search", "input": map[string]any{}}}); err != nil {
-		return err
-	}
-	if err := r.event("content_block_delta", map[string]any{"index": index, "delta": map[string]any{"type": "input_json_delta", "partial_json": string(raw(use["input"]))}}); err != nil {
-		return err
-	}
-	if err := r.event("content_block_stop", map[string]any{"index": index}); err != nil {
-		return err
-	}
-	result := map[string]any{"type": "web_search_tool_result", "tool_use_id": id, "content": results}
-	if err := r.event("content_block_start", map[string]any{"index": index + 1, "content_block": result}); err != nil {
-		return err
-	}
-	if err := r.event("content_block_stop", map[string]any{"index": index + 1}); err != nil {
-		return err
-	}
-	r.items = append(r.items, use, result)
 	return nil
 }
 

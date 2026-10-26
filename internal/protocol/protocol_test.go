@@ -164,57 +164,6 @@ func TestStoredResponsesDoNotInheritInstructionsOrIncludeOwnOutputAsInput(t *tes
 	}
 }
 
-func TestGeneratedImageReplayAndUnicodeCitations(t *testing.T) {
-	s := testStore(t)
-	ctx := context.Background()
-	d := testPipeline{State: s}
-	in, err := d.Responses(ctx, []byte(`{"model":"gemini-image","input":"draw","store":false}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := NewRenderer(in, s, nil)
-	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{InlineData: &ag.Blob{MIMEType: "image/png", Data: "aGVsbG8="}, Signature: "image-signature"}}, Finish: "STOP"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Finish(ctx); err != nil {
-		t.Fatal(err)
-	}
-	var output struct {
-		Output []json.RawMessage `json:"output"`
-	}
-	_ = json.Unmarshal(r.Result, &output)
-	items := []json.RawMessage{raw(map[string]string{"role": "user", "content": "draw"})}
-	items = append(items, output.Output...)
-	items = append(items, raw(map[string]string{"role": "user", "content": "edit"}))
-	next, err := d.Responses(ctx, raw(map[string]any{"model": "gemini-image", "input": items}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if next.Request.Contents[1].Parts[0].Signature != "image-signature" {
-		t.Fatal("image signature lost")
-	}
-	var grounding ag.Grounding
-	if err := json.Unmarshal([]byte(`{"groundingChunks":[{"web":{"uri":"https://example.com/","title":"Source"}}],"groundingSupports":[{"segment":{"startIndex":0,"endIndex":6,"text":"你好"},"groundingChunkIndices":[0]}]}`), &grounding); err != nil {
-		t.Fatal(err)
-	}
-	r = NewRenderer(PreparedRequest{Format: Responses, Model: "gemini-test", Upstream: "gemini-test"}, s, nil)
-	r.grounding = &grounding
-	annotations := r.annotations("你好 world")
-	if len(annotations) != 1 {
-		t.Fatal(annotations)
-	}
-	if annotations[0].(map[string]any)["end_index"] != 2 {
-		t.Fatal("byte offsets exposed as character indices")
-	}
-	citations, err := r.messageCitations("你好 world")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if citations[0].(map[string]any)["cited_text"] != "你好" {
-		t.Fatal(citations)
-	}
-}
-
 func TestParallelResultsFollowCallOrder(t *testing.T) {
 	contents := []ag.Content{
 		{Role: "user", Parts: []ag.Part{{Text: "start"}}},

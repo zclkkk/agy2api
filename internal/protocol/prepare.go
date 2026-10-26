@@ -24,37 +24,18 @@ func applyEffort(in *RequestIntent, value string) {
 	}
 }
 
-// plan applies model-specific request shaping: it checks the model, routes
-// web search, picks the request type, converts thinking intent and rewrites
-// schemas into the subset Antigravity accepts.
+// plan checks the model, converts thinking intent and rewrites schemas into
+// the subset Antigravity accepts.
 func (in *requestPlan) plan(catalog ag.Catalog) error {
 	info, ok := catalog.Info(in.Model)
 	if !ok {
 		return invalid("model", "model is not available; agy2api serves the Gemini models listed by /v1/models")
 	}
-	in.kind = ag.KindAgent
 	if info.Image {
-		in.kind = ag.KindImage
+		return invalid("model", "image generation models are not supported by the Responses or Messages endpoints")
 	}
 	if err := in.selectTools(); err != nil {
 		return err
-	}
-	if in.Search {
-		if !info.Search {
-			for _, model := range catalog.SearchModels {
-				if routed, ok := catalog.Info(model); ok {
-					in.upstream, info = model, routed
-					break
-				}
-			}
-			if in.upstream == "" {
-				return invalid("tools", "web search is not available to this account")
-			}
-			in.warn("web search routed to %s", in.upstream)
-		}
-		in.kind = ag.KindSearch
-		in.Request.ToolConfig = nil
-		in.Request.Tools = []ag.Tool{{GoogleSearch: raw(map[string]any{})}}
 	}
 	in.applyThinking(info)
 	for i := range in.Request.Tools {

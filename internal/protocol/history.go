@@ -2,10 +2,8 @@ package protocol
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"net/http"
 	"strings"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
@@ -17,7 +15,6 @@ const recordVersion = 2
 type StoredResponse struct {
 	Version       int                 `json:"version,omitempty"`
 	Model         string              `json:"model"`
-	UpstreamModel string              `json:"upstream_model,omitempty"`
 	HistorySystem *ag.Content         `json:"history_system,omitempty"`
 	Contents      []ag.Content        `json:"contents"`
 	Response      json.RawMessage     `json:"response"`
@@ -60,23 +57,14 @@ func (s replayStore) open(model, token string) (Replay, error) {
 }
 
 type replayReference struct {
-	Content, Part           int
-	Token, Visible, ImageID string
+	Content, Part  int
+	Token, Visible string
 }
 
 func (in *RequestIntent) deferReplay(token, visible string) {
 	appendContent(&in.Request, "model", []ag.Part{{}})
 	i := len(in.Request.Contents) - 1
 	in.references = append(in.references, replayReference{Content: i, Part: len(in.Request.Contents[i].Parts) - 1, Token: token, Visible: visible})
-}
-
-func (in *RequestIntent) deferImage(id, data string) {
-	head := data[:min(len(data), 1024)]
-	head = head[:len(head)/4*4]
-	sample, _ := base64.StdEncoding.DecodeString(head)
-	appendContent(&in.Request, "model", []ag.Part{{InlineData: &ag.Blob{MIMEType: http.DetectContentType(sample), Data: data}}})
-	i := len(in.Request.Contents) - 1
-	in.references = append(in.references, replayReference{Content: i, Part: len(in.Request.Contents[i].Parts) - 1, ImageID: id})
 }
 
 func (in *requestPlan) prependHistory(previous StoredResponse) error {
@@ -90,9 +78,9 @@ func (in *requestPlan) prependHistory(previous StoredResponse) error {
 		}
 	}
 	contents := cloneContents(previous.Contents)
-	if previous.UpstreamModel != in.UpstreamModel() {
+	if previous.Model != in.Model {
 		contents = stripSignatures(contents)
-		in.warn("upstream model changed; prior reasoning was dropped")
+		in.warn("model changed; prior reasoning was dropped")
 	}
 	for i := range in.references {
 		in.references[i].Content += len(contents)
@@ -187,49 +175,35 @@ func (s replayStore) restore(ctx context.Context, in *requestPlan) error {
 		var parts []ag.Part
 		for j, p := range c.Parts {
 			if ref, ok := refs[[2]int{i, j}]; ok {
-				if p.InlineData != nil {
-					var record ImageRecord
-					err := s.State.Get(ctx, "image", ref.ImageID, &record)
-					if err != nil && !errors.Is(err, state.ErrNotFound) {
-						return err
-					}
-					if err == nil && record.Model == in.UpstreamModel() && record.Digest == digest(raw(p.InlineData.Data)) {
-						p.InlineData = &ag.Blob{MIMEType: record.MIMEType, Data: p.InlineData.Data}
-						p.Signature = record.Signature
-					} else {
-						in.warn("image replay metadata for %s is missing or changed", ref.ImageID)
-					}
-				} else {
-					replay, err := s.open(in.UpstreamModel(), ref.Token)
-					if err != nil {
-						in.warn("dropped a reasoning item: %v", err)
-						continue
-					}
-					if ref.Visible != "" {
-						var visible strings.Builder
-						for _, part := range replay.Parts {
-							visible.WriteString(part.Text)
-						}
-						if visible.String() != ref.Visible {
-							in.warn("dropped a thinking block because its text changed")
-							continue
-						}
-					}
-					if replay.PreviousText != "" {
-						prev := parts
-						if len(prev) == 0 && len(restored.Contents) > 0 && restored.Contents[len(restored.Contents)-1].Role == "model" {
-							prev = restored.Contents[len(restored.Contents)-1].Parts
-						}
-						if len(prev) == 0 || digest(raw(prev[len(prev)-1].Text)) != replay.PreviousText {
-							in.warn("dropped a text signature because the signed text changed")
-							continue
-						}
-						prev[len(prev)-1].Signature = replay.Signature
-					} else {
-						parts = append(parts, replay.Parts...)
-					}
+				replay, err := s.open(in.Model, ref.Token)
+				if err != nil {
+					in.warn("dropped a reasoning item: %v", err)
 					continue
 				}
+				if ref.Visible != "" {
+					var visible strings.Builder
+					for _, part := range replay.Parts {
+						visible.WriteString(part.Text)
+					}
+					if visible.String() != ref.Visible {
+						in.warn("dropped a thinking block because its text changed")
+						continue
+					}
+				}
+				if replay.PreviousText != "" {
+					prev := parts
+					if len(prev) == 0 && len(restored.Contents) > 0 && restored.Contents[len(restored.Contents)-1].Role == "model" {
+						prev = restored.Contents[len(restored.Contents)-1].Parts
+					}
+					if len(prev) == 0 || digest(raw(prev[len(prev)-1].Text)) != replay.PreviousText {
+						in.warn("dropped a text signature because the signed text changed")
+						continue
+					}
+					prev[len(prev)-1].Signature = replay.Signature
+				} else {
+					parts = append(parts, replay.Parts...)
+				}
+				continue
 			}
 			if p.FunctionCall != nil && p.Signature == "" && agyCallID(p.FunctionCall.ID) {
 				record, found := in.toolRecords[p.FunctionCall.ID]
@@ -244,7 +218,7 @@ func (s replayStore) restore(ctx context.Context, in *requestPlan) error {
 				// The full identity, not the short-hashed name, decides whether a
 				// signature belongs to this call; a mismatch only declines it.
 				identity, known := in.historyTools[p.FunctionCall.Name]
-				if found && known && record.Model == in.UpstreamModel() && record.Tool == identity && record.Name == p.FunctionCall.Name && record.Digest == digest(p.FunctionCall.Args) {
+				if found && known && record.Model == in.Model && record.Tool == identity && record.Name == p.FunctionCall.Name && record.Digest == digest(p.FunctionCall.Args) {
 					p.Signature = record.Signature
 				} else {
 					in.warn("tool replay state for %s is missing, expired or changed; using a placeholder signature", p.FunctionCall.ID)

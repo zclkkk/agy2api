@@ -40,8 +40,7 @@ class Upstream(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(
                 b'{"models":{"gemini-test":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},'
-                b'"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"}},'
-                b'"webSearchModelIds":["gemini-test"]}'
+                b'"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"}}}'
             )
             return
         if self.path == "/v1internal:countTokens":
@@ -55,10 +54,7 @@ class Upstream(BaseHTTPRequestHandler):
         has_result = any(
             "functionResponse" in p for c in request["contents"] for p in c["parts"]
         )
-        search = any("googleSearch" in tool for tool in request.get("tools", []))
-        if search:
-            parts = [{"text": "Search answer", "thoughtSignature": "fixture-text"}]
-        elif request.get("tools") and not has_result:
+        if request.get("tools") and not has_result:
             parts = [
                 {
                     "text": "Plan",
@@ -94,23 +90,6 @@ class Upstream(BaseHTTPRequestHandler):
                 },
             }
         }
-        if search:
-            body["response"]["candidates"][0]["groundingMetadata"] = {
-                "webSearchQueries": ["fixture search"],
-                "groundingChunks": [
-                    {"web": {"uri": "https://example.com/source", "title": "Source"}}
-                ],
-                "groundingSupports": [
-                    {
-                        "segment": {
-                            "startIndex": 0,
-                            "endIndex": 13,
-                            "text": "Search answer",
-                        },
-                        "groundingChunkIndices": [0],
-                    }
-                ],
-            }
         self.wfile.write(("data: " + json.dumps(body) + "\n\n").encode())
 
 
@@ -270,20 +249,19 @@ def check():
                             pass
                         else:
                             raise AssertionError("deleted response is still accessible")
-                        with client.responses.stream(
-                            model="gemini-test",
-                            input="search",
-                            tools=[{"type": "web_search"}],
-                        ) as stream:
-                            for _ in stream:
-                                pass
-                            search_result = stream.get_final_response()
-                        type(search_result).model_validate(search_result.model_dump())
-                        assert search_result.output_text == "Search answer"
-                        assert any(
-                            item.type == "web_search_call"
-                            for item in search_result.output
-                        )
+                        for tool_type in ("web_search", "image_generation"):
+                            try:
+                                client.responses.create(
+                                    model="gemini-test",
+                                    input="hello",
+                                    tools=[{"type": tool_type}],
+                                )
+                            except openai.BadRequestError as error:
+                                assert "unsupported" in str(error)
+                            else:
+                                raise AssertionError(
+                                    f"hosted tool accepted: {tool_type}"
+                                )
                     with anthropic.Anthropic(
                         api_key="fixture-key", base_url=base, max_retries=0
                     ) as client:
@@ -293,31 +271,22 @@ def check():
                         )
                         type(result).model_validate(result.model_dump())
                         assert result.content[0].text == "Hello from agy2api"
-                        with client.messages.stream(
-                            model="gemini-test",
-                            max_tokens=1024,
-                            messages=[{"role": "user", "content": "search"}],
-                            tools=[
-                                {"type": "web_search_20250305", "name": "web_search"}
-                            ],
-                        ) as stream:
-                            for _ in stream:
-                                pass
-                            search_result = stream.get_final_message()
-                        type(search_result).model_validate(search_result.model_dump())
-                        assert [block.type for block in search_result.content] == [
-                            "text",
-                            "server_tool_use",
-                            "web_search_tool_result",
-                        ]
-                        assert (
-                            search_result.content[-1].tool_use_id
-                            == search_result.content[-2].id
-                        )
-                        assert (
-                            search_result.content[-1].content[0].url
-                            == "https://example.com/source"
-                        )
+                        try:
+                            client.messages.create(
+                                model="gemini-test",
+                                max_tokens=1024,
+                                messages=messages,
+                                tools=[
+                                    {
+                                        "type": "web_search_20250305",
+                                        "name": "web_search",
+                                    }
+                                ],
+                            )
+                        except anthropic.BadRequestError as error:
+                            assert "unsupported" in str(error)
+                        else:
+                            raise AssertionError("hosted search accepted")
                         assert (
                             client.messages.count_tokens(
                                 model="gemini-test", messages=messages

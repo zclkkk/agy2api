@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"encoding/json"
-	"strings"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
 )
@@ -46,9 +45,6 @@ func (responsesEncoder) open(r *wireState, b *outputBlock) error {
 		item["summary"] = []any{}
 	case "tool":
 		r.toolItem(item, b, "")
-	case "image":
-		item["type"] = "image_generation_call"
-		item["result"] = nil
 	}
 	if err := r.event("response.output_item.added", map[string]any{"output_index": index, "item": item}); err != nil {
 		return err
@@ -82,16 +78,10 @@ func (responsesEncoder) close(r *wireState, b *outputBlock) error {
 	item = map[string]any{"id": b.ID, "status": "completed"}
 	switch b.Kind {
 	case "text":
-		annotations := b.Annotations
-		part := map[string]any{"type": "output_text", "text": b.Text, "annotations": annotations, "logprobs": []any{}}
+		part := map[string]any{"type": "output_text", "text": b.Text, "annotations": []any{}, "logprobs": []any{}}
 		item["type"] = "message"
 		item["role"] = "assistant"
 		item["content"] = []any{part}
-		for i, annotation := range annotations {
-			if err := r.event("response.output_text.annotation.added", map[string]any{"item_id": b.ID, "output_index": index, "content_index": 0, "annotation_index": i, "annotation": annotation}); err != nil {
-				return err
-			}
-		}
 		if err := r.event("response.output_text.done", map[string]any{"item_id": b.ID, "output_index": index, "content_index": 0, "text": b.Text, "logprobs": []any{}}); err != nil {
 			return err
 		}
@@ -121,10 +111,6 @@ func (responsesEncoder) close(r *wireState, b *outputBlock) error {
 		if err != nil {
 			return err
 		}
-	case "image":
-		item["type"] = "image_generation_call"
-		item["result"] = b.Blob.Data
-		item["output_format"] = strings.TrimPrefix(b.Blob.MIMEType, "image/")
 	}
 	if err := r.event("response.output_item.done", map[string]any{"output_index": index, "item": item}); err != nil {
 		return err
@@ -143,31 +129,6 @@ func (responsesEncoder) close(r *wireState, b *outputBlock) error {
 		}
 		r.items = append(r.items, carrier)
 	}
-	return nil
-}
-
-func (responsesEncoder) search(r *wireState, trace searchTrace) error {
-	id := ag.ID("ws_agy_")
-	index := len(r.items)
-	item := map[string]any{"id": id, "type": "web_search_call", "status": "in_progress"}
-	if err := r.event("response.output_item.added", map[string]any{"output_index": index, "item": item}); err != nil {
-		return err
-	}
-	for _, name := range []string{"response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed"} {
-		if err := r.event(name, map[string]any{"item_id": id, "output_index": index}); err != nil {
-			return err
-		}
-	}
-	action := map[string]any{"type": "search"}
-	if len(trace.Queries) > 0 {
-		action["query"] = trace.Queries[0]
-		action["queries"] = trace.Queries
-	}
-	item = map[string]any{"id": id, "type": "web_search_call", "status": "completed", "action": action}
-	if err := r.event("response.output_item.done", map[string]any{"output_index": index, "item": item}); err != nil {
-		return err
-	}
-	r.items = append(r.items, item)
 	return nil
 }
 

@@ -18,9 +18,7 @@ type outputBlock struct {
 	Public                                  ToolName
 	Args                                    json.RawMessage
 	Parts                                   []ag.Part
-	Blob                                    *ag.Blob
 	Sealed                                  string
-	Citations, Annotations                  []any
 }
 
 // Renderer turns the upstream stream into a Messages or Responses reply,
@@ -33,7 +31,6 @@ type Renderer struct {
 	active         *outputBlock
 	toolUsed       bool
 	finish         string
-	grounding      *ag.Grounding
 	native         []ag.Part // the model turn, for stored history
 	summary        strings.Builder
 	bytes          int
@@ -43,7 +40,7 @@ type Renderer struct {
 }
 
 // model is the upstream model; replay state is bound to it.
-func (r *Renderer) model() string { return r.input.UpstreamModel() }
+func (r *Renderer) model() string { return r.input.Model }
 
 func (r *Renderer) warn(format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
@@ -74,7 +71,7 @@ func NewRenderer(in PreparedRequest, s *state.Store, emit func(string, map[strin
 	r := &Renderer{wireState: wireState{input: in, emit: emit, id: ag.ID(prefix), created: time.Now().Unix(), items: []map[string]any{}}, state: s, encoder: responsesEncoder{}}
 	if in.Format == Messages {
 		r.encoder = messagesEncoder{}
-		r.textSignatures = newTextSignatureIndex(in.UpstreamModel(), in.Request.SessionID, in.Request.System)
+		r.textSignatures = newTextSignatureIndex(in.Model, in.Request.SessionID, in.Request.System)
 		for _, content := range in.Request.Contents {
 			r.textSignatures.begin(content.Role)
 			for _, part := range content.Parts {
@@ -118,8 +115,12 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 	if chunk.Finish != "" {
 		r.finish = chunk.Finish
 	}
-	if chunk.Grounding != nil {
-		r.grounding = chunk.Grounding
+	// These endpoints produce text, reasoning and client-executed tool calls.
+	// Reject unsupported media before emitting any content from this chunk.
+	for _, part := range chunk.Parts {
+		if part.InlineData != nil || part.FileData != nil {
+			return errors.New("upstream returned media output, which is not supported by the Responses or Messages endpoints")
+		}
 	}
 	if err := r.start(); err != nil {
 		return err
@@ -138,19 +139,14 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 			}
 			continue
 		}
-		if part.FileData != nil {
-			return errors.New("upstream returned a content type that cannot be represented by this endpoint")
-		}
 		kind := "text"
 		switch {
 		case part.FunctionCall != nil:
 			kind = "tool"
-		case part.InlineData != nil:
-			kind = "image"
 		case part.Thought:
 			kind = "thinking"
 		}
-		if part.Text == "" && part.FunctionCall == nil && part.InlineData == nil {
+		if part.Text == "" && part.FunctionCall == nil {
 			if part.Signature != "" {
 				if r.active == nil {
 					if err := r.open("thinking"); err != nil {
@@ -162,10 +158,7 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 			}
 			continue
 		}
-		if kind == "image" && r.input.Format == Messages {
-			return errors.New("generated images require the Responses endpoint")
-		}
-		if r.active == nil || r.active.Kind != kind || kind == "tool" || kind == "image" {
+		if r.active == nil || r.active.Kind != kind || kind == "tool" {
 			if err := r.closeBlock(ctx); err != nil {
 				return err
 			}
@@ -197,10 +190,6 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 		if part.Signature != "" {
 			b.Signature = part.Signature
 		}
-		if kind == "image" {
-			b.Blob = part.InlineData
-			continue
-		}
 		if kind == "tool" {
 			args, err := objectArguments(part.FunctionCall.Args)
 			if err != nil {
@@ -224,9 +213,6 @@ func (r *Renderer) open(kind string) error {
 	prefix := "msg_"
 	if kind == "thinking" {
 		prefix = "rs_"
-	}
-	if kind == "image" {
-		prefix = "ig_"
 	}
 	r.active = &outputBlock{Kind: kind, ID: ag.ID(prefix)}
 	return r.encoder.open(&r.wireState, r.active)
@@ -258,7 +244,7 @@ func (r *Renderer) Finish(ctx context.Context) error {
 	status, stop := "completed", "end_turn"
 	var incomplete any
 	switch reason := strings.ToUpper(r.finish); reason {
-	case "STOP", "FINISH_REASON_UNSPECIFIED", "NO_IMAGE":
+	case "STOP", "FINISH_REASON_UNSPECIFIED":
 	case "MAX_TOKENS":
 		status = "incomplete"
 		stop = "max_tokens"
@@ -281,9 +267,6 @@ func (r *Renderer) Finish(ctx context.Context) error {
 		return r.finishCompaction(ctx)
 	}
 	if err := r.closeBlock(ctx); err != nil {
-		return err
-	}
-	if err := r.searchTrace(); err != nil {
 		return err
 	}
 	if len(r.items) == 0 && status == "completed" {

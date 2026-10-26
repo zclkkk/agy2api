@@ -36,7 +36,7 @@ func (x *textSignatureIndex) key(text string) string {
 // before it changed or the state expired; such text is sent unsigned and the
 // count is reported.
 func (d replayStore) restoreTextSignatures(ctx context.Context, in *requestPlan) error {
-	index := newTextSignatureIndex(in.UpstreamModel(), in.Request.SessionID, in.Request.System)
+	index := newTextSignatureIndex(in.Model, in.Request.SessionID, in.Request.System)
 	missing := 0
 	for i := range in.Request.Contents {
 		content := &in.Request.Contents[i]

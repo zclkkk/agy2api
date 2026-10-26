@@ -2,7 +2,7 @@
 
 将一个 Antigravity 账号的 **Gemini 订阅**接入 **OpenAI Responses** 和 **Anthropic Messages** API。
 
-原生单文件部署，支持流式响应、工具调用、思考回放、多模态输入、搜索和上下文压缩。两种 API 格式调用的都是 Gemini 模型。
+原生单文件部署，支持流式响应、工具调用、思考回放、多模态输入和上下文压缩。两种 API 格式调用的都是 Gemini 模型。
 
 ## 安装
 
@@ -61,10 +61,9 @@ curl -N http://127.0.0.1:8080/v1/messages \
 - Responses 和 Messages 的流式、非流式生成及 token 计数。
 - 函数工具、并行工具回合；Responses 命名空间和自由文本工具。
 - 思考内容、签名回放、Responses 历史续聊和上下文压缩。
-- 图片、PDF、音视频文件输入；Responses 图片生成与编辑。
-- 原生搜索和引用，具体能力取决于账号可用模型。
+- 图片、PDF、音视频文件输入。
 
-项目仅面向单账号，不提供 Chat Completions、Files 上传或完整的 OpenAI/Anthropic 平台服务。原生搜索与函数工具不能同轮使用；严格 JSON Schema、精确停止序列元数据等能力受上游限制。详见 [API 与兼容边界](docs/api.md)。
+项目仅面向单账号，不提供图片生成、原生网页搜索、Chat Completions、Files 上传或完整的 OpenAI/Anthropic 平台服务。严格 JSON Schema、精确停止序列元数据等能力受上游限制。详见 [API 与兼容边界](docs/api.md)。
 
 ## 更多文档
 

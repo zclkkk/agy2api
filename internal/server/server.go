@@ -329,10 +329,7 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, format protoco
 		}()
 	}
 	renderer := protocol.NewRenderer(in, s.state, emit)
-	err := s.upstream.Generate(r.Context(), in.UpstreamModel(), in.Request, in.Kind, func(chunk ag.Chunk) error {
-		if chunk.Grounding != nil {
-			s.upstream.ResolveGrounding(r.Context(), chunk.Grounding)
-		}
+	err := s.upstream.Generate(r.Context(), in.Model, in.Request, ag.KindAgent, func(chunk ag.Chunk) error {
 		return renderer.Add(r.Context(), chunk)
 	})
 	if err == nil {

@@ -8,30 +8,30 @@ import (
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
 )
 
-func TestStoredChainUsesActualModelForReplay(t *testing.T) {
+func TestStoredChainDropsReasoningWhenModelChanges(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
 	d := testPipeline{State: s}
-	in, err := d.Responses(ctx, []byte(`{"model":"gemini-test","input":"search","tools":[{"type":"web_search"}]}`))
+	in, err := d.Responses(ctx, []byte(`{"model":"gemini-test","input":"first"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := NewRenderer(in, s, nil)
-	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "search-model thought", Thought: true, Signature: "search-model-signature"}, {Text: "answer"}}, Finish: "STOP"}); err != nil {
+	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "first-model thought", Thought: true, Signature: "first-model-signature"}, {Text: "answer"}}, Finish: "STOP"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Finish(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// The requested model stays the same, but removing search changes the actual model.
-	next, err := d.Responses(ctx, raw(map[string]any{"model": "gemini-test", "input": "continue without search", "previous_response_id": r.id}))
+	// A new model must not receive reasoning signed by the previous model.
+	next, err := d.Responses(ctx, raw(map[string]any{"model": "gemini-other", "input": "continue", "previous_response_id": r.id}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range next.Request.Contents {
 		for _, p := range c.Parts {
-			if p.Thought || p.Signature == "search-model-signature" {
-				t.Fatalf("signed thought from %s is replayed to %s; stored chain checked only the public model", in.UpstreamModel(), next.UpstreamModel())
+			if p.Thought || p.Signature == "first-model-signature" {
+				t.Fatalf("signed thought from %s is replayed to %s", in.Model, next.Model)
 			}
 		}
 	}
@@ -106,20 +106,19 @@ func TestStoredChainCanContinueWithOnlyInstructionsOrCompaction(t *testing.T) {
 	}
 }
 
-func TestMessagesRoutedReplayKeepsThinkingAndTextSignatures(t *testing.T) {
+func TestMessagesReplayKeepsThinkingAndTextSignatures(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
 	d := testPipeline{State: s}
-	tools := []any{map[string]string{"type": "web_search_20250305", "name": "web_search"}}
 	decode := func(messages []any) PreparedRequest {
 		t.Helper()
-		in, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 100, "messages": messages, "tools": tools}), false)
+		in, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 100, "messages": messages}), false)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return in
 	}
-	first := []any{map[string]string{"role": "user", "content": "search"}}
+	first := []any{map[string]string{"role": "user", "content": "start"}}
 	in := decode(first)
 	r := NewRenderer(in, s, nil)
 	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "plan", Thought: true, Signature: "thought-signature"}, {Text: "answer", Signature: "text-signature"}}, Finish: "STOP"}); err != nil {
@@ -137,6 +136,6 @@ func TestMessagesRoutedReplayKeepsThinkingAndTextSignatures(t *testing.T) {
 	next := decode(append(first, map[string]any{"role": "assistant", "content": response.Content}, map[string]string{"role": "user", "content": "more"}))
 	parts := next.Request.Contents[1].Parts
 	if len(parts) != 2 || parts[0].Signature != "thought-signature" || parts[1].Signature != "text-signature" {
-		t.Fatalf("routed replay lost thinking or text signatures: parts=%d warnings=%v", len(parts), next.Warnings)
+		t.Fatalf("replay lost thinking or text signatures: parts=%d warnings=%v", len(parts), next.Warnings)
 	}
 }
