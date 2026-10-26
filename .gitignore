@@ -3,6 +3,7 @@
 /bin/
 /data/
 /config.json
+/config.toml
 /.cache/
 
 # Local credentials and runtime files, including custom data directories.

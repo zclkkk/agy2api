@@ -19,8 +19,12 @@ import (
 const ClientID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 const clientSecret = "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"
 
-func OAuthConfig(redirect string) oauth2.Config {
-	return oauth2.Config{ClientID: ClientID, ClientSecret: clientSecret, RedirectURL: redirect,
+// RedirectURL hosts Google's authorization-code handoff page. No local callback
+// listener is needed; the user copies the code into the process that began PKCE.
+const RedirectURL = "https://antigravity.google/oauth-callback"
+
+func OAuthConfig() oauth2.Config {
+	return oauth2.Config{ClientID: ClientID, ClientSecret: clientSecret, RedirectURL: RedirectURL,
 		Endpoint: oauth2.Endpoint{AuthURL: "https://accounts.google.com/o/oauth2/v2/auth", TokenURL: "https://oauth2.googleapis.com/token", AuthStyle: oauth2.AuthStyleInParams},
 		Scopes:   []string{"https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile", "https://www.googleapis.com/auth/cclog", "https://www.googleapis.com/auth/experimentsandconfigs"}}
 }
@@ -61,7 +65,7 @@ func Load(path string, client *http.Client) (*Manager, error) {
 	if creds.Token.RefreshToken == "" || creds.ProjectID == "" {
 		return nil, errors.New("credentials are incomplete; run agy2api login")
 	}
-	return &Manager{path: path, creds: creds, client: client, config: OAuthConfig("")}, nil
+	return &Manager{path: path, creds: creds, client: client, config: OAuthConfig()}, nil
 }
 
 func (m *Manager) ProjectID() string { m.mu.Lock(); defer m.mu.Unlock(); return m.creds.ProjectID }

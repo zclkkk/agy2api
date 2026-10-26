@@ -2,7 +2,7 @@
 package config
 
 import (
-	"encoding/json"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -10,31 +10,31 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 type Config struct {
-	Listen                string `json:"listen"`
-	DataDir               string `json:"data_dir"`
-	APIKey                string `json:"api_key"`
-	UpstreamURL           string `json:"upstream_url"`
-	UserAgent             string `json:"user_agent"`
-	ProxyURL              string `json:"proxy_url"`
-	SanitizeClientMarkers bool   `json:"sanitize_client_markers"`
-	MaxBodyBytes          int64  `json:"max_body_bytes"`
-	MaxConcurrentRequests int    `json:"max_concurrent_requests"`
-	StateTTLHours         int    `json:"state_ttl_hours"`
-	MaxStateEntries       int    `json:"max_state_entries"`
-	MaxStateBytes         int64  `json:"max_state_bytes"`
+	Listen                string `toml:"listen"`
+	DataDir               string `toml:"data_dir"`
+	APIKey                string `toml:"api_key"`
+	ProxyURL              string `toml:"proxy_url"`
+	MaxBodyBytes          int64  `toml:"max_body_bytes"`
+	MaxConcurrentRequests int    `toml:"max_concurrent_requests"`
+	StateTTLHours         int    `toml:"state_ttl_hours"`
+	MaxStateBytes         int64  `toml:"max_state_bytes"`
+	SanitizeClientMarkers bool   `toml:"sanitize_client_markers"`
 }
 
 func Default() Config {
 	return Config{
 		Listen: "127.0.0.1:8080", DataDir: "./data",
-		UpstreamURL:           "https://daily-cloudcode-pa.googleapis.com",
 		SanitizeClientMarkers: true,
 		MaxBodyBytes:          32 << 20, MaxConcurrentRequests: 4,
-		StateTTLHours: 168, MaxStateEntries: 10000, MaxStateBytes: 1 << 30,
+		StateTTLHours: 168, MaxStateBytes: 1 << 30,
 	}
 }
 
@@ -46,13 +46,33 @@ func Load(path string) (Config, error) {
 			return c, fmt.Errorf("open config: %w", err)
 		}
 		defer f.Close()
-		d := json.NewDecoder(io.LimitReader(f, 1<<20))
-		d.DisallowUnknownFields()
-		if err := d.Decode(&c); err != nil {
-			return c, fmt.Errorf("decode config: %w", err)
+		const maxConfigBytes = 1 << 20
+		data, err := io.ReadAll(io.LimitReader(f, maxConfigBytes+1))
+		if err != nil {
+			return c, fmt.Errorf("read config: %w", err)
 		}
-		if err := d.Decode(new(any)); !errors.Is(err, io.EOF) {
-			return c, errors.New("config must contain one JSON object")
+		if len(data) > maxConfigBytes {
+			return c, errors.New("config exceeds 1 MiB")
+		}
+		if strings.EqualFold(filepath.Ext(path), ".json") || bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) {
+			return c, errors.New("JSON config is no longer supported; migrate to TOML using config.example.toml")
+		}
+		if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&c); err != nil {
+			var unknown *toml.StrictMissingError
+			if errors.As(err, &unknown) {
+				var keys []string
+				for _, field := range unknown.Errors {
+					keys = append(keys, strings.Join(field.Key(), "."))
+				}
+				return c, fmt.Errorf("unknown config fields: %s", strings.Join(keys, ", "))
+			}
+			var decode *toml.DecodeError
+			if errors.As(err, &decode) {
+				row, column := decode.Position()
+				// Do not print the contextual source excerpt: it may contain a key.
+				return c, fmt.Errorf("decode config at line %d, column %d: %w", row, column, err)
+			}
+			return c, fmt.Errorf("decode config: %w", err)
 		}
 	}
 	for _, v := range []struct {
@@ -67,9 +87,13 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	host, _, err := net.SplitHostPort(c.Listen)
+	host, port, err := net.SplitHostPort(c.Listen)
 	if err != nil {
 		return fmt.Errorf("listen must be host:port: %w", err)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 0 || n > 65535 {
+		return errors.New("listen port must be between 0 and 65535")
 	}
 	ip := net.ParseIP(host)
 	if c.APIKey == "" && host != "localhost" && (ip == nil || !ip.IsLoopback()) {
@@ -84,18 +108,12 @@ func (c Config) Validate() error {
 	if c.MaxConcurrentRequests < 1 || c.MaxConcurrentRequests > 128 {
 		return errors.New("max_concurrent_requests must be between 1 and 128")
 	}
-	if c.StateTTLHours < 1 || c.MaxStateEntries < 1 {
-		return errors.New("state retention limits must be positive")
+	const maxTTLHours = int64(1<<63-1) / int64(time.Hour)
+	if c.StateTTLHours < 1 || int64(c.StateTTLHours) > maxTTLHours {
+		return fmt.Errorf("state_ttl_hours must be between 1 and %d", maxTTLHours)
 	}
 	if c.MaxStateBytes < 64<<20 {
 		return errors.New("max_state_bytes must be at least 67108864")
-	}
-	u, err := url.Parse(c.UpstreamURL)
-	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("invalid upstream_url")
-	}
-	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopback(u.Hostname())) {
-		return errors.New("upstream_url requires HTTPS (HTTP allowed for local tests)")
 	}
 	if c.ProxyURL != "" {
 		p, err := url.Parse(c.ProxyURL)
@@ -103,15 +121,7 @@ func (c Config) Validate() error {
 			return errors.New("invalid proxy_url")
 		}
 	}
-	// An empty user_agent follows the latest Antigravity release.
-	if strings.ContainsAny(c.UserAgent, "\r\n") {
-		return errors.New("invalid user_agent")
-	}
 	return nil
 }
 
-func isLoopback(host string) bool {
-	ip := net.ParseIP(host)
-	return host == "localhost" || ip != nil && ip.IsLoopback()
-}
 func (c Config) CredentialsPath() string { return filepath.Join(c.DataDir, "credentials.json") }

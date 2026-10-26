@@ -18,56 +18,34 @@ const (
 	// FallbackVersion is reported until the release manifest has been read.
 	// Antigravity serves its newest models only to recent client versions.
 	FallbackVersion = "2.24.0"
-	manifestURL     = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
 	versionRefresh  = 6 * time.Hour
 )
 
-var (
-	semver         = regexp.MustCompile(`^\d{1,4}\.\d{1,4}\.\d{1,6}$`)
-	versionedAgent = regexp.MustCompile(`^antigravity/(\d{1,4}\.\d{1,4}\.\d{1,6})$`)
-)
+// Test builds replace this at link time to keep SDK validation offline.
+var manifestURL = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
+
+var semver = regexp.MustCompile(`^\d{1,4}\.\d{1,4}\.\d{1,6}$`)
 
 // UserAgent reports "antigravity/<version>" and keeps the version current
-// with the official release manifest. A configured "antigravity/<version>"
-// sets the lowest version reported; any other configured value is sent as is.
+// with the official release manifest, never below the built-in fallback.
 type UserAgent struct {
 	mu       sync.RWMutex
-	fixed    string
-	floor    string
 	latest   string
 	manifest string // overrides manifestURL in tests
 }
 
-func NewUserAgent(configured string) *UserAgent {
-	configured = strings.TrimSpace(configured)
-	if configured == "" {
-		return &UserAgent{floor: FallbackVersion}
-	}
-	if m := versionedAgent.FindStringSubmatch(configured); m != nil {
-		return &UserAgent{floor: m[1]}
-	}
-	return &UserAgent{fixed: configured}
-}
+func NewUserAgent() *UserAgent { return &UserAgent{} }
 
 // String returns the User-Agent header value.
 func (u *UserAgent) String() string {
-	if u.fixed != "" {
-		return u.fixed
-	}
 	u.mu.RLock()
 	defer u.mu.RUnlock()
-	return "antigravity/" + newerVersion(u.floor, u.latest)
+	return "antigravity/" + newerVersion(FallbackVersion, u.latest)
 }
-
-// Automatic reports whether the version follows the release manifest.
-func (u *UserAgent) Automatic() bool { return u.fixed == "" }
 
 // Refresh reads the latest version from the release manifest. On failure the
 // previous version stays in use.
 func (u *UserAgent) Refresh(ctx context.Context, client *http.Client) (string, error) {
-	if !u.Automatic() {
-		return "", nil
-	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	source := manifestURL
@@ -100,9 +78,6 @@ func (u *UserAgent) Refresh(ctx context.Context, client *http.Client) (string, e
 
 // Run refreshes the version now and then periodically until ctx ends.
 func (u *UserAgent) Run(ctx context.Context, client *http.Client, report func(version string, err error)) {
-	if !u.Automatic() {
-		return
-	}
 	ticker := time.NewTicker(versionRefresh)
 	defer ticker.Stop()
 	for {

@@ -1,0 +1,16 @@
+# Relative paths are resolved from the process working directory.
+listen = "127.0.0.1:8080"
+data_dir = "./data"
+
+# An empty key permits local clients only. Set a key for remote access.
+api_key = ""
+
+# Optional overrides; omitted fields use the application's defaults.
+# proxy_url = "http://127.0.0.1:7890"
+# max_concurrent_requests = 4
+# max_body_bytes = 33_554_432  # 32 MiB; also the remote attachment download budget
+# state_ttl_hours = 168      # 7 days
+# max_state_bytes = 1_073_741_824  # 1 GiB of stored record content
+
+# Disable only when investigating client system-marker compatibility.
+# sanitize_client_markers = true

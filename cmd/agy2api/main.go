@@ -1,20 +1,16 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"crypto/subtle"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"sort"
-	"strings"
 	"syscall"
 	"time"
 
@@ -23,10 +19,12 @@ import (
 	"github.com/zclkkk/agy2api/internal/config"
 	"github.com/zclkkk/agy2api/internal/server"
 	"github.com/zclkkk/agy2api/internal/state"
-	"golang.org/x/oauth2"
 )
 
 var version = "dev"
+
+// Only test builds replace this at link time; deployments use Antigravity.
+var upstreamURL = ag.BaseURL
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -39,7 +37,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Println("agy2api — single-account Antigravity API\n\nCommands:\n  login   [--config path] [--manual] [--port 51121]\n  serve   [--config path]\n  models  [--config path]\n  version\n\nAPIs: /v1/responses and /v1/messages")
+		fmt.Println("agy2api — single-account Antigravity API\n\nCommands:\n  login   [--config path]\n  serve   [--config path]\n  models  [--config path]\n  version\n\nAPIs: /v1/responses and /v1/messages")
 		return nil
 	}
 	if args[0] == "version" || args[0] == "--version" {
@@ -51,13 +49,7 @@ func run(ctx context.Context, args []string) error {
 		return fmt.Errorf("unknown command %q", command)
 	}
 	f := flag.NewFlagSet(command, flag.ContinueOnError)
-	configPath := f.String("config", "", "JSON configuration file")
-	var manual bool
-	var port int
-	if command == "login" {
-		f.BoolVar(&manual, "manual", false, "paste the full callback URL instead of starting a local callback listener")
-		f.IntVar(&port, "port", 51121, "OAuth loopback callback port")
-	}
+	configPath := f.String("config", "", "TOML configuration file")
 	if err := f.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -76,15 +68,15 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	defer client.CloseIdleConnections()
-	agent := ag.NewUserAgent(cfg.UserAgent)
+	agent := ag.NewUserAgent()
 	if command == "login" {
-		return login(ctx, cfg, client, agent, manual, port)
+		return login(ctx, cfg, client, agent, os.Stdin, os.Stderr)
 	}
 	manager, err := auth.Load(cfg.CredentialsPath(), client)
 	if err != nil {
 		return err
 	}
-	upstream := &ag.Client{HTTP: client, BaseURL: cfg.UpstreamURL, UserAgent: agent.String, Auth: manager}
+	upstream := &ag.Client{HTTP: client, BaseURL: upstreamURL, UserAgent: agent.String, Auth: manager}
 	if command == "models" {
 		if _, err := agent.Refresh(ctx, client); err != nil {
 			fmt.Fprintln(os.Stderr, "agy2api: using", agent.String()+":", err)
@@ -103,7 +95,7 @@ func run(ctx context.Context, args []string) error {
 		}
 		return nil
 	}
-	store, err := state.Open(cfg.DataDir, time.Duration(cfg.StateTTLHours)*time.Hour, cfg.MaxStateEntries, cfg.MaxStateBytes)
+	store, err := state.Open(cfg.DataDir, time.Duration(cfg.StateTTLHours)*time.Hour, state.EntryLimit, cfg.MaxStateBytes)
 	if err != nil {
 		return err
 	}
@@ -143,112 +135,4 @@ func run(ctx context.Context, args []string) error {
 		}
 		return nil
 	}
-}
-
-type callbackResult struct {
-	code string
-	err  error
-}
-
-func login(parent context.Context, cfg config.Config, client *http.Client, agent *ag.UserAgent, manual bool, port int) error {
-	if port < 1 || port > 65535 {
-		return errors.New("port must be between 1 and 65535")
-	}
-	ctx, cancel := context.WithTimeout(parent, 5*time.Minute)
-	defer cancel()
-	redirect := fmt.Sprintf("http://localhost:%d/oauth-callback", port)
-	oauth := auth.OAuthConfig(redirect)
-	stateValue := ag.ID("state_")
-	verifier := oauth2.GenerateVerifier()
-	link := oauth.AuthCodeURL(stateValue, oauth2.AccessTypeOffline, oauth2.SetAuthURLParam("prompt", "consent"), oauth2.S256ChallengeOption(verifier))
-	result := make(chan callbackResult, 1)
-	accept := func(raw string) (string, error) {
-		u, err := url.Parse(raw)
-		if err != nil {
-			return "", errors.New("invalid callback URL")
-		}
-		if u.Scheme != "http" || u.Host != fmt.Sprintf("localhost:%d", port) || u.Path != "/oauth-callback" {
-			return "", errors.New("callback URL does not match this login")
-		}
-		if subtle.ConstantTimeCompare([]byte(u.Query().Get("state")), []byte(stateValue)) != 1 {
-			return "", errors.New("OAuth state mismatch")
-		}
-		if u.Query().Get("error") != "" {
-			return "", errors.New("OAuth authorization was denied")
-		}
-		code := u.Query().Get("code")
-		if code == "" {
-			return "", errors.New("callback has no authorization code")
-		}
-		return code, nil
-	}
-	if !manual {
-		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-		if err != nil {
-			return fmt.Errorf("OAuth callback listener: %w (use --manual on a remote machine)", err)
-		}
-		mux := http.NewServeMux()
-		mux.HandleFunc("GET /oauth-callback", func(w http.ResponseWriter, r *http.Request) {
-			code, err := accept(redirect + "?" + r.URL.RawQuery)
-			if err != nil {
-				http.Error(w, err.Error(), 400)
-				return
-			}
-			select {
-			case result <- callbackResult{code: code}:
-				fmt.Fprintln(w, "Authorization received. You may close this tab.")
-			default:
-				http.Error(w, "Authorization already received", 409)
-			}
-		})
-		srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-		go func() {
-			err := srv.Serve(listener)
-			if !errors.Is(err, http.ErrServerClosed) {
-				select {
-				case result <- callbackResult{err: err}:
-				default:
-				}
-			}
-		}()
-		defer srv.Close()
-	}
-	fmt.Fprintln(os.Stderr, "Open this URL in your browser:\n\n"+link+"\n")
-	if manual {
-		fmt.Fprintln(os.Stderr, "After authorization, paste the complete localhost callback URL here (the browser may show a connection error):")
-		go func() {
-			scanner := bufio.NewScanner(os.Stdin)
-			scanner.Buffer(make([]byte, 4096), 16<<10)
-			if !scanner.Scan() {
-				result <- callbackResult{err: errors.New("no callback URL received")}
-				return
-			}
-			code, err := accept(strings.TrimSpace(scanner.Text()))
-			result <- callbackResult{code: code, err: err}
-		}()
-	}
-	var callback callbackResult
-	select {
-	case callback = <-result:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	if callback.err != nil {
-		return callback.err
-	}
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, client)
-	token, err := oauth.Exchange(ctx, callback.code, oauth2.VerifierOption(verifier))
-	if err != nil {
-		return errors.New("OAuth token exchange failed; verify the account and try again")
-	}
-	upstream := &ag.Client{HTTP: client, BaseURL: cfg.UpstreamURL, UserAgent: agent.String}
-	project, err := upstream.DiscoverProject(ctx, token.AccessToken)
-	if err != nil {
-		return err
-	}
-	if err := auth.Save(cfg.CredentialsPath(), auth.Credentials{Token: *token, ProjectID: project}); err != nil {
-		return err
-	}
-	fmt.Fprintln(os.Stderr, "Login saved. Start the service with agy2api serve.")
-	return nil
 }

@@ -3,6 +3,7 @@
 import argparse
 import datetime
 import json
+import os
 import pathlib
 import socket
 import subprocess
@@ -16,10 +17,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import anthropic
 import openai
 
+from config_helpers import write_config
+
 
 class Upstream(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
+
+    def do_GET(self):
+        assert self.path == "/manifest"
+        assert "Authorization" not in self.headers
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"version: 2.30.1\n")
 
     def do_POST(self):
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -104,17 +114,37 @@ class Upstream(BaseHTTPRequestHandler):
         self.wfile.write(("data: " + json.dumps(body) + "\n\n").encode())
 
 
-def check(binary):
+def check():
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
     threading.Thread(target=upstream.serve_forever, daemon=True).start()
     try:
         with tempfile.TemporaryDirectory(prefix="agy2api-sdk-") as directory:
             root = pathlib.Path(directory)
+            binary = root / ("agy2api.exe" if os.name == "nt" else "agy2api")
+            upstream_url = f"http://127.0.0.1:{upstream.server_port}"
+            # Same CLI entry point and config loader as the release binary.
+            # Only test builds substitute service addresses, with no runtime
+            # environment or user-config escape hatch in the shipped program.
+            subprocess.run(
+                [
+                    "go",
+                    "build",
+                    "-trimpath",
+                    "-ldflags",
+                    f"-X main.upstreamURL={upstream_url} "
+                    f"-X github.com/zclkkk/agy2api/internal/antigravity.manifestURL={upstream_url}/manifest",
+                    "-o",
+                    str(binary),
+                    "./cmd/agy2api",
+                ],
+                cwd=pathlib.Path(__file__).resolve().parents[1],
+                check=True,
+            )
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
             data = root / "data"
-            data.mkdir()
+            data.mkdir(mode=0o700)
             expiry = (
                 datetime.datetime.now(datetime.timezone.utc)
                 + datetime.timedelta(hours=1)
@@ -132,20 +162,29 @@ def check(binary):
                     }
                 )
             )
-            config = root / "config.json"
-            config.write_text(
-                json.dumps(
-                    {
-                        "listen": f"127.0.0.1:{port}",
-                        "data_dir": str(data),
-                        "api_key": "fixture-key",
-                        "upstream_url": f"http://127.0.0.1:{upstream.server_port}",
-                    }
-                )
+            (data / "credentials.json").chmod(0o600)
+            config = root / "config.toml"
+            write_config(
+                config,
+                {
+                    "listen": f"127.0.0.1:{port}",
+                    "data_dir": str(data),
+                    "api_key": "fixture-key",
+                },
             )
+            env = dict(os.environ)
+            for name in (
+                "AGY2API_LISTEN",
+                "AGY2API_DATA_DIR",
+                "AGY2API_API_KEY",
+                "AGY2API_PROXY_URL",
+            ):
+                env.pop(name, None)
             with (root / "service.log").open("w+") as log:
                 process = subprocess.Popen(
-                    [str(binary), "serve", "--config", str(config)], stderr=log
+                    [str(binary), "serve", "--config", str(config)],
+                    env=env,
+                    stderr=log,
                 )
                 try:
                     base = f"http://127.0.0.1:{port}"
@@ -358,8 +397,5 @@ def check(binary):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--binary", type=pathlib.Path, default=pathlib.Path("bin/agy2api")
-    )
-    check(parser.parse_args().binary.resolve())
+    argparse.ArgumentParser(description=__doc__).parse_args()
+    check()

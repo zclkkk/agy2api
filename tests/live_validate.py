@@ -30,6 +30,8 @@ from pathlib import Path
 import anthropic
 import openai
 
+from config_helpers import read_config, write_config
+
 
 class PartialCoverage(Exception):
     """A supported operation with a verified protocol-information limitation."""
@@ -86,7 +88,7 @@ def pdf_fixture():
 
 class Live:
     def __init__(self, config, binary, report):
-        self.source = json.loads(config.read_text())
+        self.source = read_config(config)
         self.source_data = Path(
             os.environ.get("AGY2API_DATA_DIR", self.source.get("data_dir", "data"))
         ).resolve()
@@ -110,7 +112,7 @@ class Live:
             data_dir=str(data),
             api_key=self.key,
         )
-        (self.root / "config.json").write_text(json.dumps(cfg))
+        write_config(self.root / "config.toml", cfg)
         self.env = dict(os.environ)
         for name in ("AGY2API_DATA_DIR", "AGY2API_LISTEN", "AGY2API_API_KEY"):
             self.env.pop(name, None)
@@ -129,7 +131,7 @@ class Live:
 
     def start(self):
         self.process = subprocess.Popen(
-            [str(self.binary), "serve", "--config", str(self.root / "config.json")],
+            [str(self.binary), "serve", "--config", str(self.root / "config.toml")],
             env=self.env,
             stderr=self.log,
         )
@@ -1636,7 +1638,7 @@ class Live:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, default=Path("config.json"))
+    parser.add_argument("--config", type=Path, default=Path("config.toml"))
     parser.add_argument("--binary", type=Path, default=Path("bin/agy2api"))
     parser.add_argument("--report", type=Path, default=Path("tests/live-report.json"))
     parser.add_argument("--only", action="append", default=[])

@@ -18,22 +18,22 @@ func TestUserAgentFollowsManifest(t *testing.T) {
 		_, _ = w.Write([]byte(body))
 	}))
 	defer up.Close()
-	for _, tc := range []struct{ configured, before, after string }{
-		{"", "antigravity/" + FallbackVersion, "antigravity/2.30.1"},
-		{"antigravity/2.24.0", "antigravity/2.24.0", "antigravity/2.30.1"},
-		{"antigravity/3.0.0", "antigravity/3.0.0", "antigravity/3.0.0"}, // configured version is a floor
-		{"custom-agent/1.0", "custom-agent/1.0", "custom-agent/1.0"},    // custom values are sent as is
+	for _, tc := range []struct{ version, want string }{
+		{"2.30.1", "antigravity/2.30.1"},
+		{"3.0.0", "antigravity/3.0.0"},
+		{"1.0.0", "antigravity/" + FallbackVersion},
 	} {
-		agent := NewUserAgent(tc.configured)
+		body = "version: " + tc.version + "\n"
+		agent := NewUserAgent()
 		agent.manifest = up.URL
-		if got := agent.String(); got != tc.before {
-			t.Fatalf("%q before refresh = %q, want %q", tc.configured, got, tc.before)
+		if got := agent.String(); got != "antigravity/"+FallbackVersion {
+			t.Fatalf("before refresh = %q", got)
 		}
 		if _, err := agent.Refresh(context.Background(), up.Client()); err != nil {
 			t.Fatal(err)
 		}
-		if got := agent.String(); got != tc.after {
-			t.Fatalf("%q after refresh = %q, want %q", tc.configured, got, tc.after)
+		if got := agent.String(); got != tc.want {
+			t.Fatalf("after refresh = %q, want %q", got, tc.want)
 		}
 	}
 }
@@ -48,7 +48,7 @@ func TestUserAgentKeepsVersionWhenManifestFails(t *testing.T) {
 		_, _ = w.Write([]byte("version: 2.40.0\n"))
 	}))
 	defer up.Close()
-	agent := NewUserAgent("")
+	agent := NewUserAgent()
 	agent.manifest = up.URL
 	if _, err := agent.Refresh(context.Background(), up.Client()); err != nil {
 		t.Fatal(err)

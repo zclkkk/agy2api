@@ -3,6 +3,7 @@ module github.com/zclkkk/agy2api
 go 1.27.0
 
 require (
+	github.com/pelletier/go-toml/v2 v2.4.3
 	golang.org/x/oauth2 v0.37.0
 	modernc.org/sqlite v1.61.0
 )

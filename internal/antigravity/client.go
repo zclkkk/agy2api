@@ -21,6 +21,8 @@ import (
 	"time"
 )
 
+const BaseURL = "https://daily-cloudcode-pa.googleapis.com"
+
 type TokenSource interface {
 	AccessToken(context.Context) (string, error)
 	ProjectID() string

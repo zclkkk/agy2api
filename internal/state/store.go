@@ -23,6 +23,9 @@ import (
 
 var ErrNotFound = errors.New("state not found or expired")
 
+// EntryLimit bounds bookkeeping cost independently of the configured byte budget.
+const EntryLimit = 10000
+
 type Store struct {
 	db       *sql.DB
 	aead     cipher.AEAD
