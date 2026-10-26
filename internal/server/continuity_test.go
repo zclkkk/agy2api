@@ -249,3 +249,70 @@ func TestChosenSearchKeepsFunctionHistoryValid(t *testing.T) {
 		t.Fatalf("history call must keep a signature: %+v", call)
 	}
 }
+
+func TestToolChoiceNoneDisablesSearch(t *testing.T) {
+	for catalogName, catalog := range map[string]string{
+		"search-available":   `{"models":{"gemini-test":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},"gemini-search":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"}},"webSearchModelIds":["gemini-search"]}`,
+		"search-unavailable": testModels,
+	} {
+		for name, tc := range map[string]struct {
+			path          string
+			body          string
+			wantFunctions int
+		}{
+			"messages/search-only": {
+				"/v1/messages",
+				`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"none"}}`,
+				0,
+			},
+			"messages/search-and-functions": {
+				"/v1/messages",
+				`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"web_search_20250305","name":"web_search"},{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"none"}}`,
+				1,
+			},
+			"responses/search-only": {
+				"/v1/responses",
+				`{"model":"gemini-test","input":"hello","tools":[{"type":"web_search"}],"tool_choice":"none"}`,
+				0,
+			},
+			"responses/search-and-functions": {
+				"/v1/responses",
+				`{"model":"gemini-test","input":"hello","tools":[{"type":"web_search"},{"type":"function","name":"lookup","parameters":{"type":"object"}}],"tool_choice":"none"}`,
+				1,
+			},
+		} {
+			t.Run(catalogName+"/"+name, func(t *testing.T) {
+				rec := &recorder{}
+				_, s := newService(t, nil, func(w http.ResponseWriter) {
+					io.WriteString(w, catalog)
+				}, rec.handle)
+				if res, out := send(t, s, tc.path, tc.body, nil); res.StatusCode != 200 {
+					t.Fatalf("%d %s", res.StatusCode, out)
+				}
+				rec.mu.Lock()
+				defer rec.mu.Unlock()
+				if len(rec.requests) != 1 {
+					t.Fatalf("upstream requests = %d, want 1", len(rec.requests))
+				}
+				envelope := rec.requests[0]
+				if envelope.RequestType != ag.KindAgent || envelope.Model != "gemini-test" {
+					t.Fatalf("disabled search changed routing: %s %s", envelope.RequestType, envelope.Model)
+				}
+				req := envelope.Request
+				if req.ToolConfig == nil || req.ToolConfig.FunctionCallingConfig.Mode != "NONE" {
+					t.Fatalf("tool calling must stay disabled: %+v", req.ToolConfig)
+				}
+				functions := 0
+				for _, tool := range req.Tools {
+					if tool.GoogleSearch != nil {
+						t.Fatal("disabled search tool sent upstream")
+					}
+					functions += len(tool.Functions)
+				}
+				if functions != tc.wantFunctions {
+					t.Fatalf("function declarations = %d, want %d", functions, tc.wantFunctions)
+				}
+			})
+		}
+	}
+}

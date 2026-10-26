@@ -36,6 +36,11 @@ func (in *Input) Prepare(catalog ag.Catalog) error {
 	if info.Image {
 		in.Kind = ag.KindImage
 	}
+	// NONE disables native search too, before checking its availability or
+	// routing to a search model. Keep function declarations and their NONE mode.
+	if c := in.Request.ToolConfig; c != nil && c.FunctionCallingConfig.Mode == "NONE" {
+		in.Search = false
+	}
 	// Antigravity rejects Google Search next to function declarations. A
 	// request that chooses search drops the functions; history with earlier
 	// calls stays valid because every call keeps a signature. Otherwise the
