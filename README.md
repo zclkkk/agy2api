@@ -79,7 +79,7 @@ curl http://127.0.0.1:8080/v1/messages \
 | 思考内容 | 输出与工具回放通过；支持预算/强度转换、加密回放、篡改检查 |
 | 图片与文件输入 | 图片、PDF、HTTPS 图片均通过；Responses 的音频和视频文件输入通过；`gs://` URI 透传尚未实测 |
 | JSON 输出与 JSON Schema | 映射到上游；`strict:true` 暂不支持 |
-| 原生搜索 | 两个协议的搜索、引用及中文流式引用均通过；引用链接解析为真实网址；模型不支持搜索时转给目录中的搜索模型 |
+| 原生搜索 | 两个协议的搜索、引用及中文流式引用均通过；引用链接解析为真实网址；Messages 回复附带 `server_tool_use` 和 `web_search_tool_result` 块（Claude Code 的网页搜索从中读取来源链接）；`tool_choice` 指定搜索工具时照常搜索；模型不支持搜索时转给目录中的搜索模型 |
 | 图片生成输出 | Responses 图片生成，以及基于生成图片的后续编辑（本轮验收受图片额度阻止，前一轮通过；回放由单元测试覆盖） |
 | token 计数 | `/v1/messages/count_tokens`、`/v1/responses/input_tokens` |
 | Responses 历史 | `previous_response_id`、查询、删除、`input_items`；SQLite 持久化 |
@@ -101,7 +101,7 @@ curl http://127.0.0.1:8080/v1/messages \
 
 具体模型是否接受某种输入或思考参数，还取决于 Antigravity 上游。
 
-原生搜索不能与函数工具同时发送给上游：两者同时出现时保留函数工具、忽略搜索，并在日志里记录。Codex 默认附带搜索工具，因此不受影响。Gemini 搜索的引用链接是 `vertexaisearch.cloud.google.com` 的跳转地址，标题只有域名；服务会对每个跳转地址发一次不带凭据的 HEAD 请求（经过 `proxy_url`，不跟随跳转），把引用换成真实网址，最多等待 3 秒，未解析的保留原链接。实测上游接受 `includedDomains`/`excludeDomains` 但不执行，所以域名限制不转发。
+原生搜索不能与函数工具同时发送给上游：两者同时出现时保留函数工具、忽略搜索，并在日志里记录。Codex 默认附带搜索工具，因此不受影响。Gemini 搜索的引用链接是 `vertexaisearch.cloud.google.com` 的跳转地址，标题只有域名；服务会对每个跳转地址发一次不带凭据的 HEAD 请求（经过 `proxy_url`，不跟随跳转），把引用换成真实网址，最多等待 3 秒，未解析的保留原链接。Messages 的搜索回复在正文之后附上 `server_tool_use`（搜索词）和 `web_search_tool_result`（去重后的来源网址和标题）两个块；搜索来源随最后一个数据块到达，所以这两个块排在正文后面，与 Responses 的 `web_search_call` 一致。客户端在后续历史中带回这两种块时，它们会被丢弃并记入日志。实测上游接受 `includedDomains`/`excludeDomains` 但不执行，所以域名限制不转发。
 
 工具选择为 `auto` 或未指定时，函数调用使用 Gemini 的 `VALIDATED` 模式：实测在默认的 `AUTO` 模式下，Gemini 会返回 schema 不允许的参数（例如枚举之外的值），`VALIDATED` 下参数保持在 schema 范围内。强制调用（`required`/指定工具）和 `none` 保持原样。图片生成目前使用账号提供的图片模型及其默认生成设置，未提供独立 Images API；Messages 不能返回生成图片。上游只对较新的客户端版本开放新模型（实测 `antigravity/1.0.0` 调用 `gemini-3.8-flash-high` 返回 404）。`user_agent` 留空时，服务在启动时和之后每 6 小时读取 Antigravity 官方发布清单，以最新版本号发送 `antigravity/<版本>`；读取失败时沿用已知版本，初始值为 2.24.0。配置为 `antigravity/<版本>` 时，该版本作为最低版本，发布清单中的版本更新时仍会升级；其他值原样发送，不再自动更新。读取发布清单经过 `proxy_url`。
 

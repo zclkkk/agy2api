@@ -162,9 +162,11 @@ func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Inp
 		}
 		appendContent(&in.Request, role, parts)
 	}
+	searchTools := map[string]bool{}
 	for _, t := range r.Tools {
 		if strings.HasPrefix(t.Type, "web_search_") {
 			in.Search = true
+			searchTools[t.Name] = true
 			in.ignoreSearchOptions(map[string]bool{"allowed_domains": len(t.AllowedDomains) > 0, "blocked_domains": len(t.BlockedDomains) > 0, "user_location": present(t.UserLocation)})
 			continue
 		}
@@ -193,8 +195,12 @@ func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Inp
 		if err := json.Unmarshal(r.ToolChoice, &choice); err != nil {
 			return in, invalid("tool_choice", "tool_choice must be an object")
 		}
-		if err := setChoice(&in, choice.Type, choice.Name); err != nil {
-			return in, err
+		// Choosing the search tool needs no function config: a search request
+		// is sent with Google Search as its tool.
+		if !(choice.Type == "tool" && searchTools[choice.Name]) {
+			if err := setChoice(&in, choice.Type, choice.Name); err != nil {
+				return in, err
+			}
 		}
 	}
 	if t := r.Thinking; t != nil {

@@ -581,6 +581,17 @@ class Live:
             ]
         assert citations, "no search citations returned"
         type(r).model_validate(r.model_dump())
+        if proto == "messages":
+            # Anthropic clients read source links from the search result block.
+            results = [
+                item.url
+                for b in r.content
+                if b.type == "web_search_tool_result"
+                for item in b.content
+            ]
+            assert results and all(
+                "grounding-api-redirect" not in u for u in results
+            ), f"search result block missing or unresolved: {results}"
         # Search redirect links are replaced by the pages they point to.
         urls = [c.url for c in citations]
         resolved = [u for u in urls if "grounding-api-redirect" not in u]

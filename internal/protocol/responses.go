@@ -334,6 +334,11 @@ func responseChoice(in *Input, value json.RawMessage) error {
 		}
 		in.Request.ToolConfig = &ag.ToolConfig{FunctionCallingConfig: ag.CallingConfig{Mode: "ANY", AllowedNames: names}}
 		return nil
+	case "web_search", "web_search_preview", "web_search_2025_08_26", "web_search_preview_2025_03_11":
+		// A search request is sent with Google Search as its tool already.
+		if in.Search {
+			return nil
+		}
 	}
 	return setChoice(in, t.Type, t.Name)
 }

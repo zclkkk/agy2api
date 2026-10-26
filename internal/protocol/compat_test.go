@@ -406,3 +406,81 @@ func TestIgnoredSearchOptionsAreReported(t *testing.T) {
 		t.Fatalf("plain search should not warn: %v", in.Warnings)
 	}
 }
+
+func TestForcedSearchChoiceIsAccepted(t *testing.T) {
+	d := Decoder{State: testStore(t)}
+	in, err := d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"news"}],
+		"tools":[{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"tool","name":"web_search"}}`), false)
+	if err != nil || !in.Search || in.Request.ToolConfig != nil {
+		t.Fatalf("Messages forced search: %v %+v", err, in.Request.ToolConfig)
+	}
+	if _, err := d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"news"}],
+		"tools":[{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"tool","name":"missing"}}`), false); err == nil {
+		t.Fatal("choosing an undeclared tool must still fail")
+	}
+	in, err = d.Responses(context.Background(), []byte(`{"model":"gemini-test","input":"news","tools":[{"type":"web_search"}],"tool_choice":{"type":"web_search"}}`))
+	if err != nil || !in.Search || len(in.Warnings) != 0 {
+		t.Fatalf("Responses forced search: %v %v", err, in.Warnings)
+	}
+}
+
+func TestMessagesSearchReturnsResultBlocks(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	var grounding ag.Grounding
+	if err := json.Unmarshal([]byte(`{"webSearchQueries":["latest python"],"groundingChunks":[{"web":{"uri":"https://www.python.org/downloads/","title":"python.org"}},{"web":{"uri":"https://www.python.org/downloads/","title":"python.org"}},{"web":{"uri":"https://docs.python.org/3/","title":"docs.python.org"}}],
+		"groundingSupports":[{"segment":{"startIndex":0,"endIndex":6,"text":"Python"},"groundingChunkIndices":[0]}]}`), &grounding); err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	var starts []string
+	r := NewRenderer("messages", Input{Model: "gemini-test", Search: true}, s, func(name string, v map[string]any) error {
+		events = append(events, name)
+		if block, ok := v["content_block"].(map[string]any); ok {
+			starts = append(starts, block["type"].(string))
+		}
+		return nil
+	})
+	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "Python 3.15 is current."}}, Finish: "STOP", Grounding: &grounding}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Finish(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(starts, ",") != "text,server_tool_use,web_search_tool_result" || events[len(events)-1] != "message_stop" {
+		t.Fatalf("blocks %v events %v", starts, events)
+	}
+	var out struct {
+		Content []struct {
+			Type      string          `json:"type"`
+			ID        string          `json:"id"`
+			ToolUseID string          `json:"tool_use_id"`
+			Input     json.RawMessage `json:"input"`
+			Content   []struct {
+				Type, URL, Title, EncryptedContent string
+			} `json:"content"`
+		} `json:"content"`
+		Stop string `json:"stop_reason"`
+	}
+	if err := json.Unmarshal(r.Result, &out); err != nil {
+		t.Fatal(err)
+	}
+	use, result := out.Content[1], out.Content[2]
+	if use.Type != "server_tool_use" || string(use.Input) != `{"query":"latest python"}` || result.ToolUseID != use.ID || out.Stop != "end_turn" {
+		t.Fatalf("search blocks: %s", r.Result)
+	}
+	if len(result.Content) != 2 || result.Content[0].URL != "https://www.python.org/downloads/" || result.Content[1].Title != "docs.python.org" {
+		t.Fatalf("results should be the distinct cited pages: %+v", result.Content)
+	}
+	// Without cited pages there is nothing to report.
+	r = NewRenderer("messages", Input{Model: "gemini-test", Search: true}, s, nil)
+	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "no sources"}}, Finish: "STOP", Grounding: &ag.Grounding{Queries: []string{"q"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Finish(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(r.Result), "server_tool_use") {
+		t.Fatalf("empty search reported blocks: %s", r.Result)
+	}
+}

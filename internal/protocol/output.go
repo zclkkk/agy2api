@@ -537,9 +537,16 @@ func (r *Renderer) messageCitations(text string) ([]any, error) {
 	return result, nil
 }
 
+// searchTrace reports the search the model ran: a web_search_call item for
+// Responses, and for Messages the server_tool_use and web_search_tool_result
+// blocks that Anthropic clients such as Claude Code read source links from.
+// They follow the answer because grounding arrives with the last chunk.
 func (r *Renderer) searchTrace() error {
-	if r.format != "responses" || !r.input.Search || r.grounding == nil {
+	if !r.input.Search || r.grounding == nil {
 		return nil
+	}
+	if r.format == "messages" {
+		return r.searchBlocks()
 	}
 	id := ag.ID("ws_agy_")
 	index := len(r.items)
@@ -562,6 +569,51 @@ func (r *Renderer) searchTrace() error {
 		return err
 	}
 	r.items = append(r.items, item)
+	return nil
+}
+
+func (r *Renderer) searchBlocks() error {
+	query := ""
+	if len(r.grounding.Queries) > 0 {
+		query = r.grounding.Queries[0]
+	}
+	results := []any{}
+	seen := map[string]bool{}
+	for _, chunk := range r.grounding.Chunks {
+		w := chunk.Web
+		if w == nil || w.URI == "" || seen[w.URI] {
+			continue
+		}
+		seen[w.URI] = true
+		sealed, err := r.state.Seal(r.model(), map[string]string{"url": w.URI, "title": w.Title})
+		if err != nil {
+			return err
+		}
+		results = append(results, map[string]any{"type": "web_search_result", "url": w.URI, "title": w.Title, "encrypted_content": sealed, "page_age": nil})
+	}
+	if len(results) == 0 {
+		return nil
+	}
+	id := ag.ID("srvtoolu_agy_")
+	index := len(r.items)
+	use := map[string]any{"type": "server_tool_use", "id": id, "name": "web_search", "input": map[string]any{"query": query}}
+	if err := r.event("content_block_start", map[string]any{"index": index, "content_block": map[string]any{"type": "server_tool_use", "id": id, "name": "web_search", "input": map[string]any{}}}); err != nil {
+		return err
+	}
+	if err := r.event("content_block_delta", map[string]any{"index": index, "delta": map[string]any{"type": "input_json_delta", "partial_json": string(raw(use["input"]))}}); err != nil {
+		return err
+	}
+	if err := r.event("content_block_stop", map[string]any{"index": index}); err != nil {
+		return err
+	}
+	result := map[string]any{"type": "web_search_tool_result", "tool_use_id": id, "content": results}
+	if err := r.event("content_block_start", map[string]any{"index": index + 1, "content_block": result}); err != nil {
+		return err
+	}
+	if err := r.event("content_block_stop", map[string]any{"index": index + 1}); err != nil {
+		return err
+	}
+	r.items = append(r.items, use, result)
 	return nil
 }
 
