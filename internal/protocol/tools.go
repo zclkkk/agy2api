@@ -19,54 +19,133 @@ type ToolName struct {
 	Custom    bool   `json:"custom,omitempty"`
 }
 
-// declare registers a client tool and returns the name sent upstream.
-func (in *Input) declare(t ToolName) string {
-	native := nativeName(qualify(t.Namespace, t.Name))
+// ToolChoice retains the requested mode and subset until all tools are known.
+// A nil Allowed slice means unrestricted; an empty non-nil slice allows none.
+type ToolChoice struct {
+	Mode    string
+	Allowed []ToolName
+	Search  bool
+}
+
+func (in *RequestIntent) declare(t ToolName) (string, error) {
+	native := toolSymbol(t)
 	if in.Tools == nil {
 		in.Tools = map[string]ToolName{}
 	}
+	if _, exists := in.Tools[native]; exists {
+		return "", invalid("tools", "duplicate or colliding tool identity")
+	}
 	in.Tools[native] = t
-	return native
+	return native, nil
 }
 
-// PublicTool maps an upstream function name back to the client's identity.
-func (in *Input) PublicTool(native string) ToolName {
+func (in *RequestIntent) PublicTool(native string) ToolName {
 	if t, ok := in.Tools[native]; ok {
 		return t
 	}
 	return ToolName{Name: native}
 }
 
-// qualify flattens a Responses namespace into one function name, following the
-// convention Codex uses for MCP tools.
-func qualify(namespace, name string) string {
-	if namespace == "" || strings.HasPrefix(name, "mcp__") || name == namespace || strings.HasPrefix(name, namespace+"__") {
-		return name
-	}
-	if strings.HasSuffix(namespace, "__") {
-		return namespace + name
-	}
-	return namespace + "__" + name
-}
-
 var invalidNameChars = regexp.MustCompile(`[^a-zA-Z0-9_.:-]`)
 
-// nativeName returns a function name Gemini accepts: 1-128 characters from
-// [a-zA-Z0-9_.:-], starting with a letter or underscore. Names that need
-// changes get a short hash so distinct client names stay distinct.
+// The agy_ prefix is reserved for encoded identities. Valid user names with
+// that prefix are encoded too, keeping encoded and unmodified names disjoint.
 func nativeName(public string) string {
 	name := invalidNameChars.ReplaceAllString(public, "_")
-	if name == "" || !(name[0] == '_' || ('a' <= name[0] && name[0] <= 'z') || ('A' <= name[0] && name[0] <= 'Z')) {
-		name = "_" + name
-	}
-	if name == public && len(name) <= 128 {
+	validStart := len(name) > 0 && (name[0] == '_' || name[0] >= 'a' && name[0] <= 'z' || name[0] >= 'A' && name[0] <= 'Z')
+	if validStart && name == public && len(name) <= 128 && !strings.HasPrefix(name, "agy_") {
 		return name
 	}
 	sum := sha256.Sum256([]byte(public))
-	if len(name) > 119 {
-		name = name[:119]
+	return "agy_fn_" + hex.EncodeToString(sum[:16])
+}
+
+func toolSymbol(t ToolName) string {
+	if t.Namespace == "" && !t.Custom {
+		return nativeName(t.Name)
 	}
-	return name + "_" + hex.EncodeToString(sum[:4])
+	kind, prefix := "function", "agy_ns_"
+	if t.Custom {
+		kind = "custom"
+		if t.Namespace == "" {
+			prefix = "agy_custom_"
+		}
+	}
+	// Only identity fields participate, so adding unrelated ToolName metadata
+	// cannot change the names used by existing signed conversation history.
+	sum := sha256.Sum256(raw([3]string{t.Namespace, t.Name, kind}))
+	return prefix + hex.EncodeToString(sum[:16])
+}
+
+func (in *RequestIntent) selectTools() error {
+	choice := in.Choice
+	mode := choice.Mode
+	if mode == "" {
+		mode = "auto"
+	}
+	search := in.Search
+	if choice.Allowed != nil {
+		allowed := map[string]bool{}
+		for _, tool := range choice.Allowed {
+			name := toolSymbol(tool)
+			declared, ok := in.Tools[name]
+			if !ok || declared != tool {
+				return invalid("tool_choice", "selected tool is not declared")
+			}
+			allowed[name] = true
+		}
+		if choice.Search && !search {
+			return invalid("tool_choice", "selected search tool is not declared")
+		}
+		search = choice.Search
+		var filtered []ag.Tool
+		for _, tool := range in.Request.Tools {
+			var functions []ag.Function
+			for _, f := range tool.Functions {
+				if allowed[f.Name] {
+					functions = append(functions, f)
+				}
+			}
+			if len(functions) > 0 {
+				filtered = append(filtered, ag.Tool{Functions: functions})
+			}
+		}
+		if in.Search && choice.Search && hasFunctions(in.Request.Tools) && !hasFunctions(filtered) {
+			in.warn("function tools omitted: tool_choice selects web search, which Antigravity cannot combine with function tools")
+		}
+		in.Request.Tools = filtered
+	}
+	if mode == "none" {
+		search = false
+	}
+	if search && hasFunctions(in.Request.Tools) {
+		search = false
+		in.warn("web search ignored: Antigravity cannot combine it with function tools")
+	}
+	in.Search = search
+	in.Request.ToolConfig = nil
+	if mode == "required" && !search && !hasFunctions(in.Request.Tools) {
+		return invalid("tool_choice", "required tool choice has no callable tools")
+	}
+	if !search && (hasFunctions(in.Request.Tools) || mode == "none") {
+		nativeMode := "VALIDATED"
+		if mode == "required" {
+			nativeMode = "ANY"
+		}
+		if mode == "none" {
+			nativeMode = "NONE"
+		}
+		config := ag.CallingConfig{Mode: nativeMode}
+		if mode == "required" && choice.Allowed != nil {
+			for _, tool := range in.Request.Tools {
+				for _, f := range tool.Functions {
+					config.AllowedNames = append(config.AllowedNames, f.Name)
+				}
+			}
+		}
+		in.Request.ToolConfig = &ag.ToolConfig{FunctionCallingConfig: config}
+	}
+	return nil
 }
 
 func objectArguments(v json.RawMessage) (json.RawMessage, error) {
@@ -114,44 +193,26 @@ func toolResult(id, name string, content json.RawMessage, isError bool) (ag.Part
 
 // setChoice maps a tool choice. Parallel-call limits have no Antigravity
 // equivalent and are accepted as best effort.
-func setChoice(in *Input, choice, name string) error {
-	c := ag.CallingConfig{}
+func setChoice(in *RequestIntent, choice, name string) error {
 	switch choice {
-	case "auto":
-		c.Mode = "AUTO"
+	case "auto", "none":
+		in.Choice = ToolChoice{Mode: choice}
 	case "any", "required":
-		c.Mode = "ANY"
-	case "none":
-		c.Mode = "NONE"
+		in.Choice = ToolChoice{Mode: "required"}
 	case "tool", "function", "custom":
 		if name == "" {
 			return invalid("tool_choice", "tool name is required")
 		}
-		native := nativeName(name)
-		found := false
-		for _, t := range in.Request.Tools {
-			for _, f := range t.Functions {
-				if f.Name == native {
-					found = true
-				}
-			}
-		}
-		if !found {
-			return invalid("tool_choice", "selected tool is not declared")
-		}
-		c.Mode = "ANY"
-		c.AllowedNames = []string{native}
+		in.Choice = ToolChoice{Mode: "required", Allowed: []ToolName{{Name: name, Custom: choice == "custom"}}}
 	default:
 		in.warn("ignored tool_choice type %q", choice)
-		return nil
 	}
-	in.Request.ToolConfig = &ag.ToolConfig{FunctionCallingConfig: c}
 	return nil
 }
 
 // ignoreSearchOptions reports the web search options a request set. Gemini
 // search accepts domain filters but does not apply them, so none are sent.
-func (in *Input) ignoreSearchOptions(options map[string]bool) {
+func (in *RequestIntent) ignoreSearchOptions(options map[string]bool) {
 	var set []string
 	for name, ok := range options {
 		if ok {

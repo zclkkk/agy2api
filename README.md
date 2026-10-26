@@ -75,7 +75,7 @@ curl http://127.0.0.1:8080/v1/messages \
 | 真实客户端请求形态 | Codex CLI 0.164 端到端通过，本地压缩和远程压缩都可用；Claude Code 2.1.310 端到端通过（依赖默认开启的客户端 system 标记清理，见下方） |
 | 函数工具 | 声明、工具选择、并行调用、工具结果回传、签名恢复；Responses 的 `namespace` 工具组与 `custom` 自由文本工具；未强制调用时使用 Gemini 的 `VALIDATED` 模式，参数受 schema 约束 |
 | 工具 schema | 转换为上游接受的子集：内联 `$ref`、合并 `allOf`、类型列表转 `nullable`、`const`/非字符串 `enum` 转换；参数根节点必须是对象，根节点的联合类型保留最具体的分支 |
-| 工具名 | Gemini 接受字母、数字、`_`、`.`、`:`、`-`，以字母或下划线开头，最长 128 字符；其他名字自动映射，返回时还原 |
+| 工具名 | Gemini 接受字母、数字、`_`、`.`、`:`、`-`，以字母或下划线开头，最长 128 字符；其他名字自动映射，返回时还原；命名空间与工具类型参与身份映射，保留内部 `agy_` 前缀以避免与用户工具重名 |
 | 思考内容 | 输出与工具回放通过；支持预算/强度转换、加密回放、篡改检查 |
 | 图片与文件输入 | 图片、PDF、HTTPS 图片均通过；Responses 的音频和视频文件输入通过；`gs://` URI 透传尚未实测 |
 | JSON 输出与 JSON Schema | 映射到上游；`strict:true` 暂不支持 |
@@ -103,7 +103,7 @@ curl http://127.0.0.1:8080/v1/messages \
 
 原生搜索不能与函数工具同时发送给上游：两者同时出现时保留函数工具、忽略搜索，并在日志里记录。Codex 默认附带搜索工具，因此不受影响。客户端用 `tool_choice` 显式指定搜索工具时则相反：这一轮去掉函数工具，按搜索请求发出，同样记入日志。历史中已有的函数调用和结果照常保留，实测上游接受未声明的历史调用，前提是它们带签名，而服务端发送前会为缺签名的调用补上占位签名。Gemini 搜索的引用链接是 `vertexaisearch.cloud.google.com` 的跳转地址，标题只有域名；服务会对每个跳转地址发一次不带凭据的 HEAD 请求（经过 `proxy_url`，不跟随跳转），把引用换成真实网址，最多等待 3 秒，未解析的保留原链接。Messages 的搜索回复在正文之后附上 `server_tool_use`（搜索词）和 `web_search_tool_result`（去重后的来源网址和标题）两个块；搜索来源随最后一个数据块到达，所以这两个块排在正文后面，与 Responses 的 `web_search_call` 一致。客户端在后续历史中带回这两种块时，它们会被丢弃并记入日志。实测上游接受 `includedDomains`/`excludeDomains` 但不执行，所以域名限制不转发。
 
-工具选择为 `auto` 或未指定时，函数调用使用 Gemini 的 `VALIDATED` 模式：实测在默认的 `AUTO` 模式下，Gemini 会返回 schema 不允许的参数（例如枚举之外的值），`VALIDATED` 下参数保持在 schema 范围内。强制调用（`required`/指定工具）保持原样。工具选择为 `none` 时关闭原生搜索，不切换搜索模型；函数声明保留，调用模式保持 `NONE`。图片生成目前使用账号提供的图片模型及其默认生成设置，未提供独立 Images API；Messages 不能返回生成图片。上游只对较新的客户端版本开放新模型（实测 `antigravity/1.0.0` 调用 `gemini-3.8-flash-high` 返回 404）。`user_agent` 留空时，服务在启动时和之后每 6 小时读取 Antigravity 官方发布清单，以最新版本号发送 `antigravity/<版本>`；读取失败时沿用已知版本，初始值为 2.24.0。配置为 `antigravity/<版本>` 时，该版本作为最低版本，发布清单中的版本更新时仍会升级；其他值原样发送，不再自动更新。读取发布清单经过 `proxy_url`。
+工具选择为 `auto` 或未指定时，函数调用使用 Gemini 的 `VALIDATED` 模式：实测在默认的 `AUTO` 模式下，Gemini 会返回 schema 不允许的参数（例如枚举之外的值），`VALIDATED` 下参数保持在 schema 范围内。强制调用（`required`/指定工具）保持原样。Responses 的 `allowed_tools` 在 `auto` 和 `required` 下都保留允许子集；选择未声明的工具会返回 400。工具选择为 `none` 时关闭原生搜索，不切换搜索模型；函数声明保留，调用模式保持 `NONE`。图片生成目前使用账号提供的图片模型及其默认生成设置，未提供独立 Images API；Messages 不能返回生成图片。上游只对较新的客户端版本开放新模型（实测 `antigravity/1.0.0` 调用 `gemini-3.8-flash-high` 返回 404）。`user_agent` 留空时，服务在启动时和之后每 6 小时读取 Antigravity 官方发布清单，以最新版本号发送 `antigravity/<版本>`；读取失败时沿用已知版本，初始值为 2.24.0。配置为 `antigravity/<版本>` 时，该版本作为最低版本，发布清单中的版本更新时仍会升级；其他值原样发送，不再自动更新。读取发布清单经过 `proxy_url`。
 
 推理强度映射为 Gemini 的推理等级：`minimal` 按 `low` 发送（部分模型不接受 `minimal`），`xhigh`/`max` 按 `high` 发送。指定思考预算时不低于模型目录的 `minThinkingBudget`；自适应思考使用动态预算。Gemini 无法关闭思考（预算 0 会被部分模型拒绝、被其他模型忽略），因此 `reasoning.effort: "none"` 和 `thinking.type: "disabled"` 使用目录给出的最低预算并不返回思考内容，同时在日志的 `warnings` 中记录。部分 Gemini 模型会只把思考签名放在工具调用或回复文本上，未必返回可见思考块。Messages 的 `thinking.display: "omitted"` 会返回不含思考文本的签名块，回放照常生效。
 
@@ -140,7 +140,7 @@ remote_compaction = "v2"
 
 日志的 `warnings` 只记录规则与命中数量，例如 `sanitize_client_markers: billing_header=1 claude_identity=1`，不记录被移除的文本。关闭清洗时，Claude Code 的这些标记可能使 Antigravity 返回 `429 RESOURCE_EXHAUSTED`；实际额度耗尽等其他上游错误仍按原样处理。
 
-Messages 正文后不再追加空的 thinking 签名块，以免 Claude Code 把它当作最后一条消息而输出空 `result`。正文签名改用现有状态库保存，索引绑定模型、会话、system 指令、之前的历史和正文哈希，下一轮 Messages 请求自动恢复；Responses 继续用随响应返回的签名载体，不查这份记录。每段回复正文都会记录，没有签名的也记，因此查不到记录就说明之前的历史有变化（例如客户端删改了更早的思考块）或记录已过期：这些正文不带签名发出，并在日志的 `warnings` 中记录数量。历史版本返回的签名载体仍可回放。
+Messages 正文后不再追加空的 thinking 签名块，以免 Claude Code 把它当作最后一条消息而输出空 `result`。正文签名改用现有状态库保存，索引绑定模型、会话、system 指令、之前的历史和正文哈希，下一轮 Messages 请求自动恢复；Responses 继续用随响应返回的签名载体，不查这份记录。每段回复正文都会记录，没有签名的也记，因此查不到记录就说明之前的历史有变化（例如客户端删改了更早的思考块）或记录已过期：这些正文不带签名发出，并在日志的 `warnings` 中记录数量。新签名载体使用 `agy2.` 版本，携带经过认证的实际模型来源；历史 `agy1.` 载体仍可按实际执行模型回放。
 
 2026-10-26 使用 Claude Code 2.1.310 对照验证：同一请求关闭清洗时返回 429，开启后返回 200；普通回答及只读工具完整回合通过。Codex 0.164.0、OpenCode V2 2.1.4 的回归也通过。详见[本功能验收记录](docs/client-markers-validation-2026-10-26.json)。
 
@@ -154,13 +154,13 @@ data/
   state.db           Responses 历史、工具签名索引和回放加密密钥
 ```
 
-Responses 默认 `store:true`。设为 `false` 时不保存该响应及其上下文，也不能用其 ID 继续会话；为了工具回合能继续，短期工具签名索引仍保留模型、工具名、参数摘要和签名，不保存工具参数原文。Messages 的正文签名也使用有界缓存，仅保存摘要索引和签名，不保存正文原文；缓存未命中时保留正文、继续请求。思考回放数据随响应加密返回客户端。普通保存的会话记录没有数据库级加密，请保护数据目录。
+Responses 默认 `store:true`。设为 `false` 时不保存该响应及其上下文，也不能用其 ID 继续会话；为了工具回合能继续，短期工具签名索引仍保留模型、工具名、参数摘要和签名，不保存工具参数原文。Messages 的正文签名也使用有界缓存，仅保存摘要索引和签名，不保存正文原文；缓存未命中时保留正文、继续请求。思考回放数据随响应加密返回客户端。普通保存的会话记录没有数据库级加密，请保护数据目录。新 Responses 记录带版本号、实际模型和持久历史指令。旧记录在读取时保留正文、工具数据并从原始输入恢复 system/developer 消息；由于缺少可靠的实际模型来源，旧思考与签名先降级，再按可验证的工具索引恢复。升级不删除凭据或数据库。存储故障会报错，不会伪装成缓存未命中。
 
 状态默认保留 168 小时，最多 10000 条、总计 1 GiB（`max_state_bytes`）；超限时先清理最旧的记录，上限为软限制，可能短暂超出几十条小记录。记录过期、被清理或数据库丢失后，旧会话仍能继续：无法恢复的思考块会被丢弃，工具调用改用 Antigravity 接受的占位签名，代价是模型看不到之前的思考内容。状态绑定 Antigravity project，更换账号应使用新的数据目录。不要同时运行多个进程使用同一份账号数据。
 
 并发请求达到 `max_concurrent_requests` 后，新请求最多排队 2 分钟，超时才返回 `429`。`count_tokens` 不占用并发名额。模型目录缓存 5 分钟；刷新失败时继续使用旧目录，30 秒后重试。
 
-客户端应把返回的思考块、`encrypted_content`、工具 ID 和参数原样带到下一轮。不要把签名当作可编辑文本；被修改的思考内容会被丢弃，不会发给上游。使用 `previous_response_id` 时，新的顶层 `instructions` 独立生效，不自动继承上一次的顶层指令；链中途更换模型时，之前的思考内容和签名会被移除。
+客户端应把返回的思考块、`encrypted_content`、工具 ID 和参数原样带到下一轮。不要把签名当作可编辑文本；被修改的思考内容会被丢弃，不会发给上游。使用 `previous_response_id` 时，新的顶层 `instructions` 独立生效，不自动继承上一次的顶层指令；历史中的 `input` system/developer 消息会继承；链中途实际执行模型发生变化（包括搜索路由的变化）时，之前的思考内容和签名会被移除。
 
 本地日志每个请求一行，包含状态码、模型和 `warnings`（被忽略的字段、降级、预算调整等）。上游错误的原文只写本地日志，不返回给客户端。
 
@@ -178,6 +178,7 @@ CGO_ENABLED=0 go build -trimpath -o bin/agy2api ./cmd/agy2api
 
 ```sh
 python -m pip install -r tests/requirements.txt
+python -m unittest discover -s tests -p 'test_*.py'
 python tests/sdk_smoke.py --binary bin/agy2api
 ```
 
@@ -192,7 +193,7 @@ python tests/live_validate.py --config config.json --report /tmp/agy2api-live-re
 python tests/live_validate.py --only thinking --report /tmp/agy2api-thinking-report.json
 ```
 
-验收覆盖模型目录（只列出 Gemini，拒绝其他模型）、两个协议的流式和非流式调用、系统指令、约 4.8 万输入 token 的长上下文、单个/并行工具、工具返回图片、思考及签名回放、结构化输出、图片/PDF/音视频文件、搜索引用（含链接解析）与搜索转发、输出上限、取消、真实 OAuth 刷新、重启恢复、删除、API 密钥验证、并发排队、Claude Code 与 Codex 请求形态、会话中途换模型、状态库丢失后的续聊、以 assistant 结尾的请求、两种上下文压缩方式和客户端版本检查。测试使用合成内容；报告不包含凭据或原始签名。原始运行报告属于生成文件，Git 会忽略 `tests/live-report*.json`；`docs/` 只保留整理后的验收记录。
+验收覆盖模型目录（只列出 Gemini，拒绝其他模型）、两个协议的流式和非流式调用、系统指令、约 4.8 万输入 token 的长上下文、单个/并行工具、工具返回图片、思考及签名回放、结构化输出、图片/PDF/音视频文件、搜索引用（含链接解析）与搜索转发、输出上限、取消、真实 OAuth 刷新、重启恢复、删除、API 密钥验证、并发排队、Claude Code 与 Codex 请求形态、会话中途换模型、状态库丢失后的续聊、以 assistant 结尾的请求、两种上下文压缩方式和客户端版本检查。测试使用合成内容；报告不包含凭据或原始签名。任何 `fail` 都使验收脚本以非零状态退出，`blocked` 和 `partial` 单独报告。原始运行报告属于生成文件，Git 会忽略 `tests/live-report*.json`；`docs/` 只保留整理后的验收记录。
 
 该次验收的限制：
 
@@ -205,19 +206,25 @@ python tests/live_validate.py --only thinking --report /tmp/agy2api-thinking-rep
 - `gs://` 文件 URI 尚未使用真实可访问对象验收；后台任务等未实现能力仍按上面的范围明确拒绝。
 - usage 使用上游提供的字段；部分模型不单独上报思考 token，此时 `reasoning_tokens=0` 不表示没有思考。报告中的 usage 是场景内采样响应的数据，不能相加当作整轮消耗。
 
+本次核心重构的独立验收记录见[架构重构验收](docs/architecture-validation-2026-10-26.json)。记录保留全量运行与定向复验的结果区别；上面的旧验收记录继续作为历史快照。
+
 ## 代码结构
 
 ```text
 cmd/agy2api          login / serve / models / version
 internal/auth       单账号 OAuth 与刷新
 internal/config     配置及校验
-internal/antigravity 原生请求、SSE、模型发现和 token 计数
-internal/protocol   Responses / Messages 编解码、schema 转换与回放
+internal/antigravity 原生请求、SSE、模型发现、token 计数和 Gemini schema 转换
+internal/protocol   纯协议解码、统一请求规划、版本化回放、共享流聚合与两套输出编码器
 internal/server     HTTP 路由、认证、并发控制、媒体下载
 internal/state      SQLite 状态与加密载体
 internal/securefile 私有文件原子写入
 tests/              可选的 SDK 模拟验收与真实账号验收
 docs/               已整理的验收记录
 ```
+
+请求处理只经过一个规划入口：`Decoder` 解析为 `RequestIntent`，保留工具选择、原始工具身份与回放引用；`Planner.Prepare` 负责读取历史、工具选择与实际模型路由、历史拼接、清理、签名恢复、媒体处理和会话规范化，最后生成独立的 `PreparedRequest`。对话内容是否为空在历史合并与回放后检查，允许仅更新指令或触发压缩的续聊请求。HTTP 路由显式指定协议和操作，生成、计数与压缩共用该入口。
+
+`output.go` 只聚合上游分块和推进响应生命周期，`output_state.go` 在完成事件发出前保存回放记录。`encode_messages.go`、`encode_responses.go` 只根据已准备好的块生成协议内容和事件，编码器不持有数据库或上游客户端。流式与非流式响应使用同一份聚合结果。客户端标记规则保留在 `sanitize.go`，Gemini schema 限制归属 `antigravity/schema.go`。
 
 上游协议参考本地 CLIProxyAPI；本项目不依赖 CPA 模块。相关来源与许可保留在 `THIRD_PARTY_NOTICES`。

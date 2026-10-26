@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
-	"github.com/zclkkk/agy2api/internal/state"
 )
 
 type Error struct {
@@ -35,37 +34,33 @@ type ThinkingIntent struct {
 	Effort string
 }
 
-// Input is a decoded client request: the native request plus what the
-// response renderer needs to answer in the client's protocol.
-type Input struct {
+// RequestIntent preserves client intent. Decoding performs no state or network
+// access. Its content uses Gemini's part vocabulary, with opaque replay items
+// kept separately until Planner has selected the actual upstream model.
+type RequestIntent struct {
+	Format        Format
 	Model         string // model requested by the client
-	Upstream      string // model sent to Antigravity when it differs from Model
-	Kind          string // Antigravity request type, set by Prepare
 	Request       ag.Request
 	Stream        bool
 	Store         bool
 	PreviousID    string
 	OriginalItems []json.RawMessage
 	Search        bool
-	SearchChosen  bool // tool_choice selects the search tool
+	Choice        ToolChoice
 	Metadata      json.RawMessage
-	Options       json.RawMessage
+	Options       map[string]json.RawMessage
 	Thinking      ThinkingIntent
 	HideThinking  bool                // Messages thinking.display=omitted
 	Tools         map[string]ToolName // native function name -> client identity
 	ClientSession string              // session ID found in the request body
 	Compact       string              // "trigger" (compaction_trigger item) or "endpoint" (/v1/responses/compact)
 	Warnings      []string
+	Instructions  *ag.Content // this request's top-level instructions
+	HistorySystem *ag.Content // system/developer messages that belong to history
+	references    []replayReference
 }
 
-func (in *Input) UpstreamModel() string {
-	if in.Upstream != "" {
-		return in.Upstream
-	}
-	return in.Model
-}
-
-func (in *Input) warn(format string, args ...any) {
+func (in *RequestIntent) warn(format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
 	for _, w := range in.Warnings {
 		if w == message {
@@ -75,8 +70,8 @@ func (in *Input) warn(format string, args ...any) {
 	in.Warnings = append(in.Warnings, message)
 }
 
-// Decoder turns client requests into Inputs, restoring replay state.
-type Decoder struct{ State *state.Store }
+// Decoder only parses the public wire protocols; Planner owns replay and state.
+type Decoder struct{}
 
 // decodeRequest decodes a top-level request object. Unknown fields are ignored
 // so new client fields do not break requests; their names are reported unless
@@ -145,12 +140,10 @@ func system(req *ag.Request, text string) {
 	req.System.Parts = append(req.System.Parts, ag.Part{Text: text})
 }
 
-func validate(in *Input) error {
+// validateIntent checks fields available without resolving conversation history.
+func validateIntent(in *RequestIntent) error {
 	if strings.TrimSpace(in.Model) == "" {
 		return invalid("model", "model is required")
-	}
-	if len(in.Request.Contents) == 0 {
-		return invalid("input", "at least one message is required")
 	}
 	g := in.Request.Generation
 	if g.MaxTokens != nil && *g.MaxTokens < 1 {

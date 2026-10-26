@@ -30,12 +30,12 @@ func (x *textSignatureIndex) key(text string) string {
 	return digest(raw([2]string{hex.EncodeToString(x.prefix.Sum(nil)), text}))
 }
 
-// RestoreTextSignatures runs on Messages generation requests after routing and
+// restoreTextSignatures runs on Messages generation requests after routing and
 // session assignment. Existing client-carried signatures are preserved. Every
 // reply text is recorded, signed or not, so a missing record means the history
 // before it changed or the state expired; such text is sent unsigned and the
 // count is reported.
-func (d Decoder) RestoreTextSignatures(ctx context.Context, in *Input) error {
+func (d replayStore) restoreTextSignatures(ctx context.Context, in *requestPlan) error {
 	index := newTextSignatureIndex(in.UpstreamModel(), in.Request.SessionID, in.Request.System)
 	missing := 0
 	for i := range in.Request.Contents {

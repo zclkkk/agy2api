@@ -1,9 +1,6 @@
 package protocol
 
 import (
-	"context"
-	"encoding/base64"
-	"net/http"
 	"strings"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
@@ -39,6 +36,9 @@ type ImageRecord struct {
 // Replay preserves the exact native signature placement, including signatures on
 // non-thinking text. Visible text is checked before reattaching such signatures.
 type Replay struct {
+	Version      int       `json:"version,omitempty"`
+	Model        string    `json:"model,omitempty"`
+	Kind         string    `json:"kind,omitempty"`
 	Parts        []ag.Part `json:"parts,omitempty"`
 	PreviousText string    `json:"previous_text,omitempty"`
 	Signature    string    `json:"signature,omitempty"`
@@ -46,74 +46,6 @@ type Replay struct {
 
 func agyCallID(id string) bool {
 	return strings.HasPrefix(id, "call_agy_") || strings.HasPrefix(id, "toolu_agy_")
-}
-
-// restoreCall returns the original signature for a call this bridge issued.
-// Missing, expired or mismatched state degrades to no signature; Finalize then
-// supplies the placeholder Antigravity accepts.
-func (d Decoder) restoreCall(ctx context.Context, in *Input, call *ag.Call) string {
-	if !agyCallID(call.ID) {
-		return ""
-	}
-	var r SignatureRecord
-	if err := d.State.Get(ctx, "tool", call.ID, &r); err != nil {
-		in.warn("tool replay state for %s is missing or expired; using a placeholder signature", call.ID)
-		return ""
-	}
-	if r.Model != in.Model || r.Name != call.Name || r.Digest != digest(call.Args) {
-		in.warn("tool call %s changed or came from another model; using a placeholder signature", call.ID)
-		return ""
-	}
-	return r.Signature
-}
-
-// replay restores a sealed thinking carrier. A carrier for a signed text part
-// signs the last part of prev in place and returns nil. Carriers that cannot be
-// restored are dropped, which is how Anthropic treats prior-turn thinking too.
-func (d Decoder) replay(in *Input, token, visible string, prev []ag.Part) []ag.Part {
-	if !strings.HasPrefix(token, "agy1.") {
-		in.warn("dropped a reasoning item not issued by agy2api")
-		return nil
-	}
-	var r Replay
-	if err := d.State.Unseal(in.Model, token, &r); err != nil {
-		in.warn("dropped a reasoning item: %v", err)
-		return nil
-	}
-	if r.PreviousText != "" {
-		if len(prev) == 0 || digest(raw(prev[len(prev)-1].Text)) != r.PreviousText {
-			in.warn("dropped a text signature because the signed text changed")
-			return nil
-		}
-		prev[len(prev)-1].Signature = r.Signature
-		return nil
-	}
-	if visible != "" {
-		var text strings.Builder
-		for _, p := range r.Parts {
-			text.WriteString(p.Text)
-		}
-		if text.String() != visible {
-			in.warn("dropped a thinking block because its text changed")
-			return nil
-		}
-	}
-	return r.Parts
-}
-
-// restoreImage rebuilds a generated image turn. Without replay metadata the
-// image is still sent with its type detected; Finalize adds the placeholder
-// signature.
-func (d Decoder) restoreImage(ctx context.Context, in *Input, v ResponseItem) ag.Part {
-	var record ImageRecord
-	if err := d.State.Get(ctx, "image", v.ID, &record); err == nil && record.Model == in.Model && record.Digest == digest(raw(v.Result)) {
-		return ag.Part{InlineData: &ag.Blob{MIMEType: record.MIMEType, Data: v.Result}, Signature: record.Signature}
-	}
-	in.warn("image replay metadata for %s is missing or changed", v.ID)
-	head := v.Result[:min(len(v.Result), 1024)]
-	head = head[:len(head)/4*4]
-	sample, _ := base64.StdEncoding.DecodeString(head)
-	return ag.Part{InlineData: &ag.Blob{MIMEType: http.DetectContentType(sample), Data: v.Result}}
 }
 
 // stripSignatures removes signatures and thoughts from history that will be

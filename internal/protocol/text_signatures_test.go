@@ -15,17 +15,15 @@ func TestMessagesEndsWithTextAndRestoresItsSignature(t *testing.T) {
 		t.Run(map[bool]string{false: "text only", true: "thinking then text"}[withThinking], func(t *testing.T) {
 			ctx := context.Background()
 			s := testStore(t)
-			d := Decoder{State: s}
+			d := testPipeline{State: s}
 			headers := http.Header{"Session-Id": []string{"text-signature-test"}}
+			d.headers = headers
 			in, err := d.Messages(ctx, []byte(`{"model":"gemini-test","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`), false)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := in.Finalize(headers); err != nil {
-				t.Fatal(err)
-			}
 			var blockTypes []string
-			r := NewRenderer("messages", in, s, func(name string, event map[string]any) error {
+			r := NewRenderer(in, s, func(name string, event map[string]any) error {
 				if name == "content_block_start" {
 					blockTypes = append(blockTypes, event["content_block"].(map[string]any)["type"].(string))
 				}
@@ -64,12 +62,6 @@ func TestMessagesEndsWithTextAndRestoresItsSignature(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := next.Finalize(headers); err != nil {
-				t.Fatal(err)
-			}
-			if err := d.RestoreTextSignatures(ctx, &next); err != nil {
-				t.Fatal(err)
-			}
 			parts := next.Request.Contents[1].Parts
 			last := parts[len(parts)-1]
 			if last.Text != "Hello world" || last.Signature != "text-signature" {
@@ -78,29 +70,23 @@ func TestMessagesEndsWithTextAndRestoresItsSignature(t *testing.T) {
 			if withThinking && parts[0].Signature != "thought-signature" {
 				t.Fatal("thinking signature changed")
 			}
+			d.headers = http.Header{"Session-Id": []string{"another-session"}}
 			changed, err := d.Messages(ctx, body, false)
 			if err != nil {
-				t.Fatal(err)
-			}
-			if err := changed.Finalize(http.Header{"Session-Id": []string{"another-session"}}); err != nil {
-				t.Fatal(err)
-			}
-			if err := d.RestoreTextSignatures(ctx, &changed); err != nil {
 				t.Fatal(err)
 			}
 			last = changed.Request.Contents[1].Parts[len(parts)-1]
 			if last.Signature != "" || last.Text != "Hello world" {
 				t.Fatal("text signature crossed sessions or text was changed")
 			}
-			changed, err = d.Messages(ctx, body, false)
+			d.headers = headers
+			var changedBody map[string]json.RawMessage
+			if err := json.Unmarshal(body, &changedBody); err != nil {
+				t.Fatal(err)
+			}
+			changedBody["system"] = raw("Different instructions")
+			changed, err = d.Messages(ctx, raw(changedBody), false)
 			if err != nil {
-				t.Fatal(err)
-			}
-			if err := changed.Finalize(headers); err != nil {
-				t.Fatal(err)
-			}
-			changed.Request.System = &ag.Content{Parts: []ag.Part{{Text: "Different instructions"}}}
-			if err := d.RestoreTextSignatures(ctx, &changed); err != nil {
 				t.Fatal(err)
 			}
 			if changed.Request.Contents[1].Parts[len(parts)-1].Signature != "" {
@@ -113,21 +99,16 @@ func TestMessagesEndsWithTextAndRestoresItsSignature(t *testing.T) {
 func TestTextSignatureCacheSeparatesRepeatedAnswersAndLegacyCarriers(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
-	d := Decoder{State: s}
+	d := testPipeline{State: s}
 	headers := http.Header{"Session-Id": []string{"same-session"}}
+	d.headers = headers
 	history := []any{map[string]string{"role": "user", "content": "first"}}
 	for _, signature := range []string{"signature-one", "signature-two"} {
 		in, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": history}), false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := in.Finalize(headers); err != nil {
-			t.Fatal(err)
-		}
-		if err := d.RestoreTextSignatures(ctx, &in); err != nil {
-			t.Fatal(err)
-		}
-		r := NewRenderer("messages", in, s, nil)
+		r := NewRenderer(in, s, nil)
 		if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "OK", Signature: signature}}, Finish: "STOP"}); err != nil {
 			t.Fatal(err)
 		}
@@ -146,12 +127,6 @@ func TestTextSignatureCacheSeparatesRepeatedAnswersAndLegacyCarriers(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := in.Finalize(headers); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.RestoreTextSignatures(ctx, &in); err != nil {
-		t.Fatal(err)
-	}
 	if in.Request.Contents[1].Parts[0].Signature != "signature-one" || in.Request.Contents[3].Parts[0].Signature != "signature-two" {
 		t.Fatal("equal text in different turns shared a signature")
 	}
@@ -165,12 +140,6 @@ func TestTextSignatureCacheSeparatesRepeatedAnswersAndLegacyCarriers(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := legacy.Finalize(headers); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.RestoreTextSignatures(ctx, &legacy); err != nil {
-		t.Fatal(err)
-	}
 	if legacy.Request.Contents[1].Parts[0].Signature != "legacy-signature" {
 		t.Fatal("an existing sealed signature was overwritten")
 	}
@@ -179,17 +148,15 @@ func TestTextSignatureCacheSeparatesRepeatedAnswersAndLegacyCarriers(t *testing.
 func TestMissingTextSignatureRecordsAreReported(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
-	d := Decoder{State: s}
+	d := testPipeline{State: s}
 	reply := func(session, text, signature string) []Block {
 		t.Helper()
+		d.headers = http.Header{"Session-Id": []string{session}}
 		in, err := d.Messages(ctx, []byte(`{"model":"gemini-test","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`), false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := in.Finalize(http.Header{"Session-Id": []string{session}}); err != nil {
-			t.Fatal(err)
-		}
-		r := NewRenderer("messages", in, s, nil)
+		r := NewRenderer(in, s, nil)
 		if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: text, Signature: signature}}, Finish: "STOP"}); err != nil {
 			t.Fatal(err)
 		}
@@ -204,18 +171,13 @@ func TestMissingTextSignatureRecordsAreReported(t *testing.T) {
 		}
 		return out.Content
 	}
-	restore := func(session string, assistant []Block) Input {
+	restore := func(session string, assistant []Block) PreparedRequest {
 		t.Helper()
+		d.headers = http.Header{"Session-Id": []string{session}}
 		in, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": []any{
 			map[string]string{"role": "user", "content": "hello"}, map[string]any{"role": "assistant", "content": assistant}, map[string]string{"role": "user", "content": "next"},
 		}}), false)
 		if err != nil {
-			t.Fatal(err)
-		}
-		if err := in.Finalize(http.Header{"Session-Id": []string{session}}); err != nil {
-			t.Fatal(err)
-		}
-		if err := d.RestoreTextSignatures(ctx, &in); err != nil {
 			t.Fatal(err)
 		}
 		return in
@@ -226,7 +188,7 @@ func TestMissingTextSignatureRecordsAreReported(t *testing.T) {
 	}
 	// A signed reply replayed under another session, or text this bridge never produced, is a miss.
 	signed := reply("a", "signed answer", "sig")
-	for name, in := range map[string]Input{
+	for name, in := range map[string]PreparedRequest{
 		"other session": restore("b", signed),
 		"client text":   restore("a", []Block{{Type: "text", Text: "prefilled by the client"}}),
 	} {

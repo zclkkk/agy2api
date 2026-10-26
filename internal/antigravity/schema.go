@@ -1,4 +1,4 @@
-package protocol
+package antigravity
 
 import (
 	"bytes"
@@ -21,9 +21,9 @@ type schemaCleaner struct {
 	active map[string]bool
 }
 
-// cleanToolSchema returns function parameters in the accepted subset. The root
+// CleanToolSchema returns function parameters in the accepted subset. The root
 // must be an object, so a root union keeps its most structured branch.
-func cleanToolSchema(raw json.RawMessage) (json.RawMessage, error) {
+func CleanToolSchema(raw json.RawMessage) (json.RawMessage, error) {
 	out, err := cleanSchemaValue(raw)
 	if err != nil {
 		return nil, err
@@ -42,8 +42,8 @@ func cleanToolSchema(raw json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(out)
 }
 
-// cleanSchema returns a response schema in the accepted subset.
-func cleanSchema(raw json.RawMessage) (json.RawMessage, error) {
+// CleanSchema returns a response schema in the accepted subset.
+func CleanSchema(raw json.RawMessage) (json.RawMessage, error) {
 	out, err := cleanSchemaValue(raw)
 	if err != nil {
 		return nil, err

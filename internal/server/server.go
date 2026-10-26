@@ -94,11 +94,11 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
-	mux.HandleFunc("POST /v1/responses", s.generate)
-	mux.HandleFunc("POST /v1/responses/compact", s.generate)
-	mux.HandleFunc("POST /v1/messages", s.generate)
-	mux.HandleFunc("POST /v1/messages/count_tokens", s.count)
-	mux.HandleFunc("POST /v1/responses/input_tokens", s.count)
+	mux.HandleFunc("POST /v1/responses", s.generation(protocol.Responses, protocol.Generate))
+	mux.HandleFunc("POST /v1/responses/compact", s.generation(protocol.Responses, protocol.CompactResponse))
+	mux.HandleFunc("POST /v1/messages", s.generation(protocol.Messages, protocol.Generate))
+	mux.HandleFunc("POST /v1/messages/count_tokens", s.counter(protocol.Messages))
+	mux.HandleFunc("POST /v1/responses/input_tokens", s.counter(protocol.Responses))
 	mux.HandleFunc("GET /v1/models", s.models)
 	mux.HandleFunc("GET /v1/models/{id}", s.model)
 	mux.HandleFunc("GET /v1/responses/{id}", s.retrieve)
@@ -182,14 +182,6 @@ func (s *Server) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool)
 	return data, true
 }
 
-func (s *Server) decode(r *http.Request, data []byte, count bool) (protocol.Input, error) {
-	d := protocol.Decoder{State: s.state}
-	if strings.HasPrefix(r.URL.Path, "/v1/messages") {
-		return d.Messages(r.Context(), data, count)
-	}
-	return d.Responses(r.Context(), data)
-}
-
 // acquire waits for a generation slot instead of rejecting bursts outright.
 func (s *Server) acquire(w http.ResponseWriter, r *http.Request) bool {
 	select {
@@ -212,43 +204,41 @@ func (s *Server) acquire(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // prepare decodes a request and shapes it into the native request sent upstream.
-func (s *Server) prepare(w http.ResponseWriter, r *http.Request, data []byte, count bool) (protocol.Input, bool) {
-	in, err := s.decode(r, data, count)
-	s.note(r, in.Model, in.Warnings...)
+func (s *Server) prepare(w http.ResponseWriter, r *http.Request, data []byte, format protocol.Format, operation protocol.Operation) (protocol.PreparedRequest, bool) {
+	var intent protocol.RequestIntent
+	var err error
+	decoder := protocol.Decoder{}
+	if format == protocol.Messages {
+		intent, err = decoder.Messages(data, operation == protocol.CountTokens)
+	} else {
+		intent, err = decoder.Responses(data)
+	}
 	if err != nil {
+		s.note(r, intent.Model, intent.Warnings...)
 		s.writeError(w, r, err)
-		return in, false
-	}
-	in.Warnings = nil
-	if s.cfg.SanitizeClientMarkers {
-		in.SanitizeClientMarkers()
-	}
-	if r.URL.Path == "/v1/responses/compact" {
-		in.Compact, in.Stream, in.Store = "endpoint", false, false
-	}
-	if in.Compact != "" && !count {
-		in.PrepareCompaction()
+		return protocol.PreparedRequest{}, false
 	}
 	catalog, err := s.getCatalog(r.Context())
-	if err == nil {
-		err = in.Prepare(catalog)
-	}
-	if err == nil {
-		err = s.resolveMedia(r.Context(), &in.Request)
-	}
-	if err == nil {
-		err = in.Finalize(r.Header)
-	}
-	// Only Messages replies store text signatures this way.
-	if err == nil && !count && r.URL.Path == "/v1/messages" {
-		err = (protocol.Decoder{State: s.state}).RestoreTextSignatures(r.Context(), &in)
-	}
-	s.note(r, "", in.Warnings...)
 	if err != nil {
 		s.writeError(w, r, err)
-		return in, false
+		return protocol.PreparedRequest{}, false
 	}
-	return in, true
+	planner := protocol.Planner{State: s.state, SanitizeClientMarkers: s.cfg.SanitizeClientMarkers, ResolveMedia: s.resolveMedia}
+	prepared, err := planner.Prepare(r.Context(), intent, catalog, operation, r.Header)
+	s.note(r, intent.Model, prepared.Warnings...)
+	if err != nil {
+		s.writeError(w, r, err)
+		return prepared, false
+	}
+	return prepared, true
+}
+
+func (s *Server) generation(format protocol.Format, operation protocol.Operation) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { s.generate(w, r, format, operation) }
+}
+
+func (s *Server) counter(format protocol.Format) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { s.count(w, r, format) }
 }
 
 // sseWriter serializes stream writes so heartbeats can share the connection.
@@ -301,20 +291,16 @@ func (s *sseWriter) close() {
 	s.mu.Unlock()
 }
 
-func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
+func (s *Server) generate(w http.ResponseWriter, r *http.Request, format protocol.Format, operation protocol.Operation) {
 	// The body is read before queueing so slow uploads do not hold a slot.
 	data, ok := s.readBody(w, r)
 	if !ok || !s.acquire(w, r) {
 		return
 	}
 	defer func() { <-s.slots }()
-	in, ok := s.prepare(w, r, data, false)
+	in, ok := s.prepare(w, r, data, format, operation)
 	if !ok {
 		return
-	}
-	format := "responses"
-	if r.URL.Path == "/v1/messages" {
-		format = "messages"
 	}
 	sse := &sseWriter{w: w}
 	var emit func(string, map[string]any) error
@@ -342,7 +328,7 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
-	renderer := protocol.NewRenderer(format, in, s.state, emit)
+	renderer := protocol.NewRenderer(in, s.state, emit)
 	err := s.upstream.Generate(r.Context(), in.UpstreamModel(), in.Request, in.Kind, func(chunk ag.Chunk) error {
 		if chunk.Grounding != nil {
 			s.upstream.ResolveGrounding(r.Context(), chunk.Grounding)
@@ -376,12 +362,12 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 }
 
 // count does not take a generation slot: it is short and clients call it often.
-func (s *Server) count(w http.ResponseWriter, r *http.Request) {
+func (s *Server) count(w http.ResponseWriter, r *http.Request, format protocol.Format) {
 	data, ok := s.readBody(w, r)
 	if !ok {
 		return
 	}
-	in, ok := s.prepare(w, r, data, true)
+	in, ok := s.prepare(w, r, data, format, protocol.CountTokens)
 	if !ok {
 		return
 	}
@@ -390,7 +376,7 @@ func (s *Server) count(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/v1/messages") {
+	if format == protocol.Messages {
 		writeJSON(w, 200, map[string]int{"input_tokens": n})
 	} else {
 		writeJSON(w, 200, map[string]any{"object": "response.input_tokens", "input_tokens": n})

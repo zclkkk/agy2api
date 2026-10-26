@@ -13,7 +13,7 @@ func knownEffort(effort string) bool { _, ok := thinkingLevels[effort]; return o
 
 // applyEffort records a reasoning effort unless an explicit budget or a
 // disabled state was requested.
-func applyEffort(in *Input, value string) {
+func applyEffort(in *RequestIntent, value string) {
 	switch {
 	case value == "none":
 		in.Thinking = ThinkingIntent{Mode: "disabled"}
@@ -24,63 +24,43 @@ func applyEffort(in *Input, value string) {
 	}
 }
 
-// Prepare applies model-specific request shaping: it checks the model, routes
+// plan applies model-specific request shaping: it checks the model, routes
 // web search, picks the request type, converts thinking intent and rewrites
 // schemas into the subset Antigravity accepts.
-func (in *Input) Prepare(catalog ag.Catalog) error {
+func (in *requestPlan) plan(catalog ag.Catalog) error {
 	info, ok := catalog.Info(in.Model)
 	if !ok {
 		return invalid("model", "model is not available; agy2api serves the Gemini models listed by /v1/models")
 	}
-	in.Kind = ag.KindAgent
+	in.kind = ag.KindAgent
 	if info.Image {
-		in.Kind = ag.KindImage
+		in.kind = ag.KindImage
 	}
-	// NONE disables native search too, before checking its availability or
-	// routing to a search model. Keep function declarations and their NONE mode.
-	if c := in.Request.ToolConfig; c != nil && c.FunctionCallingConfig.Mode == "NONE" {
-		in.Search = false
-	}
-	// Antigravity rejects Google Search next to function declarations. A
-	// request that chooses search drops the functions; history with earlier
-	// calls stays valid because every call keeps a signature. Otherwise the
-	// functions win, as clients such as Codex declare search alongside them.
-	if in.Search && hasFunctions(in.Request.Tools) {
-		if in.SearchChosen {
-			in.Request.Tools = nil
-			in.Request.ToolConfig = nil
-			in.warn("function tools omitted: tool_choice selects web search, which Antigravity cannot combine with function tools")
-		} else {
-			in.Search = false
-			in.warn("web search ignored: Antigravity cannot combine it with function tools")
-		}
+	if err := in.selectTools(); err != nil {
+		return err
 	}
 	if in.Search {
-		switch {
-		case !info.Search && len(catalog.SearchModels) == 0:
-			return invalid("tools", "web search is not available to this account")
-		default:
-			if !info.Search {
-				in.Upstream = catalog.SearchModels[0]
-				info, _ = catalog.Info(in.Upstream)
-				in.warn("web search routed to %s", in.Upstream)
+		if !info.Search {
+			for _, model := range catalog.SearchModels {
+				if routed, ok := catalog.Info(model); ok {
+					in.upstream, info = model, routed
+					break
+				}
 			}
-			in.Kind = ag.KindSearch
-			in.Request.ToolConfig = nil
-			in.Request.Tools = append(in.Request.Tools, ag.Tool{GoogleSearch: raw(map[string]any{})})
+			if in.upstream == "" {
+				return invalid("tools", "web search is not available to this account")
+			}
+			in.warn("web search routed to %s", in.upstream)
 		}
-	}
-	// VALIDATED keeps function arguments within their schemas; under AUTO
-	// Gemini can return values the schema forbids, such as an invented enum
-	// value. Forced (ANY) and disabled (NONE) choices stay as requested.
-	if c := in.Request.ToolConfig; hasFunctions(in.Request.Tools) && (c == nil || c.FunctionCallingConfig.Mode == "AUTO") {
-		in.Request.ToolConfig = &ag.ToolConfig{FunctionCallingConfig: ag.CallingConfig{Mode: "VALIDATED"}}
+		in.kind = ag.KindSearch
+		in.Request.ToolConfig = nil
+		in.Request.Tools = []ag.Tool{{GoogleSearch: raw(map[string]any{})}}
 	}
 	in.applyThinking(info)
 	for i := range in.Request.Tools {
 		for j := range in.Request.Tools[i].Functions {
 			f := &in.Request.Tools[i].Functions[j]
-			cleaned, err := cleanToolSchema(f.Parameters)
+			cleaned, err := ag.CleanToolSchema(f.Parameters)
 			if err != nil {
 				return invalid("tools", "tool "+in.PublicTool(f.Name).Name+" has an invalid JSON schema")
 			}
@@ -88,7 +68,7 @@ func (in *Input) Prepare(catalog ag.Catalog) error {
 		}
 	}
 	if g := &in.Request.Generation; present(g.Schema) {
-		cleaned, err := cleanSchema(g.Schema)
+		cleaned, err := ag.CleanSchema(g.Schema)
 		if err != nil {
 			return invalid("schema", "response schema is not valid JSON")
 		}
@@ -106,7 +86,7 @@ func hasFunctions(tools []ag.Tool) bool {
 	return false
 }
 
-func (in *Input) applyThinking(info ag.ModelInfo) {
+func (in *RequestIntent) applyThinking(info ag.ModelInfo) {
 	g := &in.Request.Generation
 	switch t := in.Thinking; t.Mode {
 	case "disabled":
@@ -126,10 +106,10 @@ func (in *Input) applyThinking(info ag.ModelInfo) {
 	}
 }
 
-// Finalize applies Antigravity's rules for the conversation itself: it ends
+// finalize applies Antigravity's rules for the conversation itself: it ends
 // with a user turn, tool results follow the order of their calls, unsigned
 // calls carry the placeholder signature, and the session ID is set.
-func (in *Input) Finalize(headers http.Header) error {
+func (in *RequestIntent) finalize(headers http.Header) error {
 	in.endWithUser()
 	if err := orderResults(in.Request.Contents); err != nil {
 		return err
@@ -149,7 +129,7 @@ const continuation = "Continue."
 // other trailing model turn gets a short user turn after it, so the model
 // continues from there. A trailing tool call without its result is left for
 // the upstream to reject.
-func (in *Input) endWithUser() {
+func (in *RequestIntent) endWithUser() {
 	c := in.Request.Contents
 	for len(c) > 1 && c[len(c)-1].Role == "model" && reasoningOnly(c[len(c)-1].Parts) {
 		c = c[:len(c)-1]

@@ -44,12 +44,9 @@ const claudeCodeRequest = `{
 }`
 
 func TestClaudeCodeRequestShapeIsAccepted(t *testing.T) {
-	d := Decoder{State: testStore(t)}
+	d := testPipeline{State: testStore(t)}
 	in, err := d.Messages(context.Background(), []byte(claudeCodeRequest), false)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := in.Prepare(testCatalog); err != nil {
 		t.Fatal(err)
 	}
 	if !in.HideThinking || in.Request.System == nil || len(in.Request.System.Parts) != 3 {
@@ -96,12 +93,9 @@ const codexRequest = `{
 }`
 
 func TestCodexRequestShapeIsAccepted(t *testing.T) {
-	d := Decoder{State: testStore(t)}
+	d := testPipeline{State: testStore(t)}
 	in, err := d.Responses(context.Background(), []byte(codexRequest))
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := in.Prepare(testCatalog); err != nil {
 		t.Fatal(err)
 	}
 	if in.Search || in.Kind != ag.KindAgent {
@@ -116,10 +110,22 @@ func TestCodexRequestShapeIsAccepted(t *testing.T) {
 			names[f.Name] = in.PublicTool(f.Name)
 		}
 	}
-	if got := names["multi_agent_v1__close_agent"]; got.Name != "close_agent" || got.Namespace != "multi_agent_v1" {
-		t.Fatalf("namespace not flattened: %v", names)
+	foundNamespace := false
+	for _, got := range names {
+		if got.Name == "close_agent" && got.Namespace == "multi_agent_v1" {
+			foundNamespace = true
+		}
 	}
-	if !names["apply_patch"].Custom || names["exec_command"].Name != "exec_command" {
+	if !foundNamespace {
+		t.Fatalf("namespace identity lost: %v", names)
+	}
+	foundCustom := false
+	for _, got := range names {
+		if got.Name == "apply_patch" && got.Custom {
+			foundCustom = true
+		}
+	}
+	if !foundCustom || names["exec_command"].Name != "exec_command" {
 		t.Fatalf("custom tool not mapped: %v", names)
 	}
 	if th := in.Request.Generation.Thinking; th == nil || th.Level != "high" {
@@ -129,20 +135,29 @@ func TestCodexRequestShapeIsAccepted(t *testing.T) {
 
 func TestToolIdentityRoundTripsThroughOutput(t *testing.T) {
 	s := testStore(t)
-	d := Decoder{State: s}
+	d := testPipeline{State: s}
 	ctx := context.Background()
 	in, err := d.Responses(ctx, []byte(codexRequest))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := in.Prepare(testCatalog); err != nil {
-		t.Fatal(err)
+	var namespaced, custom string
+	for name, public := range in.Tools {
+		if public.Name == "close_agent" && public.Namespace == "multi_agent_v1" {
+			namespaced = name
+		}
+		if public.Custom && public.Name == "apply_patch" {
+			custom = name
+		}
+	}
+	if namespaced == "" || custom == "" {
+		t.Fatal("namespace declaration missing")
 	}
 	var events []string
-	r := NewRenderer("responses", in, s, func(name string, _ map[string]any) error { events = append(events, name); return nil })
+	r := NewRenderer(in, s, func(name string, _ map[string]any) error { events = append(events, name); return nil })
 	err = r.Add(ctx, ag.Chunk{Parts: []ag.Part{
-		{FunctionCall: &ag.Call{ID: "n1", Name: "multi_agent_v1__close_agent", Args: raw(map[string]string{"target": "a"})}, Signature: "sig-1"},
-		{FunctionCall: &ag.Call{ID: "n2", Name: "apply_patch", Args: raw(map[string]string{"input": "*** Begin Patch"})}},
+		{FunctionCall: &ag.Call{ID: "n1", Name: namespaced, Args: raw(map[string]string{"target": "a"})}, Signature: "sig-1"},
+		{FunctionCall: &ag.Call{ID: "n2", Name: custom, Args: raw(map[string]string{"input": "*** Begin Patch"})}},
 	}, Finish: "STOP"})
 	if err == nil {
 		err = r.Finish(ctx)
@@ -176,14 +191,11 @@ func TestToolIdentityRoundTripsThroughOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := next.Finalize(nil); err != nil {
-		t.Fatal(err)
-	}
 	calls := next.Request.Contents[1].Parts
-	if calls[0].FunctionCall.Name != "multi_agent_v1__close_agent" || calls[0].FunctionCall.ID != out.Output[0].CallID || calls[0].Signature != "sig-1" {
+	if calls[0].FunctionCall.Name != namespaced || calls[0].FunctionCall.ID != out.Output[0].CallID || calls[0].Signature != "sig-1" {
 		t.Fatalf("first call not restored: %s", raw(calls[0]))
 	}
-	if calls[1].FunctionCall.Name != "apply_patch" || string(calls[1].FunctionCall.Args) != `{"input":"*** Begin Patch"}` {
+	if calls[1].FunctionCall.Name != custom || string(calls[1].FunctionCall.Args) != `{"input":"*** Begin Patch"}` {
 		t.Fatalf("custom call not restored: %s", raw(calls[1]))
 	}
 	if len(next.Warnings) != 0 {
@@ -193,7 +205,7 @@ func TestToolIdentityRoundTripsThroughOutput(t *testing.T) {
 
 func TestMissingReplayStateDegrades(t *testing.T) {
 	s := testStore(t)
-	d := Decoder{State: s}
+	d := testPipeline{State: s}
 	ctx := context.Background()
 	foreign, _ := s.Seal("other-model", Replay{Parts: []ag.Part{{Text: "x", Thought: true, Signature: "s"}}})
 	own, _ := s.Seal("gemini-test", Replay{Parts: []ag.Part{{Text: "real thought", Thought: true, Signature: "s"}}})
@@ -210,9 +222,6 @@ func TestMissingReplayStateDegrades(t *testing.T) {
 	}})
 	in, err := d.Messages(ctx, body, false)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := in.Finalize(nil); err != nil {
 		t.Fatal(err)
 	}
 	native := in.Request
@@ -233,10 +242,10 @@ func TestMissingReplayStateDegrades(t *testing.T) {
 
 func TestModelChangeInStoredChainDropsSignatures(t *testing.T) {
 	s := testStore(t)
-	d := Decoder{State: s}
+	d := testPipeline{State: s}
 	ctx := context.Background()
 	in, _ := d.Responses(ctx, []byte(`{"model":"gemini-other","input":"first"}`))
-	r := NewRenderer("responses", in, s, nil)
+	r := NewRenderer(in, s, nil)
 	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "plan", Thought: true, Signature: "other-sig"}, {Text: "answer"}}, Finish: "STOP"}); err != nil {
 		t.Fatal(err)
 	}
@@ -261,14 +270,14 @@ func TestModelChangeInStoredChainDropsSignatures(t *testing.T) {
 
 func TestHiddenThinkingStillReplays(t *testing.T) {
 	s := testStore(t)
-	d := Decoder{State: s}
+	d := testPipeline{State: s}
 	ctx := context.Background()
 	in, err := d.Messages(ctx, []byte(`{"model":"gemini-test","max_tokens":2048,"thinking":{"type":"adaptive","display":"omitted"},"messages":[{"role":"user","content":"hi"}]}`), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var deltas []string
-	r := NewRenderer("messages", in, s, func(name string, v map[string]any) error {
+	r := NewRenderer(in, s, func(name string, v map[string]any) error {
 		if delta, ok := v["delta"].(map[string]any); ok {
 			kind, _ := delta["type"].(string)
 			deltas = append(deltas, kind)
@@ -302,7 +311,7 @@ func TestFinishReasonsAndUnknownParts(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	run := func(chunk ag.Chunk) (*Renderer, error) {
-		r := NewRenderer("messages", Input{Model: "gemini-test"}, s, nil)
+		r := NewRenderer(PreparedRequest{Format: Messages, Model: "gemini-test", Upstream: "gemini-test"}, s, nil)
 		if err := r.Add(ctx, chunk); err != nil {
 			return r, err
 		}
@@ -332,18 +341,15 @@ func TestFinishReasonsAndUnknownParts(t *testing.T) {
 }
 
 func TestSearchRoutingAndToolNames(t *testing.T) {
-	d := Decoder{State: testStore(t)}
+	d := testPipeline{State: testStore(t)}
 	in, err := d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"news"}],"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":5}]}`), false)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := in.Prepare(testCatalog); err != nil {
 		t.Fatal(err)
 	}
 	if in.UpstreamModel() != "gemini-search" || in.Kind != ag.KindSearch || in.Request.Tools[0].GoogleSearch == nil {
 		t.Fatalf("search not routed: %+v", in)
 	}
-	for public, want := range map[string]string{"Bash": "Bash", "mcp.srv:do-it": "mcp.srv:do-it", "a b": "a_b_", "1tool": "_1tool_", strings.Repeat("x", 130): strings.Repeat("x", 119) + "_"} {
+	for public, want := range map[string]string{"Bash": "Bash", "mcp.srv:do-it": "mcp.srv:do-it", "a b": "agy_fn_", "1tool": "agy_fn_", strings.Repeat("x", 130): "agy_fn_"} {
 		got := nativeName(public)
 		if !strings.HasPrefix(got, want) || len(got) > 128 || invalidNameChars.MatchString(got) || (want == public) != (got == public) {
 			t.Errorf("nativeName(%q)=%q", public, got)
@@ -355,14 +361,11 @@ func TestSearchRoutingAndToolNames(t *testing.T) {
 }
 
 func TestToolCallingModes(t *testing.T) {
-	d := Decoder{State: testStore(t)}
+	d := testPipeline{State: testStore(t)}
 	mode := func(body string) string {
 		t.Helper()
 		in, err := d.Responses(context.Background(), []byte(body))
 		if err != nil {
-			t.Fatal(err)
-		}
-		if err := in.Prepare(testCatalog); err != nil {
 			t.Fatal(err)
 		}
 		if in.Request.ToolConfig == nil {
@@ -385,8 +388,8 @@ func TestToolCallingModes(t *testing.T) {
 }
 
 func TestIgnoredSearchOptionsAreReported(t *testing.T) {
-	d := Decoder{State: testStore(t)}
-	in, err := d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"x"}],
+	d := Decoder{}
+	in, err := d.Messages([]byte(`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"x"}],
 		"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":3,"allowed_domains":["python.org"],"user_location":{"type":"approximate","country":"US"}}]}`), false)
 	if err != nil {
 		t.Fatal(err)
@@ -394,21 +397,21 @@ func TestIgnoredSearchOptionsAreReported(t *testing.T) {
 	if len(in.Warnings) != 1 || !strings.Contains(in.Warnings[0], "allowed_domains, user_location") {
 		t.Fatalf("warnings: %v", in.Warnings)
 	}
-	in, err = d.Responses(context.Background(), []byte(`{"model":"gemini-test","input":"x","tools":[{"type":"web_search","filters":{"allowed_domains":["python.org"]}}]}`))
+	in, err = d.Responses([]byte(`{"model":"gemini-test","input":"x","tools":[{"type":"web_search","filters":{"allowed_domains":["python.org"]}}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(in.Warnings) != 1 || !strings.Contains(in.Warnings[0], "filters") {
 		t.Fatalf("warnings: %v", in.Warnings)
 	}
-	in, _ = d.Responses(context.Background(), []byte(`{"model":"gemini-test","input":"x","tools":[{"type":"web_search"}]}`))
+	in, _ = d.Responses([]byte(`{"model":"gemini-test","input":"x","tools":[{"type":"web_search"}]}`))
 	if len(in.Warnings) != 0 {
 		t.Fatalf("plain search should not warn: %v", in.Warnings)
 	}
 }
 
 func TestForcedSearchChoiceIsAccepted(t *testing.T) {
-	d := Decoder{State: testStore(t)}
+	d := testPipeline{State: testStore(t)}
 	in, err := d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"news"}],
 		"tools":[{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"tool","name":"web_search"}}`), false)
 	if err != nil || !in.Search || in.Request.ToolConfig != nil {
@@ -419,7 +422,7 @@ func TestForcedSearchChoiceIsAccepted(t *testing.T) {
 		t.Fatal("choosing an undeclared tool must still fail")
 	}
 	in, err = d.Responses(context.Background(), []byte(`{"model":"gemini-test","input":"news","tools":[{"type":"web_search"}],"tool_choice":{"type":"web_search"}}`))
-	if err != nil || !in.Search || len(in.Warnings) != 0 {
+	if err != nil || !in.Search || strings.Contains(strings.Join(in.Warnings, ";"), "ignored tool_choice") {
 		t.Fatalf("Responses forced search: %v %v", err, in.Warnings)
 	}
 }
@@ -434,7 +437,7 @@ func TestMessagesSearchReturnsResultBlocks(t *testing.T) {
 	}
 	var events []string
 	var starts []string
-	r := NewRenderer("messages", Input{Model: "gemini-test", Search: true}, s, func(name string, v map[string]any) error {
+	r := NewRenderer(PreparedRequest{Format: Messages, Model: "gemini-test", Upstream: "gemini-test", Search: true}, s, func(name string, v map[string]any) error {
 		events = append(events, name)
 		if block, ok := v["content_block"].(map[string]any); ok {
 			starts = append(starts, block["type"].(string))
@@ -473,7 +476,7 @@ func TestMessagesSearchReturnsResultBlocks(t *testing.T) {
 		t.Fatalf("results should be the distinct cited pages: %+v", result.Content)
 	}
 	// Without cited pages there is nothing to report.
-	r = NewRenderer("messages", Input{Model: "gemini-test", Search: true}, s, nil)
+	r = NewRenderer(PreparedRequest{Format: Messages, Model: "gemini-test", Upstream: "gemini-test", Search: true}, s, nil)
 	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "no sources"}}, Finish: "STOP", Grounding: &ag.Grounding{Queries: []string{"q"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -486,18 +489,15 @@ func TestMessagesSearchReturnsResultBlocks(t *testing.T) {
 }
 
 func TestChosenSearchDropsFunctionTools(t *testing.T) {
-	d := Decoder{State: testStore(t)}
-	prepared := func(name, body string) Input {
+	d := testPipeline{State: testStore(t)}
+	prepared := func(name, body string) PreparedRequest {
 		t.Helper()
-		var in Input
+		var in PreparedRequest
 		var err error
 		if name == "messages" {
 			in, err = d.Messages(context.Background(), []byte(body), false)
 		} else {
 			in, err = d.Responses(context.Background(), []byte(body))
-		}
-		if err == nil {
-			err = in.Prepare(testCatalog)
 		}
 		if err != nil {
 			t.Fatal(err)

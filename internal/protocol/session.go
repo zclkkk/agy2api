@@ -34,7 +34,7 @@ func nativeSession(seed string) string {
 // wins, so all requests of one client session share an upstream session.
 // Otherwise the conversation is keyed by its first user message, which every
 // follow-up request repeats.
-func (in *Input) assignSession(headers http.Header) {
+func (in *RequestIntent) assignSession(headers http.Header) {
 	client := in.ClientSession
 	for _, name := range sessionHeaders {
 		if v := strings.TrimSpace(headers.Get(name)); v != "" {

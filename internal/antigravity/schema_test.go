@@ -1,4 +1,4 @@
-package protocol
+package antigravity
 
 import (
 	"encoding/json"
@@ -94,7 +94,7 @@ const mcpStyleSchema = `{
 }`
 
 func TestSchemaCleaningProducesAcceptedSubset(t *testing.T) {
-	out, err := cleanToolSchema(json.RawMessage(mcpStyleSchema))
+	out, err := CleanToolSchema(json.RawMessage(mcpStyleSchema))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestSchemaCleaningProducesAcceptedSubset(t *testing.T) {
 
 func TestSchemaRootIsAlwaysAnObject(t *testing.T) {
 	for _, in := range []string{`{}`, `{"properties":{"a":{"type":"string"}}}`, `{"anyOf":[{"type":"object","properties":{"a":{"type":"string"}}}]}`, `{"type":"string"}`} {
-		out, err := cleanToolSchema(json.RawMessage(in))
+		out, err := CleanToolSchema(json.RawMessage(in))
 		if err != nil {
 			t.Fatal(err)
 		}

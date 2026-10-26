@@ -21,7 +21,7 @@ func TestEndWithUser(t *testing.T) {
 		"pending tool call": {[]ag.Content{user, {Role: "model", Parts: []ag.Part{{FunctionCall: &ag.Call{ID: "c", Name: "f"}}}}},
 			[]string{"user:hi", "model:"}},
 	} {
-		in := Input{Request: ag.Request{Contents: tc.contents}}
+		in := RequestIntent{Request: ag.Request{Contents: tc.contents}}
 		in.endWithUser()
 		var got []string
 		for _, c := range in.Request.Contents {
@@ -46,8 +46,8 @@ func TestCompactionCapsule(t *testing.T) {
 }
 
 func TestSessionAssignment(t *testing.T) {
-	conversation := func(texts ...string) *Input {
-		in := &Input{}
+	conversation := func(texts ...string) *RequestIntent {
+		in := &RequestIntent{}
 		for i, text := range texts {
 			role := "user"
 			if i%2 == 1 {

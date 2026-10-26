@@ -23,13 +23,13 @@ func testStore(t *testing.T) *state.Store {
 
 func TestResponsesFullOutputReplay(t *testing.T) {
 	s := testStore(t)
-	d := Decoder{State: s}
+	d := testPipeline{State: s}
 	ctx := context.Background()
 	in, err := d.Responses(ctx, []byte(`{"model":"gemini-test","input":"hello","store":false}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := NewRenderer("responses", in, s, nil)
+	r := NewRenderer(in, s, nil)
 	for _, chunk := range []ag.Chunk{
 		{Parts: []ag.Part{{Thought: true, Text: "think "}}},
 		{Parts: []ag.Part{{Thought: true, Text: "more", Signature: "thought-signature"}}},
@@ -58,9 +58,6 @@ func TestResponsesFullOutputReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := next.Finalize(nil); err != nil {
-		t.Fatal(err)
-	}
 	native := next.Request
 	if len(native.Contents) != 3 {
 		t.Fatalf("contents=%s", raw(native.Contents))
@@ -84,13 +81,13 @@ func TestResponsesFullOutputReplay(t *testing.T) {
 
 func TestMessagesFullOutputReplay(t *testing.T) {
 	s := testStore(t)
-	d := Decoder{State: s}
+	d := testPipeline{State: s}
 	ctx := context.Background()
 	in, err := d.Messages(ctx, []byte(`{"model":"gemini-test","max_tokens":2048,"messages":[{"role":"user","content":"hello"}]}`), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := NewRenderer("messages", in, s, nil)
+	r := NewRenderer(in, s, nil)
 	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "thinking", Thought: true}, {Signature: "opaque-thought"}, {Text: "calling"}, {FunctionCall: &ag.Call{ID: "native", Name: "lookup", Args: raw(map[string]int{"x": 1})}, Signature: "opaque-tool"}}, Finish: "STOP"}); err != nil {
 		t.Fatal(err)
 	}
@@ -110,9 +107,6 @@ func TestMessagesFullOutputReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := next.Finalize(nil); err != nil {
-		t.Fatal(err)
-	}
 	native := next.Request
 	if native.Contents[1].Parts[0].Signature != "opaque-thought" {
 		t.Fatalf("lost signature: %s", raw(native))
@@ -123,7 +117,7 @@ func TestMessagesFullOutputReplay(t *testing.T) {
 }
 
 func TestUnsupportedInputIsRejectedWithoutDroppingAttachment(t *testing.T) {
-	d := Decoder{State: testStore(t)}
+	d := testPipeline{State: testStore(t)}
 	for _, request := range []string{
 		`{"model":"gemini-test","input":"hello","background":true}`,
 		`{"model":"gemini-test","input":[{"role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_image","file_id":"missing"}]}]}`,
@@ -138,13 +132,13 @@ func TestUnsupportedInputIsRejectedWithoutDroppingAttachment(t *testing.T) {
 
 func TestStoredResponsesDoNotInheritInstructionsOrIncludeOwnOutputAsInput(t *testing.T) {
 	s := testStore(t)
-	d := Decoder{State: s}
+	d := testPipeline{State: s}
 	ctx := context.Background()
 	in, err := d.Responses(ctx, []byte(`{"model":"gemini-test","input":"first","instructions":"old instructions"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := NewRenderer("responses", in, s, nil)
+	r := NewRenderer(in, s, nil)
 	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "answer"}}, Finish: "STOP"}); err != nil {
 		t.Fatal(err)
 	}
@@ -173,12 +167,12 @@ func TestStoredResponsesDoNotInheritInstructionsOrIncludeOwnOutputAsInput(t *tes
 func TestGeneratedImageReplayAndUnicodeCitations(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	d := Decoder{State: s}
+	d := testPipeline{State: s}
 	in, err := d.Responses(ctx, []byte(`{"model":"gemini-image","input":"draw","store":false}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := NewRenderer("responses", in, s, nil)
+	r := NewRenderer(in, s, nil)
 	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{InlineData: &ag.Blob{MIMEType: "image/png", Data: "aGVsbG8="}, Signature: "image-signature"}}, Finish: "STOP"}); err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +197,7 @@ func TestGeneratedImageReplayAndUnicodeCitations(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"groundingChunks":[{"web":{"uri":"https://example.com/","title":"Source"}}],"groundingSupports":[{"segment":{"startIndex":0,"endIndex":6,"text":"你好"},"groundingChunkIndices":[0]}]}`), &grounding); err != nil {
 		t.Fatal(err)
 	}
-	r = NewRenderer("responses", Input{Model: "gemini-test"}, s, nil)
+	r = NewRenderer(PreparedRequest{Format: Responses, Model: "gemini-test", Upstream: "gemini-test"}, s, nil)
 	r.grounding = &grounding
 	annotations := r.annotations("你好 world")
 	if len(annotations) != 1 {
@@ -244,14 +238,11 @@ func TestParallelResultsFollowCallOrder(t *testing.T) {
 }
 
 func TestGeminiThinkingConfig(t *testing.T) {
-	d := Decoder{State: testStore(t)}
+	d := testPipeline{State: testStore(t)}
 	thinking := func(body string) (*ag.Thinking, []string) {
 		t.Helper()
 		in, err := d.Responses(context.Background(), []byte(body))
 		if err != nil {
-			t.Fatal(err)
-		}
-		if err := in.Prepare(testCatalog); err != nil {
 			t.Fatal(err)
 		}
 		return in.Request.Generation.Thinking, in.Warnings
@@ -272,9 +263,6 @@ func TestGeminiThinkingConfig(t *testing.T) {
 	}
 	in, err := d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"thinking":{"type":"enabled","budget_tokens":50},"messages":[{"role":"user","content":"x"}]}`), false)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := in.Prepare(testCatalog); err != nil {
 		t.Fatal(err)
 	}
 	if b := in.Request.Generation.Thinking.Budget; b == nil || *b != 128 {

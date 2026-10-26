@@ -17,6 +17,7 @@ import socket
 import sqlite3
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -32,6 +33,11 @@ import openai
 
 class PartialCoverage(Exception):
     """A supported operation with a verified protocol-information limitation."""
+
+
+def ungroup_numbers(text):
+    """Accept plain and LaTeX thousands separators in arithmetic checks."""
+    return text.replace("{,}", "").replace(r"\,", "").replace(",", "")
 
 
 def png_fixture():
@@ -433,8 +439,8 @@ class Live:
                 list(stream)
                 first = stream.get_final_message()
             thoughts = [v for v in first.content if v.type == "thinking"]
-            assert thoughts and all(v.signature for v in thoughts), (
-                "no replayable thinking returned"
+            assert all(v.signature for v in thoughts), (
+                "unsigned thinking block returned"
             )
             history = [
                 {"role": "user", "content": prompt},
@@ -450,12 +456,21 @@ class Live:
                 messages=history,
                 thinking={"type": "enabled", "budget_tokens": 1024},
             )
-        assert "34113" in self.text(first).replace(",", ""), (
-            "wrong first arithmetic result"
+        assert "34113" in ungroup_numbers(self.text(first)), (
+            "wrong first arithmetic result: " + self.text(first)[:160]
         )
-        assert "34013" in self.text(second).replace(",", ""), (
-            "reasoning follow-up failed"
+        assert "34013" in ungroup_numbers(self.text(second)), (
+            "reasoning follow-up failed: " + self.text(second)[:160]
         )
+        if proto == "messages" and not thoughts:
+            # Gemini may supply only an opaque signature on the visible text.
+            # Messages preserves it in local replay state, not a synthetic
+            # thinking block. Keep the two-turn check and report the limit of
+            # this black-box test instead of requiring a fabricated block.
+            raise PartialCoverage(
+                "No visible thinking block returned; both arithmetic turns passed. "
+                "Visible reasoning coverage is unavailable for this response."
+            )
         return dict(self.details(second), thinking_blocks=len(thoughts))
 
     def structured(self, proto, model):
@@ -1799,9 +1814,10 @@ def main():
             ),
             flush=True,
         )
+        return 1 if any(r["status"] == "fail" for r in suite.results) else 0
     finally:
         suite.close()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

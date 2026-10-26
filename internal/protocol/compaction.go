@@ -58,16 +58,12 @@ func summaryPart(summary string) ag.Part {
 	return ag.Part{Text: "<conversation_summary>\nEarlier messages of this conversation were replaced by this summary. Continue the work from it; do not repeat steps it reports as complete.\n\n" + summary + "\n</conversation_summary>"}
 }
 
-// PrepareCompaction turns the request into one that asks for the summary.
+// disableTools prevents tool calls while the model writes a compaction summary.
 // Tools stay declared because the history may contain calls to them, but the
 // model may not call any.
-func (in *Input) PrepareCompaction() {
+func (in *RequestIntent) disableTools() {
 	in.Search = false
 	in.Request.Generation.MIMEType = ""
 	in.Request.Generation.Schema = nil
-	in.Request.ToolConfig = nil
-	if len(in.Request.Tools) > 0 {
-		in.Request.ToolConfig = &ag.ToolConfig{FunctionCallingConfig: ag.CallingConfig{Mode: "NONE"}}
-	}
-	appendContent(&in.Request, "user", []ag.Part{{Text: compactionPrompt}})
+	in.Choice = ToolChoice{Mode: "none"}
 }

@@ -12,7 +12,7 @@ const billingMarkerPrefix = "x-anthropic-billing-header:"
 // SanitizeClientMarkers removes known client preamble lines from the normalized
 // system instruction. Original request data, conversation history, tools, and
 // signed parts are never edited. Counts identify rules without logging text.
-func (in *Input) SanitizeClientMarkers() {
+func (in *RequestIntent) SanitizeClientMarkers() {
 	if in.Request.System == nil {
 		return
 	}

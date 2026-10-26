@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 
@@ -61,13 +60,13 @@ var serverToolBlocks = map[string]bool{"server_tool_use": true, "web_search_tool
 	"code_execution_tool_result": true, "bash_code_execution_tool_result": true, "text_editor_code_execution_tool_result": true,
 	"mcp_tool_use": true, "mcp_tool_result": true, "container_upload": true, "redacted_thinking": true}
 
-func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Input, error) {
+func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 	var r MessageRequest
 	ignored, err := decodeRequest(data, &r, quietMessageFields)
 	if err != nil {
-		return Input{}, err
+		return RequestIntent{}, err
 	}
-	in := Input{Model: r.Model, Stream: r.Stream, Request: ag.Request{Generation: ag.Generation{MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP, TopK: r.TopK, Stop: r.Stop}}}
+	in := RequestIntent{Format: Messages, Model: r.Model, Stream: r.Stream, Request: ag.Request{Generation: ag.Generation{MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP, TopK: r.TopK, Stop: r.Stop}}}
 	if len(ignored) > 0 {
 		in.warn("ignored request fields: %s", strings.Join(ignored, ", "))
 	}
@@ -90,6 +89,7 @@ func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Inp
 			system(&in.Request, p.Text)
 		}
 	}
+	in.Instructions = joinSystem(in.Request.System)
 	referenced := map[string]bool{}
 	for _, message := range r.Messages {
 		role := message.Role
@@ -108,7 +108,7 @@ func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Inp
 				if p.InlineData != nil || p.FileData != nil {
 					return in, unsupported("non-text system content")
 				}
-				system(&in.Request, p.Text)
+				in.historySystem(p.Text)
 			}
 			continue
 		default:
@@ -118,14 +118,13 @@ func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Inp
 		if err != nil {
 			return in, err
 		}
-		var parts []ag.Part
 		for _, b := range bs {
 			switch {
 			case b.Type == "thinking":
 				if role != "model" {
 					return in, invalid("thinking", "thinking blocks must be in assistant messages")
 				}
-				parts = append(parts, d.replay(&in, b.Signature, b.Thinking, parts)...)
+				in.deferReplay(b.Signature, b.Thinking)
 			case serverToolBlocks[b.Type]:
 				in.warn("dropped %s blocks from history", b.Type)
 			case b.Type == "tool_use":
@@ -137,30 +136,25 @@ func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Inp
 					return in, err
 				}
 				call := &ag.Call{ID: b.ID, Name: nativeName(b.Name), Args: args}
-				parts = append(parts, ag.Part{FunctionCall: call, Signature: d.restoreCall(ctx, &in, call)})
+				appendContent(&in.Request, role, []ag.Part{{FunctionCall: call}})
 			case b.Type == "tool_result":
 				if role != "user" {
 					return in, invalid("tool_result", "tool results must be in user messages")
 				}
-				name, err := toolName(b.ToolUseID, in.Request.Contents)
-				if err != nil {
-					return in, err
-				}
-				p, err := toolResult(b.ToolUseID, name, b.Content, b.IsError)
+				p, err := toolResult(b.ToolUseID, "", b.Content, b.IsError)
 				if err != nil {
 					return in, err
 				}
 				collectToolReferences(b.Content, referenced)
-				parts = append(parts, p)
+				appendContent(&in.Request, role, []ag.Part{p})
 			default:
 				p, err := mediaPart(b)
 				if err != nil {
 					return in, err
 				}
-				parts = append(parts, p)
+				appendContent(&in.Request, role, []ag.Part{p})
 			}
 		}
-		appendContent(&in.Request, role, parts)
 	}
 	searchTools := map[string]bool{}
 	for _, t := range r.Tools {
@@ -185,7 +179,11 @@ func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Inp
 		if err != nil {
 			return in, err
 		}
-		in.Request.Tools = append(in.Request.Tools, ag.Tool{Functions: []ag.Function{{Name: in.declare(ToolName{Name: t.Name}), Description: t.Description, Parameters: params}}})
+		name, err := in.declare(ToolName{Name: t.Name})
+		if err != nil {
+			return in, err
+		}
+		in.Request.Tools = append(in.Request.Tools, ag.Tool{Functions: []ag.Function{{Name: name, Description: t.Description, Parameters: params}}})
 	}
 	if present(r.ToolChoice) {
 		var choice struct {
@@ -198,7 +196,7 @@ func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Inp
 		// Choosing the search tool needs no function config: a search request
 		// is sent with Google Search as its tool.
 		if choice.Type == "tool" && searchTools[choice.Name] {
-			in.SearchChosen = true
+			in.Choice = ToolChoice{Mode: "required", Allowed: []ToolName{}, Search: true}
 		} else if err := setChoice(&in, choice.Type, choice.Name); err != nil {
 			return in, err
 		}
@@ -234,7 +232,7 @@ func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Inp
 			in.Request.Generation.Schema = f.Schema
 		}
 	}
-	return in, validate(&in)
+	return in, validateIntent(&in)
 }
 
 func collectToolReferences(content json.RawMessage, names map[string]bool) {

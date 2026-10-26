@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"context"
 	"encoding/json"
 	"strings"
 
@@ -81,20 +80,14 @@ type ResponseItem struct {
 	OutputFormat string          `json:"output_format,omitempty"`
 	Action       json.RawMessage `json:"action,omitempty"`
 }
-type StoredResponse struct {
-	Model    string            `json:"model"`
-	Contents []ag.Content      `json:"contents"`
-	Response json.RawMessage   `json:"response"`
-	Items    []json.RawMessage `json:"items"`
-}
 
-func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
+func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 	var r ResponsesRequest
 	ignored, err := decodeRequest(data, &r, quietResponseFields)
 	if err != nil {
-		return Input{}, err
+		return RequestIntent{}, err
 	}
-	in := Input{Model: r.Model, Stream: r.Stream, Store: r.Store == nil || *r.Store, PreviousID: r.PreviousID, Metadata: r.Metadata, Options: data, ClientSession: r.PromptCacheKey, Request: ag.Request{Generation: ag.Generation{MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP}}}
+	in := RequestIntent{Format: Responses, Model: r.Model, Stream: r.Stream, Store: r.Store == nil || *r.Store, PreviousID: r.PreviousID, Metadata: r.Metadata, Options: responseOptions(data), ClientSession: r.PromptCacheKey, Request: ag.Request{Generation: ag.Generation{MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP}}}
 	if len(ignored) > 0 {
 		in.warn("ignored request fields: %s", strings.Join(ignored, ", "))
 	}
@@ -114,26 +107,8 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 			in.warn("ignored include %s", v)
 		}
 	}
-	if r.PreviousID != "" {
-		var previous StoredResponse
-		if err := d.State.Get(ctx, "response", r.PreviousID, &previous); err != nil {
-			return in, invalid("previous_response_id", "previous response is missing, expired, or was not stored")
-		}
-		in.Request.Contents = previous.Contents
-		if previous.Model != in.Model {
-			in.Request.Contents = stripSignatures(previous.Contents)
-			in.warn("model changed within a stored response chain; prior reasoning was dropped")
-		}
-		in.OriginalItems = previous.Items
-		var priorOutput struct {
-			Output []json.RawMessage `json:"output"`
-		}
-		if err := json.Unmarshal(previous.Response, &priorOutput); err != nil {
-			return in, err
-		}
-		in.OriginalItems = append(in.OriginalItems, priorOutput.Output...)
-	}
 	system(&in.Request, r.Instructions)
+	in.Instructions = joinSystem(in.Request.System)
 	var text string
 	var items []json.RawMessage
 	if !present(r.Input) {
@@ -165,7 +140,7 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 					if p.InlineData != nil || p.FileData != nil {
 						return in, unsupported("non-text system message")
 					}
-					system(&in.Request, p.Text)
+					in.historySystem(p.Text)
 				}
 			case "user":
 				appendContent(&in.Request, "user", parts)
@@ -186,26 +161,18 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 			if err != nil {
 				return in, err
 			}
-			call := &ag.Call{ID: v.CallID, Name: nativeName(qualify(v.Namespace, v.Name)), Args: args}
-			appendContent(&in.Request, "model", []ag.Part{{FunctionCall: call, Signature: d.restoreCall(ctx, &in, call)}})
+			call := &ag.Call{ID: v.CallID, Name: toolSymbol(ToolName{Name: v.Name, Namespace: v.Namespace, Custom: v.Type == "custom_tool_call"}), Args: args}
+			appendContent(&in.Request, "model", []ag.Part{{FunctionCall: call}})
 		case "function_call_output", "custom_tool_call_output":
-			name, err := toolName(v.CallID, in.Request.Contents)
-			if err != nil {
-				return in, err
-			}
-			p, err := toolResult(v.CallID, name, v.Output, false)
+			p, err := toolResult(v.CallID, "", v.Output, false)
 			if err != nil {
 				return in, err
 			}
 			appendContent(&in.Request, "user", []ag.Part{p})
 		case "reasoning":
-			var prev []ag.Part
-			if n := len(in.Request.Contents); n > 0 {
-				prev = in.Request.Contents[n-1].Parts
-			}
-			appendContent(&in.Request, "model", d.replay(&in, v.Encrypted, "", prev))
+			in.deferReplay(v.Encrypted, "")
 		case "image_generation_call":
-			appendContent(&in.Request, "model", []ag.Part{d.restoreImage(ctx, &in, v)})
+			in.deferImage(v.ID, v.Result)
 		case "web_search_call":
 			// A server-side tool trace. Its answer and citations are carried by
 			// adjacent message items; it is not a client-executed function call.
@@ -256,12 +223,12 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 			return in, unsupported("text.format.type")
 		}
 	}
-	return in, validate(&in)
+	return in, validateIntent(&in)
 }
 
 // declareResponseTools flattens namespaces and maps custom (freeform) tools to
 // functions with a single string argument.
-func declareResponseTools(in *Input, tools []ResponseTool, namespace string) error {
+func declareResponseTools(in *RequestIntent, tools []ResponseTool, namespace string) error {
 	for _, t := range tools {
 		switch t.Type {
 		case "function":
@@ -272,7 +239,11 @@ func declareResponseTools(in *Input, tools []ResponseTool, namespace string) err
 			if err != nil {
 				return err
 			}
-			in.Request.Tools = append(in.Request.Tools, ag.Tool{Functions: []ag.Function{{Name: in.declare(ToolName{Name: t.Name, Namespace: namespace}), Description: t.Description, Parameters: params}}})
+			name, err := in.declare(ToolName{Name: t.Name, Namespace: namespace})
+			if err != nil {
+				return err
+			}
+			in.Request.Tools = append(in.Request.Tools, ag.Tool{Functions: []ag.Function{{Name: name, Description: t.Description, Parameters: params}}})
 		case "custom":
 			if t.Name == "" {
 				return invalid("tools.name", "tool name is required")
@@ -282,7 +253,11 @@ func declareResponseTools(in *Input, tools []ResponseTool, namespace string) err
 				desc = "Raw text input that must follow this " + t.Format.Syntax + " grammar:\n" + t.Format.Definition
 			}
 			params := raw(map[string]any{"type": "object", "properties": map[string]any{"input": map[string]any{"type": "string", "description": desc}}, "required": []string{"input"}})
-			in.Request.Tools = append(in.Request.Tools, ag.Tool{Functions: []ag.Function{{Name: in.declare(ToolName{Name: t.Name, Namespace: namespace, Custom: true}), Description: t.Description, Parameters: params}}})
+			name, err := in.declare(ToolName{Name: t.Name, Namespace: namespace, Custom: true})
+			if err != nil {
+				return err
+			}
+			in.Request.Tools = append(in.Request.Tools, ag.Tool{Functions: []ag.Function{{Name: name, Description: t.Description, Parameters: params}}})
 		case "namespace":
 			if namespace != "" || t.Name == "" {
 				return invalid("tools", "namespaces must be named and cannot be nested")
@@ -300,7 +275,7 @@ func declareResponseTools(in *Input, tools []ResponseTool, namespace string) err
 	return nil
 }
 
-func responseChoice(in *Input, value json.RawMessage) error {
+func responseChoice(in *RequestIntent, value json.RawMessage) error {
 	var choice string
 	if json.Unmarshal(value, &choice) == nil {
 		return setChoice(in, choice, "")
@@ -321,25 +296,40 @@ func responseChoice(in *Input, value json.RawMessage) error {
 	}
 	switch t.Type {
 	case "function", "custom":
-		return setChoice(in, t.Type, qualify(t.Namespace, t.Name))
+		in.Choice = ToolChoice{Mode: "required", Allowed: []ToolName{{Name: t.Name, Namespace: t.Namespace, Custom: t.Type == "custom"}}}
+		return nil
 	case "allowed_tools":
-		if t.Mode != "required" {
-			return setChoice(in, "auto", "")
+		if t.Mode != "auto" && t.Mode != "required" {
+			return invalid("tool_choice", "allowed_tools mode must be auto or required")
 		}
-		var names []string
+		in.Choice = ToolChoice{Mode: t.Mode, Allowed: []ToolName{}}
 		for _, tool := range t.Tools {
-			if tool.Name != "" {
-				names = append(names, nativeName(qualify(tool.Namespace, tool.Name)))
+			switch tool.Type {
+			case "function", "custom":
+				in.Choice.Allowed = append(in.Choice.Allowed, ToolName{Name: tool.Name, Namespace: tool.Namespace, Custom: tool.Type == "custom"})
+			case "web_search", "web_search_preview", "web_search_2025_08_26", "web_search_preview_2025_03_11":
+				in.Choice.Search = true
+			default:
+				return unsupported("allowed tool type " + tool.Type)
 			}
 		}
-		in.Request.ToolConfig = &ag.ToolConfig{FunctionCallingConfig: ag.CallingConfig{Mode: "ANY", AllowedNames: names}}
 		return nil
 	case "web_search", "web_search_preview", "web_search_2025_08_26", "web_search_preview_2025_03_11":
-		// A search request is sent with Google Search as its tool already.
-		if in.Search {
-			in.SearchChosen = true
-			return nil
-		}
+		in.Choice = ToolChoice{Mode: "required", Allowed: []ToolName{}, Search: true}
+		return nil
 	}
 	return setChoice(in, t.Type, t.Name)
+}
+
+// responseOptions retains only fields echoed in Responses output metadata.
+func responseOptions(data []byte) map[string]json.RawMessage {
+	var input map[string]json.RawMessage
+	_ = json.Unmarshal(data, &input)
+	result := map[string]json.RawMessage{}
+	for _, key := range []string{"instructions", "max_output_tokens", "temperature", "top_p", "tool_choice", "tools", "reasoning", "text"} {
+		if value, ok := input[key]; ok {
+			result[key] = value
+		}
+	}
+	return result
 }
