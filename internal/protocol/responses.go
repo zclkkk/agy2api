@@ -59,6 +59,9 @@ type ResponseTool struct {
 		Definition string `json:"definition,omitempty"`
 	} `json:"format,omitempty"`
 	Tools []ResponseTool `json:"tools,omitempty"`
+	// Web search options.
+	Filters      json.RawMessage `json:"filters,omitempty"`
+	UserLocation json.RawMessage `json:"user_location,omitempty"`
 }
 type ResponseItem struct {
 	Type         string          `json:"type,omitempty"`
@@ -289,6 +292,7 @@ func declareResponseTools(in *Input, tools []ResponseTool, namespace string) err
 			}
 		case "web_search", "web_search_preview", "web_search_2025_08_26", "web_search_preview_2025_03_11":
 			in.Search = true
+			in.ignoreSearchOptions(map[string]bool{"filters": present(t.Filters), "user_location": present(t.UserLocation)})
 		default:
 			return unsupported("tool type " + t.Type)
 		}

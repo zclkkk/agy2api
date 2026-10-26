@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -343,6 +344,72 @@ func (c *Client) Generate(ctx context.Context, model string, request Request, ki
 		return errors.New("Antigravity stream ended before a finish reason")
 	}
 	return nil
+}
+
+// groundingRedirect prefixes the links Gemini search returns in place of the
+// pages it cites. A variable so tests can point it at a local server.
+var groundingRedirect = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/"
+
+// ResolveGrounding replaces search redirect links with the pages they point
+// to, so clients can show where a citation comes from. Each link costs one
+// HEAD request without credentials; links not resolved within a few seconds
+// keep their redirect form.
+func (c *Client) ResolveGrounding(ctx context.Context, g *Grounding) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var links []string
+	seen := map[string]bool{}
+	for _, chunk := range g.Chunks {
+		if chunk.Web != nil && strings.HasPrefix(chunk.Web.URI, groundingRedirect) && !seen[chunk.Web.URI] {
+			seen[chunk.Web.URI] = true
+			links = append(links, chunk.Web.URI)
+		}
+	}
+	targets := map[string]string{}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, 8)
+	for _, link := range links {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			if target := c.redirectTarget(ctx, link); target != "" {
+				mu.Lock()
+				targets[link] = target
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	for _, chunk := range g.Chunks {
+		if chunk.Web != nil && targets[chunk.Web.URI] != "" {
+			chunk.Web.URI = targets[chunk.Web.URI]
+		}
+	}
+}
+
+// redirectTarget returns the Location of a redirect response, or "". The HTTP
+// client does not follow redirects, so the target is never fetched.
+func (c *Client) redirectTarget(ctx context.Context, link string) string {
+	r, err := http.NewRequestWithContext(ctx, http.MethodHead, link, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := c.HTTP.Do(r)
+	if err != nil {
+		return ""
+	}
+	resp.Body.Close()
+	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		return ""
+	}
+	target, err := url.Parse(resp.Header.Get("Location"))
+	if err != nil || (target.Scheme != "https" && target.Scheme != "http") || target.Host == "" {
+		return ""
+	}
+	return target.String()
 }
 
 func DecodeSSE(r io.Reader, emit func([]byte) error) error {

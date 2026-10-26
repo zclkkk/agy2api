@@ -72,13 +72,13 @@ curl http://127.0.0.1:8080/v1/messages \
 | `/v1/models` 与 `/v1/models/{id}` | 从账号实时发现，只列出 Gemini 模型，缓存 5 分钟 |
 | `/v1/responses`、`/v1/messages` | 流式、非流式、文本和多轮对话；Messages 支持 `system` 角色消息 |
 | 真实客户端请求形态 | Codex CLI 0.164 端到端通过，本地压缩和远程压缩都可用；Claude Code 2.1 的请求形态通过（见下方已知限制） |
-| 函数工具 | 声明、工具选择、并行调用、工具结果回传、签名恢复；Responses 的 `namespace` 工具组与 `custom` 自由文本工具 |
+| 函数工具 | 声明、工具选择、并行调用、工具结果回传、签名恢复；Responses 的 `namespace` 工具组与 `custom` 自由文本工具；未强制调用时使用 Gemini 的 `VALIDATED` 模式，参数受 schema 约束 |
 | 工具 schema | 转换为上游接受的子集：内联 `$ref`、合并 `allOf`、类型列表转 `nullable`、`const`/非字符串 `enum` 转换；参数根节点必须是对象，根节点的联合类型保留最具体的分支 |
 | 工具名 | Gemini 接受字母、数字、`_`、`.`、`:`、`-`，以字母或下划线开头，最长 128 字符；其他名字自动映射，返回时还原 |
 | 思考内容 | 输出与工具回放通过；支持预算/强度转换、加密回放、篡改检查 |
 | 图片与文件输入 | 图片、PDF、HTTPS 图片均通过；Responses 的音频和视频文件输入通过；`gs://` URI 透传尚未实测 |
 | JSON 输出与 JSON Schema | 映射到上游；`strict:true` 暂不支持 |
-| 原生搜索 | 两个协议的搜索、引用及中文流式引用均通过；模型不支持搜索时转给目录中的搜索模型 |
+| 原生搜索 | 两个协议的搜索、引用及中文流式引用均通过；引用链接解析为真实网址；模型不支持搜索时转给目录中的搜索模型 |
 | 图片生成输出 | Responses 图片生成，以及基于生成图片的后续编辑（本轮验收受图片额度阻止，前一轮通过；回放由单元测试覆盖） |
 | token 计数 | `/v1/messages/count_tokens`、`/v1/responses/input_tokens` |
 | Responses 历史 | `previous_response_id`、查询、删除、`input_items`；SQLite 持久化 |
@@ -96,11 +96,13 @@ curl http://127.0.0.1:8080/v1/messages \
 - 不影响生成结果的字段直接忽略，例如 `cache_control`、`context_management`、`metadata`、`prompt_cache_key`、`client_metadata`、`service_tier`、`text.verbosity`、工具的 `strict` 和 `defer_loading`。
 - 其他不认识的字段也会被忽略，字段名写入本地日志的 `warnings`，方便发现新字段。
 - 会改变语义而上游做不到的请求明确拒绝，例如 `background`、`conversation`、`prompt` 模板、`item_reference`、`file_id`、远程 MCP 和未支持的托管工具类型。不会通过删掉附件或工具来让这类请求“成功”。
-- 尽力满足的参数：`parallel_tool_calls=false` 和 `disable_parallel_tool_use` 没有上游等价设置；`strict` 结构化输出依赖上游的 schema 约束解码。
+- 尽力满足的参数：`parallel_tool_calls=false` 和 `disable_parallel_tool_use` 没有上游等价设置；`strict` 结构化输出依赖上游的 schema 约束解码；搜索的域名限制（Messages 的 `allowed_domains`/`blocked_domains`、Responses 的 `filters`）和 `user_location` 上游不生效，忽略并记入日志的 `warnings`。
 
 具体模型是否接受某种输入或思考参数，还取决于 Antigravity 上游。
 
-原生搜索不能与函数工具同时发送给上游：两者同时出现时保留函数工具、忽略搜索，并在日志里记录。Codex 默认附带搜索工具，因此不受影响。图片生成目前使用账号提供的图片模型及其默认生成设置，未提供独立 Images API；Messages 不能返回生成图片。上游只对较新的客户端版本开放新模型（实测 `antigravity/1.0.0` 调用 `gemini-3.8-flash-high` 返回 404）。`user_agent` 留空时，服务在启动时和之后每 6 小时读取 Antigravity 官方发布清单，以最新版本号发送 `antigravity/<版本>`；读取失败时沿用已知版本，初始值为 2.24.0。配置为 `antigravity/<版本>` 时，该版本作为最低版本，发布清单中的版本更新时仍会升级；其他值原样发送，不再自动更新。读取发布清单经过 `proxy_url`。
+原生搜索不能与函数工具同时发送给上游：两者同时出现时保留函数工具、忽略搜索，并在日志里记录。Codex 默认附带搜索工具，因此不受影响。Gemini 搜索的引用链接是 `vertexaisearch.cloud.google.com` 的跳转地址，标题只有域名；服务会对每个跳转地址发一次不带凭据的 HEAD 请求（经过 `proxy_url`，不跟随跳转），把引用换成真实网址，最多等待 3 秒，未解析的保留原链接。实测上游接受 `includedDomains`/`excludeDomains` 但不执行，所以域名限制不转发。
+
+工具选择为 `auto` 或未指定时，函数调用使用 Gemini 的 `VALIDATED` 模式：实测在默认的 `AUTO` 模式下，Gemini 会返回 schema 不允许的参数（例如枚举之外的值），`VALIDATED` 下参数保持在 schema 范围内。强制调用（`required`/指定工具）和 `none` 保持原样。图片生成目前使用账号提供的图片模型及其默认生成设置，未提供独立 Images API；Messages 不能返回生成图片。上游只对较新的客户端版本开放新模型（实测 `antigravity/1.0.0` 调用 `gemini-3.8-flash-high` 返回 404）。`user_agent` 留空时，服务在启动时和之后每 6 小时读取 Antigravity 官方发布清单，以最新版本号发送 `antigravity/<版本>`；读取失败时沿用已知版本，初始值为 2.24.0。配置为 `antigravity/<版本>` 时，该版本作为最低版本，发布清单中的版本更新时仍会升级；其他值原样发送，不再自动更新。读取发布清单经过 `proxy_url`。
 
 推理强度映射为 Gemini 的推理等级：`minimal` 按 `low` 发送（部分模型不接受 `minimal`），`xhigh`/`max` 按 `high` 发送。指定思考预算时不低于模型目录的 `minThinkingBudget`；自适应思考使用动态预算。Gemini 无法关闭思考（预算 0 会被部分模型拒绝、被其他模型忽略），因此 `reasoning.effort: "none"` 和 `thinking.type: "disabled"` 使用目录给出的最低预算并不返回思考内容，同时在日志的 `warnings` 中记录。部分 Gemini 模型会只把思考签名放在工具调用或回复文本上，未必返回可见思考块。Messages 的 `thinking.display: "omitted"` 会返回不含思考文本的签名块，回放照常生效。
 
@@ -152,7 +154,7 @@ go test -race ./...
 CGO_ENABLED=0 go build -trimpath -o bin/agy2api ./cmd/agy2api
 ```
 
-测试会启动仅监听本机的模拟上游，无需真实账号，不消耗订阅额度。测试覆盖流式事件顺序、拆分 usage、错误结束、工具第二轮、客户端取消、凭据刷新竞争、401 后强制刷新、SQLite 重启恢复、旧表迁移、状态体积上限、签名篡改、Claude Code 与 Codex 请求形态、schema 转换、工具名映射、状态缺失降级、本机访问限制、排队、目录缓存兜底、流式心跳、以 assistant 结尾的请求、上游会话 ID、上下文压缩和客户端版本更新。
+测试会启动仅监听本机的模拟上游，无需真实账号，不消耗订阅额度。测试覆盖流式事件顺序、拆分 usage、错误结束、工具第二轮、客户端取消、凭据刷新竞争、401 后强制刷新、SQLite 重启恢复、旧表迁移、状态体积上限、签名篡改、Claude Code 与 Codex 请求形态、schema 转换、工具名映射、状态缺失降级、本机访问限制、排队、目录缓存兜底、流式心跳、以 assistant 结尾的请求、上游会话 ID、上下文压缩、客户端版本更新、函数调用模式、搜索引用链接解析和被忽略的搜索选项。
 
 可选的官方 Python SDK 验收脚本（仅开发测试需要 Python）：
 
@@ -172,13 +174,12 @@ python tests/live_validate.py --config config.json --report /tmp/agy2api-live-re
 python tests/live_validate.py --only thinking --report /tmp/agy2api-thinking-report.json
 ```
 
-验收覆盖模型目录（只列出 Gemini，拒绝其他模型）、两个协议的流式和非流式调用、系统指令、约 4.8 万输入 token 的长上下文、单个/并行工具、工具返回图片、思考及签名回放、结构化输出、图片/PDF/音视频文件、搜索引用与搜索转发、输出上限、取消、真实 OAuth 刷新、重启恢复、删除、API 密钥验证、并发排队、Claude Code 与 Codex 请求形态、会话中途换模型、状态库丢失后的续聊、以 assistant 结尾的请求、两种上下文压缩方式和客户端版本检查。测试使用合成内容；报告不包含凭据或原始签名。原始运行报告属于生成文件，Git 会忽略 `tests/live-report*.json`；`docs/` 只保留整理后的验收记录。
+验收覆盖模型目录（只列出 Gemini，拒绝其他模型）、两个协议的流式和非流式调用、系统指令、约 4.8 万输入 token 的长上下文、单个/并行工具、工具返回图片、思考及签名回放、结构化输出、图片/PDF/音视频文件、搜索引用（含链接解析）与搜索转发、输出上限、取消、真实 OAuth 刷新、重启恢复、删除、API 密钥验证、并发排队、Claude Code 与 Codex 请求形态、会话中途换模型、状态库丢失后的续聊、以 assistant 结尾的请求、两种上下文压缩方式和客户端版本检查。测试使用合成内容；报告不包含凭据或原始签名。原始运行报告属于生成文件，Git 会忽略 `tests/live-report*.json`；`docs/` 只保留整理后的验收记录。
 
 该次验收的限制：
 
-- 同一天、同一版本的额外验证：Codex CLI 0.164 用 `gemini-3-flash` 和 `gemini-3.8-flash-medium` 通过远程压缩完成真实文件任务。
+- 同一天的额外验证：Codex CLI 0.164 用 `gemini-3-flash` 完成真实文件任务，并用 `gemini-3-flash` 和 `gemini-3.8-flash-medium` 通过远程压缩完成同一任务；抓取的 Codex（22 个工具）和 Claude Code（23 个工具）请求在 `VALIDATED` 模式下均被接受。
 - 图片生成和图片编辑两项受图片模型额度阻止（`429 / QUOTA_EXHAUSTED`，同一天的前一轮验收用掉了额度，上游要求约 3.9 小时后重试）；前一轮验收中这两项通过，生成图片的回放由单元测试覆盖。
-- `messages/search_routed` 用最初的提问失败过一次：搜索模型对常识问题直接作答、没有搜索。改为需要最新信息的提问后连续 4 次通过，记录的是重跑结果。
 - 上游会话 ID 不影响缓存命中：实测 Gemini 按请求前缀缓存，换会话 ID 仍然命中。固定会话 ID 只是让请求与官方客户端一致。
 - Claude Code 的请求会被 Antigravity 按身份标识拒绝，见上方“已知限制”。
 - `gemini-2.5-pro`：上游持续返回 `503 / MODEL_CAPACITY_EXHAUSTED`。模型仍保留在目录里，不把暂时无容量误判为永久不支持。

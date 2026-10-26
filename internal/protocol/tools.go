@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
@@ -146,4 +147,19 @@ func setChoice(in *Input, choice, name string) error {
 	}
 	in.Request.ToolConfig = &ag.ToolConfig{FunctionCallingConfig: c}
 	return nil
+}
+
+// ignoreSearchOptions reports the web search options a request set. Gemini
+// search accepts domain filters but does not apply them, so none are sent.
+func (in *Input) ignoreSearchOptions(options map[string]bool) {
+	var set []string
+	for name, ok := range options {
+		if ok {
+			set = append(set, name)
+		}
+	}
+	if len(set) > 0 {
+		sort.Strings(set)
+		in.warn("web search options ignored because Antigravity search does not apply them: %s", strings.Join(set, ", "))
+	}
 }

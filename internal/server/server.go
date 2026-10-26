@@ -336,7 +336,12 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	renderer := protocol.NewRenderer(format, in, s.state, emit)
-	err := s.upstream.Generate(r.Context(), in.UpstreamModel(), in.Request, in.Kind, func(chunk ag.Chunk) error { return renderer.Add(r.Context(), chunk) })
+	err := s.upstream.Generate(r.Context(), in.UpstreamModel(), in.Request, in.Kind, func(chunk ag.Chunk) error {
+		if chunk.Grounding != nil {
+			s.upstream.ResolveGrounding(r.Context(), chunk.Grounding)
+		}
+		return renderer.Add(r.Context(), chunk)
+	})
 	if err == nil {
 		err = renderer.Finish(r.Context())
 	}

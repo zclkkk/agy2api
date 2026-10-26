@@ -54,6 +54,12 @@ func (in *Input) Prepare(catalog ag.Catalog) error {
 			in.Request.Tools = append(in.Request.Tools, ag.Tool{GoogleSearch: raw(map[string]any{})})
 		}
 	}
+	// VALIDATED keeps function arguments within their schemas; under AUTO
+	// Gemini can return values the schema forbids, such as an invented enum
+	// value. Forced (ANY) and disabled (NONE) choices stay as requested.
+	if c := in.Request.ToolConfig; hasFunctions(in.Request.Tools) && (c == nil || c.FunctionCallingConfig.Mode == "AUTO") {
+		in.Request.ToolConfig = &ag.ToolConfig{FunctionCallingConfig: ag.CallingConfig{Mode: "VALIDATED"}}
+	}
 	in.applyThinking(info)
 	for i := range in.Request.Tools {
 		for j := range in.Request.Tools[i].Functions {

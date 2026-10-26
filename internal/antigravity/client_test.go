@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -181,5 +182,47 @@ func TestGoogleRetryInfoBecomesRetryAfter(t *testing.T) {
 	}
 	if got := upstreamRetryAfter("", []byte(`{"error":{"details":[{"@type":"other","retryDelay":"100s"}]}}`)); got != "" {
 		t.Fatal(got)
+	}
+}
+
+func TestGroundingRedirectsResolveToTheirPages(t *testing.T) {
+	var hits atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if r.Method != http.MethodHead || r.Header.Get("Authorization") != "" {
+			t.Errorf("unexpected request: %s %v", r.Method, r.Header)
+		}
+		switch r.URL.Path {
+		case "/grounding-api-redirect/ok":
+			w.Header().Set("Location", "https://docs.python.org/3/library/json.html")
+			w.WriteHeader(http.StatusFound)
+		case "/grounding-api-redirect/odd":
+			w.Header().Set("Location", "javascript:alert(1)")
+			w.WriteHeader(http.StatusFound)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer up.Close()
+	defer func(previous string) { groundingRedirect = previous }(groundingRedirect)
+	groundingRedirect = up.URL + "/grounding-api-redirect/"
+	var g Grounding
+	body := `{"groundingChunks":[{"web":{"uri":"` + up.URL + `/grounding-api-redirect/ok"}},{"web":{"uri":"` + up.URL + `/grounding-api-redirect/ok"}},
+		{"web":{"uri":"` + up.URL + `/grounding-api-redirect/odd"}},{"web":{"uri":"` + up.URL + `/grounding-api-redirect/broken"}},{"web":{"uri":"https://example.com/direct"}},{}]}`
+	if err := json.Unmarshal([]byte(body), &g); err != nil {
+		t.Fatal(err)
+	}
+	c := Client{HTTP: up.Client()}
+	c.HTTP.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	c.ResolveGrounding(context.Background(), &g)
+	got := []string{g.Chunks[0].Web.URI, g.Chunks[1].Web.URI, g.Chunks[2].Web.URI, g.Chunks[3].Web.URI, g.Chunks[4].Web.URI}
+	want := []string{"https://docs.python.org/3/library/json.html", "https://docs.python.org/3/library/json.html", up.URL + "/grounding-api-redirect/odd", up.URL + "/grounding-api-redirect/broken", "https://example.com/direct"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("chunk %d: %q, want %q", i, got[i], want[i])
+		}
+	}
+	if hits.Load() != 3 {
+		t.Errorf("each distinct redirect should be requested once, got %d requests", hits.Load())
 	}
 }

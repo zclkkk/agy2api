@@ -353,3 +353,56 @@ func TestSearchRoutingAndToolNames(t *testing.T) {
 		t.Error("distinct names collided")
 	}
 }
+
+func TestToolCallingModes(t *testing.T) {
+	d := Decoder{State: testStore(t)}
+	mode := func(body string) string {
+		t.Helper()
+		in, err := d.Responses(context.Background(), []byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := in.Prepare(testCatalog); err != nil {
+			t.Fatal(err)
+		}
+		if in.Request.ToolConfig == nil {
+			return ""
+		}
+		return in.Request.ToolConfig.FunctionCallingConfig.Mode
+	}
+	tools := `"tools":[{"type":"function","name":"f","parameters":{"type":"object"}}]`
+	for choice, want := range map[string]string{"": "VALIDATED", `"tool_choice":"auto",`: "VALIDATED", `"tool_choice":"required",`: "ANY", `"tool_choice":"none",`: "NONE"} {
+		if got := mode(`{"model":"gemini-test","input":"x",` + choice + tools + `}`); got != want {
+			t.Errorf("tool_choice %q: mode %q, want %q", choice, got, want)
+		}
+	}
+	if got := mode(`{"model":"gemini-test","input":"x"}`); got != "" {
+		t.Errorf("no tools: mode %q", got)
+	}
+	if got := mode(`{"model":"gemini-test","input":"x","tools":[{"type":"web_search"}]}`); got != "" {
+		t.Errorf("search only: mode %q", got)
+	}
+}
+
+func TestIgnoredSearchOptionsAreReported(t *testing.T) {
+	d := Decoder{State: testStore(t)}
+	in, err := d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"x"}],
+		"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":3,"allowed_domains":["python.org"],"user_location":{"type":"approximate","country":"US"}}]}`), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Warnings) != 1 || !strings.Contains(in.Warnings[0], "allowed_domains, user_location") {
+		t.Fatalf("warnings: %v", in.Warnings)
+	}
+	in, err = d.Responses(context.Background(), []byte(`{"model":"gemini-test","input":"x","tools":[{"type":"web_search","filters":{"allowed_domains":["python.org"]}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(in.Warnings) != 1 || !strings.Contains(in.Warnings[0], "filters") {
+		t.Fatalf("warnings: %v", in.Warnings)
+	}
+	in, _ = d.Responses(context.Background(), []byte(`{"model":"gemini-test","input":"x","tools":[{"type":"web_search"}]}`))
+	if len(in.Warnings) != 0 {
+		t.Fatalf("plain search should not warn: %v", in.Warnings)
+	}
+}

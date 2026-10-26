@@ -49,6 +49,10 @@ type MessageTool struct {
 	Description  string          `json:"description,omitempty"`
 	InputSchema  json.RawMessage `json:"input_schema,omitempty"`
 	DeferLoading bool            `json:"defer_loading,omitempty"`
+	// Web search options.
+	AllowedDomains []string        `json:"allowed_domains,omitempty"`
+	BlockedDomains []string        `json:"blocked_domains,omitempty"`
+	UserLocation   json.RawMessage `json:"user_location,omitempty"`
 }
 
 // Assistant blocks produced by Anthropic server tools. They carry no state this
@@ -161,6 +165,7 @@ func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Inp
 	for _, t := range r.Tools {
 		if strings.HasPrefix(t.Type, "web_search_") {
 			in.Search = true
+			in.ignoreSearchOptions(map[string]bool{"allowed_domains": len(t.AllowedDomains) > 0, "blocked_domains": len(t.BlockedDomains) > 0, "user_location": present(t.UserLocation)})
 			continue
 		}
 		if t.Type != "" && t.Type != "custom" {
