@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
@@ -56,6 +57,7 @@ func (in PreparedRequest) PublicTool(native string) ToolName {
 type requestPlan struct {
 	RequestIntent
 	upstream, kind string
+	toolRecords    map[string]SignatureRecord // replay records read while resolving history
 }
 
 func (in *requestPlan) UpstreamModel() string {
@@ -107,6 +109,9 @@ func (p Planner) Prepare(ctx context.Context, intent RequestIntent, catalog ag.C
 			return finish(), err
 		}
 	}
+	if err := (replayStore{p.State}).resolveHistoryTools(ctx, &in); err != nil {
+		return finish(), err
+	}
 	in.Request.System = joinSystem(in.Instructions, in.HistorySystem)
 	if p.SanitizeClientMarkers {
 		in.SanitizeClientMarkers()
@@ -139,6 +144,11 @@ func (p Planner) Prepare(ctx context.Context, intent RequestIntent, catalog ag.C
 			return finish(), err
 		}
 	}
+	// Tool policy has already been resolved against current declarations. The
+	// output/replay identity map also needs historical tools still in context.
+	for native, identity := range in.historyTools {
+		in.Tools[native] = identity
+	}
 	return finish(), nil
 }
 
@@ -170,6 +180,8 @@ func cloneIntent(in RequestIntent) RequestIntent {
 		tools[name] = tool
 	}
 	in.Tools = tools
+	in.historyTools = maps.Clone(in.historyTools)
+	in.historyCalls = append([]historyCall(nil), in.historyCalls...)
 	in.Request.Contents = cloneContents(in.Request.Contents)
 	in.Request.System = joinSystem(in.Request.System)
 	in.Instructions = joinSystem(in.Instructions)

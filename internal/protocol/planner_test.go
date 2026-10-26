@@ -154,7 +154,7 @@ func TestPlannerRejectsEmptyConversationAfterReplay(t *testing.T) {
 	}
 }
 
-func TestToolPolicyRejectsUnknownAndSeparatesEncodedNames(t *testing.T) {
+func TestToolPolicyRejectsUnknownAndSeparatesToolTypes(t *testing.T) {
 	d := testPipeline{State: testStore(t)}
 	for _, body := range []string{
 		`{"model":"gemini-test","input":"x","tool_choice":{"type":"web_search"}}`,
@@ -165,10 +165,6 @@ func TestToolPolicyRejectsUnknownAndSeparatesEncodedNames(t *testing.T) {
 		if _, err := d.Responses(context.Background(), []byte(body)); err == nil {
 			t.Fatalf("invalid tool policy accepted: %s", body)
 		}
-	}
-	encoded := toolSymbol(ToolName{Namespace: "files", Name: "read"})
-	if nativeName(encoded) == encoded || nativeName(nativeName("bad name")) == nativeName("bad name") {
-		t.Fatal("encoded and literal user tool names collide")
 	}
 	in, err := d.Responses(context.Background(), []byte(`{"model":"gemini-test","input":"x","tools":[{"type":"function","name":"run","parameters":{"type":"object"}},{"type":"custom","name":"run"}],"tool_choice":{"type":"custom","name":"run"}}`))
 	if err != nil {

@@ -19,10 +19,11 @@ const SkipSignature = "skip_thought_signature_validator"
 
 // SignatureRecord is the replay state of a function call this bridge issued.
 type SignatureRecord struct {
-	Model     string `json:"model"`
-	Name      string `json:"name"`
-	Digest    string `json:"digest"`
-	Signature string `json:"signature"`
+	Model     string   `json:"model"`
+	Name      string   `json:"name"`
+	Tool      ToolName `json:"tool"`
+	Digest    string   `json:"digest"`
+	Signature string   `json:"signature"`
 }
 
 // ImageRecord is the replay state of a generated image.

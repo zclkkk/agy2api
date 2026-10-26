@@ -48,33 +48,75 @@ func (in *RequestIntent) PublicTool(native string) ToolName {
 
 var invalidNameChars = regexp.MustCompile(`[^a-zA-Z0-9_.:-]`)
 
-// The agy_ prefix is reserved for encoded identities. Valid user names with
-// that prefix are encoded too, keeping encoded and unmodified names disjoint.
-func nativeName(public string) string {
-	name := invalidNameChars.ReplaceAllString(public, "_")
-	validStart := len(name) > 0 && (name[0] == '_' || name[0] >= 'a' && name[0] <= 'z' || name[0] >= 'A' && name[0] <= 'Z')
-	if validStart && name == public && len(name) <= 128 && !strings.HasPrefix(name, "agy_") {
+func nativeName(public string) string { return toolSymbol(ToolName{Name: public}) }
+
+// qualify avoids repeating prefixes already present in Codex/MCP tool names.
+// The complete namespace still participates in the identity hash.
+func qualify(namespace, name string) string {
+	if namespace == "" || strings.HasPrefix(name, "mcp__") || name == namespace {
 		return name
 	}
-	sum := sha256.Sum256([]byte(public))
-	return "agy_fn_" + hex.EncodeToString(sum[:16])
+	prefix := namespace
+	if !strings.HasSuffix(prefix, "__") {
+		prefix += "__"
+	}
+	if strings.HasPrefix(name, prefix) {
+		return name
+	}
+	return prefix + name
 }
 
+// toolSymbol preserves legal ordinary function names. Encoded identities keep
+// a readable stem and a six-hex suffix; callers must check for collisions.
 func toolSymbol(t ToolName) string {
-	if t.Namespace == "" && !t.Custom {
-		return nativeName(t.Name)
+	readable := qualify(t.Namespace, t.Name)
+	name := invalidNameChars.ReplaceAllString(readable, "_")
+	validStart := len(name) > 0 && (name[0] == '_' || name[0] >= 'a' && name[0] <= 'z' || name[0] >= 'A' && name[0] <= 'Z')
+	if t.Namespace == "" && !t.Custom && validStart && name == t.Name && len(name) <= 128 {
+		return name
 	}
-	kind, prefix := "function", "agy_ns_"
+	if !validStart {
+		name = "_" + name
+	}
+	kind := "function"
 	if t.Custom {
 		kind = "custom"
-		if t.Namespace == "" {
-			prefix = "agy_custom_"
-		}
 	}
-	// Only identity fields participate, so adding unrelated ToolName metadata
-	// cannot change the names used by existing signed conversation history.
+	// Hash the unmodified identity, independent of descriptions, schemas, other
+	// declarations and truncation. Seven bytes are reserved for "_" + six hex.
 	sum := sha256.Sum256(raw([3]string{t.Namespace, t.Name, kind}))
-	return prefix + hex.EncodeToString(sum[:16])
+	return name[:min(len(name), 121)] + "_" + hex.EncodeToString(sum[:3])
+}
+
+// historyCall locates a call in the client's input and the identity the client
+// gave it. Clients may omit fields such as the namespace, so the planner
+// completes the identity before naming the call.
+type historyCall struct {
+	Content, Part int
+	Tool          ToolName
+}
+
+func (in *RequestIntent) appendHistoryCall(id string, t ToolName, args json.RawMessage) {
+	appendContent(&in.Request, "model", []ag.Part{{FunctionCall: &ag.Call{ID: id, Name: toolSymbol(t), Args: args}}})
+	i := len(in.Request.Contents) - 1
+	in.historyCalls = append(in.historyCalls, historyCall{Content: i, Part: len(in.Request.Contents[i].Parts) - 1, Tool: t})
+}
+
+// registerHistoryTool adds an identity seen in history. A historical tool is
+// not callable, but it must not alias another identity in the same context.
+func (in *RequestIntent) registerHistoryTool(t ToolName) (string, error) {
+	native := toolSymbol(t)
+	if previous, ok := in.Tools[native]; ok && previous != t {
+		return "", invalid("input", "historical tool identity collides with a declared tool")
+	}
+	if previous, ok := in.historyTools[native]; ok && previous != t {
+		return "", invalid("input", "colliding tool identities in history")
+	}
+	if in.historyTools == nil {
+		in.historyTools = map[string]ToolName{}
+	}
+	in.historyTools[native] = t
+	return native, nil
 }
 
 func (in *RequestIntent) selectTools() error {

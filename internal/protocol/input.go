@@ -58,6 +58,8 @@ type RequestIntent struct {
 	Instructions  *ag.Content // this request's top-level instructions
 	HistorySystem *ag.Content // system/developer messages that belong to history
 	references    []replayReference
+	historyCalls  []historyCall       // calls in the client's input, as the client identified them
+	historyTools  map[string]ToolName // native name -> identity of tools seen only in history
 }
 
 func (in *RequestIntent) warn(format string, args ...any) {

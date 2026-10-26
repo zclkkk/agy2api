@@ -16,7 +16,7 @@ func (r *Renderer) recordBlock(ctx context.Context, b *outputBlock) error {
 		b.Parts = []ag.Part{{Text: b.Text, Thought: b.Kind == "thinking", Signature: b.Signature}}
 	}
 	if b.Kind == "tool" {
-		if err := r.state.Put(ctx, "tool", b.CallID, SignatureRecord{Model: r.model(), Name: b.Name, Digest: digest(b.Args), Signature: b.Signature}); err != nil {
+		if err := r.state.Put(ctx, "tool", b.CallID, SignatureRecord{Model: r.model(), Name: b.Name, Tool: b.Public, Digest: digest(b.Args), Signature: b.Signature}); err != nil {
 			return err
 		}
 		b.Parts = []ag.Part{{FunctionCall: &ag.Call{ID: b.CallID, Name: b.Name, Args: b.Args}, Signature: b.Signature}}
@@ -75,6 +75,14 @@ func (r *Renderer) recordResponse(ctx context.Context, contents []ag.Content) er
 	if r.input.Format != Responses || !r.input.Store {
 		return nil
 	}
+	tools := map[string]ToolName{}
+	for _, content := range contents {
+		for _, part := range content.Parts {
+			if call := part.FunctionCall; call != nil {
+				tools[call.Name] = r.input.PublicTool(call.Name)
+			}
+		}
+	}
 	return r.state.Put(ctx, "response", r.id, StoredResponse{Version: recordVersion, Model: r.input.Model, UpstreamModel: r.model(), HistorySystem: r.input.HistorySystem,
-		Contents: contents, Response: r.Result, Items: append([]json.RawMessage(nil), r.input.OriginalItems...)})
+		Contents: contents, Tools: tools, Response: r.Result, Items: append([]json.RawMessage(nil), r.input.OriginalItems...)})
 }

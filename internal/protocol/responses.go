@@ -161,8 +161,7 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 			if err != nil {
 				return in, err
 			}
-			call := &ag.Call{ID: v.CallID, Name: toolSymbol(ToolName{Name: v.Name, Namespace: v.Namespace, Custom: v.Type == "custom_tool_call"}), Args: args}
-			appendContent(&in.Request, "model", []ag.Part{{FunctionCall: call}})
+			in.appendHistoryCall(v.CallID, ToolName{Name: v.Name, Namespace: v.Namespace, Custom: v.Type == "custom_tool_call"}, args)
 		case "function_call_output", "custom_tool_call_output":
 			p, err := toolResult(v.CallID, "", v.Output, false)
 			if err != nil {

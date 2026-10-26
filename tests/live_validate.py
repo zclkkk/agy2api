@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -407,6 +408,111 @@ class Live:
             thinking_blocks=thoughts,
             signed_tool_calls=signed_tools,
         )
+
+    def readable_tool_names(self, name, namespace="", custom=False):
+        stored = bool(namespace)
+        schema = {
+            "type": "object",
+            "properties": {"value": {"type": "string", "enum": ["ok"]}},
+            "required": ["value"],
+        }
+
+        def function(tool_name):
+            return {"type": "function", "name": tool_name, "parameters": schema}
+
+        tools = [
+            function("Bash"),
+            {"type": "namespace", "name": "files", "tools": [function("read")]},
+            {
+                "type": "namespace",
+                "name": "integration",
+                "tools": [function("mcp__srv__do")],
+            },
+            {
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "Accept raw patch text. For this test, accept the raw text ok.",
+            },
+        ]
+        target = (
+            f"{namespace}.{name}"
+            if namespace and not name.startswith("mcp__")
+            else name
+        )
+        argument = "the raw text ok" if custom else "value=ok"
+        prompt = f"Call only {target} with {argument}. Wait for its result."
+        first = self.o.responses.create(
+            model="gemini-3-flash",
+            input=prompt,
+            tools=tools,
+            tool_choice="auto",
+            max_output_tokens=2048,
+            store=stored,
+        )
+        calls = [
+            item
+            for item in first.output
+            if item.type in ("function_call", "custom_tool_call")
+        ]
+        assert len(calls) == 1, "expected one autonomously selected tool"
+        call = calls[0]
+        assert (
+            call.name == name and (getattr(call, "namespace", None) or "") == namespace
+        ), "model selected the wrong tool identity"
+        assert call.type == ("custom_tool_call" if custom else "function_call")
+        if custom:
+            assert call.input.strip() == "ok"
+        else:
+            assert json.loads(call.arguments) == {"value": "ok"}
+        with sqlite3.connect(self.root / "data" / "state.db") as db:
+            row = db.execute(
+                "SELECT data FROM entries WHERE kind='tool' AND id=?", (call.call_id,)
+            ).fetchone()
+        assert row, "tool replay record missing"
+        record = json.loads(row[0])
+        stem = (
+            f"{namespace}__{name}"
+            if namespace and not name.startswith("mcp__")
+            else name
+        )
+        if namespace or custom:
+            assert re.fullmatch(re.escape(stem) + r"_[0-9a-f]{6}", record["name"])
+        else:
+            assert record["name"] == name
+        assert record["tool"].get("name") == name
+        assert record["tool"].get("namespace", "") == namespace
+        assert record["tool"].get("custom", False) == custom
+        history = [{"role": "user", "content": prompt}]
+        history += [item.model_dump(exclude_none=True) for item in first.output]
+        continuation = [
+            {
+                "type": "custom_tool_call_output" if custom else "function_call_output",
+                "call_id": call.call_id,
+                "output": "READABLE_TOOLS_OK",
+            },
+            {"role": "user", "content": "Reply with exactly the tool result."},
+        ]
+        second = self.o.responses.create(
+            model="gemini-3-flash",
+            input=continuation if stored else history + continuation,
+            tools=tools,
+            tool_choice="none",
+            max_output_tokens=1024,
+            store=False,
+            **({"previous_response_id": first.id} if stored else {}),
+        )
+        assert second.output_text.strip() == "READABLE_TOOLS_OK", (
+            "tool continuation failed"
+        )
+        return {
+            "name": name,
+            "namespace": namespace,
+            "custom": custom,
+            "native_name": record["name"],
+            "auto_selection": True,
+            "round_trip": True,
+            "stored_chain": stored,
+        }
 
     def thinking(self, proto, model):
         prompt = "Compute 137*249 carefully, and answer with the result."
@@ -1747,6 +1853,20 @@ def main():
             ("http/cancellation", suite.cancellation),
             ("http/negative", suite.negative),
         ]
+        for name, namespace, custom in [
+            ("Bash", "", False),
+            ("read", "files", False),
+            ("mcp__srv__do", "integration", False),
+            ("apply_patch", "", True),
+        ]:
+            cases.append(
+                (
+                    f"tools/readable/{name}",
+                    lambda n=name, ns=namespace, c=custom: suite.readable_tool_names(
+                        n, ns, c
+                    ),
+                )
+            )
         for model in ["gemini-3-flash", "gemini-3.8-flash-medium"]:
             cases += [
                 (

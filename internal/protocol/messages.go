@@ -135,8 +135,7 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 				if err != nil {
 					return in, err
 				}
-				call := &ag.Call{ID: b.ID, Name: nativeName(b.Name), Args: args}
-				appendContent(&in.Request, role, []ag.Part{{FunctionCall: call}})
+				in.appendHistoryCall(b.ID, ToolName{Name: b.Name}, args)
 			case b.Type == "tool_result":
 				if role != "user" {
 					return in, invalid("tool_result", "tool results must be in user messages")

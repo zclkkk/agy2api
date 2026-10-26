@@ -349,7 +349,7 @@ func TestSearchRoutingAndToolNames(t *testing.T) {
 	if in.UpstreamModel() != "gemini-search" || in.Kind != ag.KindSearch || in.Request.Tools[0].GoogleSearch == nil {
 		t.Fatalf("search not routed: %+v", in)
 	}
-	for public, want := range map[string]string{"Bash": "Bash", "mcp.srv:do-it": "mcp.srv:do-it", "a b": "agy_fn_", "1tool": "agy_fn_", strings.Repeat("x", 130): "agy_fn_"} {
+	for public, want := range map[string]string{"Bash": "Bash", "mcp.srv:do-it": "mcp.srv:do-it", "agy_read": "agy_read", "a b": "a_b_", "1tool": "_1tool_", strings.Repeat("x", 130): strings.Repeat("x", 121) + "_"} {
 		got := nativeName(public)
 		if !strings.HasPrefix(got, want) || len(got) > 128 || invalidNameChars.MatchString(got) || (want == public) != (got == public) {
 			t.Errorf("nativeName(%q)=%q", public, got)

@@ -15,13 +15,14 @@ import (
 const recordVersion = 2
 
 type StoredResponse struct {
-	Version       int               `json:"version,omitempty"`
-	Model         string            `json:"model"`
-	UpstreamModel string            `json:"upstream_model,omitempty"`
-	HistorySystem *ag.Content       `json:"history_system,omitempty"`
-	Contents      []ag.Content      `json:"contents"`
-	Response      json.RawMessage   `json:"response"`
-	Items         []json.RawMessage `json:"items"`
+	Version       int                 `json:"version,omitempty"`
+	Model         string              `json:"model"`
+	UpstreamModel string              `json:"upstream_model,omitempty"`
+	HistorySystem *ag.Content         `json:"history_system,omitempty"`
+	Contents      []ag.Content        `json:"contents"`
+	Response      json.RawMessage     `json:"response"`
+	Items         []json.RawMessage   `json:"items"`
+	Tools         map[string]ToolName `json:"tools,omitempty"`
 }
 
 // replayStore provides typed access to all records used by the protocol. Missing
@@ -88,6 +89,15 @@ func (in *RequestIntent) deferImage(id, data string) {
 }
 
 func (in *requestPlan) prependHistory(previous StoredResponse) error {
+	for native, identity := range previous.Tools {
+		name, err := in.registerHistoryTool(identity)
+		if err != nil {
+			return err
+		}
+		if name != native {
+			return invalid("previous_response_id", "stored tool names no longer match; start a new conversation")
+		}
+	}
 	contents := cloneContents(previous.Contents)
 	if previous.Version < recordVersion || previous.UpstreamModel != in.UpstreamModel() {
 		contents = stripSignatures(contents)
@@ -95,6 +105,9 @@ func (in *requestPlan) prependHistory(previous StoredResponse) error {
 	}
 	for i := range in.references {
 		in.references[i].Content += len(contents)
+	}
+	for i := range in.historyCalls {
+		in.historyCalls[i].Content += len(contents)
 	}
 	in.Request.Contents = append(contents, in.Request.Contents...)
 	if previous.Version < recordVersion {
@@ -124,6 +137,69 @@ func (in *requestPlan) prependHistory(previous StoredResponse) error {
 	items := append([]json.RawMessage(nil), previous.Items...)
 	items = append(items, output.Output...)
 	in.OriginalItems = append(items, in.OriginalItems...)
+	return nil
+}
+
+// resolveHistoryTools completes the identity of each call in the client's
+// input and names it. An omitted or empty namespace is unspecified. A matching
+// replay record confirms the full identity, including an ordinary tool's empty
+// namespace. Otherwise current declarations may resolve it. Explicit nonempty
+// namespaces are preserved; signature eligibility is checked separately.
+func (s replayStore) resolveHistoryTools(ctx context.Context, in *requestPlan) error {
+	in.toolRecords = map[string]SignatureRecord{}
+	fromState, fromDeclarations := 0, 0
+	for _, h := range in.historyCalls {
+		call := in.Request.Contents[h.Content].Parts[h.Part].FunctionCall
+		identity := h.Tool
+		resolved := identity.Namespace != ""
+		if agyCallID(call.ID) {
+			var record SignatureRecord
+			err := s.State.Get(ctx, "tool", call.ID, &record)
+			if err != nil && !errors.Is(err, state.ErrNotFound) {
+				return err
+			}
+			if err == nil {
+				in.toolRecords[call.ID] = record
+				if !resolved && record.Tool.Name == identity.Name &&
+					record.Tool.Custom == identity.Custom && record.Digest == digest(call.Args) {
+					identity = record.Tool
+					resolved = true
+					if identity.Namespace != "" {
+						fromState++
+					}
+				}
+			}
+		}
+		if !resolved {
+			if declared, ok := in.Tools[toolSymbol(identity)]; !ok || declared != identity {
+				var candidate ToolName
+				matches := 0
+				for _, t := range in.Tools {
+					if t.Namespace != "" && t.Name == identity.Name && t.Custom == identity.Custom {
+						candidate, matches = t, matches+1
+					}
+				}
+				switch {
+				case matches == 1:
+					identity = candidate
+					fromDeclarations++
+				case matches > 1:
+					in.warn("namespace of historical tool call %s is ambiguous: several declared tools match", call.ID)
+				}
+			}
+		}
+		native, err := in.registerHistoryTool(identity)
+		if err != nil {
+			return err
+		}
+		call.Name = native
+	}
+	if fromState > 0 {
+		in.warn("filled the missing namespace of %d historical tool call(s) from replay state", fromState)
+	}
+	if fromDeclarations > 0 {
+		in.warn("filled the missing namespace of %d historical tool call(s) from declared tools", fromDeclarations)
+	}
 	return nil
 }
 
@@ -182,12 +258,19 @@ func (s replayStore) restore(ctx context.Context, in *requestPlan) error {
 				}
 			}
 			if p.FunctionCall != nil && p.Signature == "" && agyCallID(p.FunctionCall.ID) {
-				var record SignatureRecord
-				err := s.State.Get(ctx, "tool", p.FunctionCall.ID, &record)
-				if err != nil && !errors.Is(err, state.ErrNotFound) {
-					return err
+				record, found := in.toolRecords[p.FunctionCall.ID]
+				if !found {
+					// Calls from stored history were not resolved from client input.
+					err := s.State.Get(ctx, "tool", p.FunctionCall.ID, &record)
+					if err != nil && !errors.Is(err, state.ErrNotFound) {
+						return err
+					}
+					found = err == nil
 				}
-				if err == nil && record.Model == in.UpstreamModel() && record.Name == p.FunctionCall.Name && record.Digest == digest(p.FunctionCall.Args) {
+				// The full identity, not the short-hashed name, decides whether a
+				// signature belongs to this call; a mismatch only declines it.
+				identity, known := in.historyTools[p.FunctionCall.Name]
+				if found && known && record.Model == in.UpstreamModel() && record.Tool == identity && record.Name == p.FunctionCall.Name && record.Digest == digest(p.FunctionCall.Args) {
 					p.Signature = record.Signature
 				} else {
 					in.warn("tool replay state for %s is missing, expired or changed; using a placeholder signature", p.FunctionCall.ID)
