@@ -30,6 +30,7 @@ SOFTWARE.
 Release archives include DEPENDENCY_LICENSES.txt with the Go runtime license
 and license notices from the modules linked into the binaries. Direct dependencies:
 - github.com/pelletier/go-toml/v2: MIT
+- golang.org/x/image: BSD-3-Clause
 - golang.org/x/oauth2: BSD-3-Clause
 - modernc.org/sqlite: BSD-3-Clause (includes the SQLite public-domain engine)
 - Transitive dependencies: see go.mod and the corresponding module LICENSE files.

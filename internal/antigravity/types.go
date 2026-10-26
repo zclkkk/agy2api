@@ -98,6 +98,10 @@ type Thinking struct {
 	Level   string `json:"thinkingLevel,omitempty"`
 	Include bool   `json:"includeThoughts"`
 }
+type ImageConfig struct {
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	Size        string `json:"imageSize,omitempty"`
+}
 type Generation struct {
 	Temperature *float64        `json:"temperature,omitempty"`
 	TopP        *float64        `json:"topP,omitempty"`
@@ -108,6 +112,7 @@ type Generation struct {
 	MIMEType    string          `json:"responseMimeType,omitempty"`
 	Schema      json.RawMessage `json:"responseSchema,omitempty"`
 	Modalities  []string        `json:"responseModalities,omitempty"`
+	Image       *ImageConfig    `json:"imageConfig,omitempty"`
 }
 type Request struct {
 	Contents   []Content   `json:"contents"`
@@ -126,11 +131,16 @@ type Envelope struct {
 	Request     Request `json:"request"`
 }
 type Usage struct {
-	Input    int `json:"promptTokenCount"`
-	Output   int `json:"candidatesTokenCount"`
-	Thoughts int `json:"thoughtsTokenCount"`
-	Cached   int `json:"cachedContentTokenCount"`
-	Total    int `json:"totalTokenCount"`
+	Input        int              `json:"promptTokenCount"`
+	Output       int              `json:"candidatesTokenCount"`
+	Thoughts     int              `json:"thoughtsTokenCount"`
+	Cached       int              `json:"cachedContentTokenCount"`
+	Total        int              `json:"totalTokenCount"`
+	InputDetails []ModalityTokens `json:"promptTokensDetails,omitempty"`
+}
+type ModalityTokens struct {
+	Modality string `json:"modality"`
+	Count    int    `json:"tokenCount"`
 }
 type Grounding struct {
 	Queries []string `json:"webSearchQueries,omitempty"`

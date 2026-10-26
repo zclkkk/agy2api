@@ -1,4 +1,4 @@
-// Package protocol implements the Responses and Messages wire contracts on top
+// Package protocol implements the Responses, Images and Messages wire contracts on top
 // of Antigravity's Gemini models.
 package protocol
 

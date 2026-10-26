@@ -1,4 +1,4 @@
-// Package server exposes the two public HTTP protocols.
+// Package server exposes the public HTTP APIs.
 package server
 
 import (
@@ -99,6 +99,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/messages", s.generation(protocol.Messages, protocol.Generate))
 	mux.HandleFunc("POST /v1/messages/count_tokens", s.counter(protocol.Messages))
 	mux.HandleFunc("POST /v1/responses/input_tokens", s.counter(protocol.Responses))
+	mux.HandleFunc("POST /v1/images/generations", s.images(false))
+	mux.HandleFunc("POST /v1/images/edits", s.images(true))
 	mux.HandleFunc("GET /v1/models", s.models)
 	mux.HandleFunc("GET /v1/models/{id}", s.model)
 	mux.HandleFunc("GET /v1/responses/{id}", s.retrieve)

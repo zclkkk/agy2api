@@ -1,8 +1,8 @@
 # agy2api
 
-将一个 Antigravity 账号的 **Gemini 订阅**接入 **OpenAI Responses** 和 **Anthropic Messages** API。
+将一个 Antigravity 账号的 **Gemini 订阅**接入 **OpenAI Responses / Images** 和 **Anthropic Messages** API。
 
-原生单文件部署，支持流式响应、工具调用、思考回放、多模态输入和上下文压缩。两种 API 格式调用的都是 Gemini 模型。
+原生单文件部署，支持流式响应、工具调用、思考回放、多模态输入和上下文压缩。所有接口调用的都是 Gemini 模型。
 
 ## 安装
 
@@ -62,8 +62,9 @@ curl -N http://127.0.0.1:8080/v1/messages \
 - 函数工具、并行工具回合；Responses 命名空间和自由文本工具。
 - 思考内容、签名回放、Responses 历史续聊和上下文压缩。
 - 图片、PDF、音视频文件输入。
+- 独立 Images API 的图片生成与编辑，支持文件上传和 Base64 返回。
 
-项目仅面向单账号，不提供图片生成、原生网页搜索、Chat Completions、Files 上传或完整的 OpenAI/Anthropic 平台服务。严格 JSON Schema、精确停止序列元数据等能力受上游限制。详见 [API 与兼容边界](docs/api.md)。
+项目仅面向单账号，不提供原生网页搜索、Chat Completions、Files 上传或完整的 OpenAI/Anthropic 平台服务。严格 JSON Schema、精确停止序列元数据等能力受上游限制。Images 的调用方式和参数范围见 [API 与兼容边界](docs/api.md)。
 
 ## 更多文档
 

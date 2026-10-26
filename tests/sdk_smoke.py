@@ -1,6 +1,7 @@
 """Optional SDK compatibility smoke test. Uses a local fake upstream, no account."""
 
 import argparse
+import base64
 import datetime
 import json
 import os
@@ -18,6 +19,7 @@ import anthropic
 import openai
 
 from config_helpers import write_config
+from media_fixtures import png_fixture
 
 
 class Upstream(BaseHTTPRequestHandler):
@@ -40,7 +42,9 @@ class Upstream(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(
                 b'{"models":{"gemini-test":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},'
-                b'"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"}}}'
+                b'"gemini-canvas":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},'
+                b'"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"}},'
+                b'"imageGenerationModelIds":["gemini-canvas"]}'
             )
             return
         if self.path == "/v1internal:countTokens":
@@ -54,7 +58,22 @@ class Upstream(BaseHTTPRequestHandler):
         has_result = any(
             "functionResponse" in p for c in request["contents"] for p in c["parts"]
         )
-        if request.get("tools") and not has_result:
+        is_image = payload["requestType"] == "image_gen"
+        if is_image:
+            assert payload["model"] == "gemini-canvas"
+            assert request["generationConfig"]["responseModalities"] == [
+                "TEXT",
+                "IMAGE",
+            ]
+            parts = [
+                {
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(png_fixture()).decode(),
+                    }
+                }
+            ]
+        elif request.get("tools") and not has_result:
             parts = [
                 {
                     "text": "Plan",
@@ -90,6 +109,11 @@ class Upstream(BaseHTTPRequestHandler):
                 },
             }
         }
+        if is_image:
+            body["response"]["usageMetadata"]["totalTokenCount"] = 15
+            body["response"]["usageMetadata"]["promptTokensDetails"] = [
+                {"modality": "TEXT", "tokenCount": 9}
+            ]
         self.wfile.write(("data: " + json.dumps(body) + "\n\n").encode())
 
 
@@ -183,8 +207,68 @@ def check():
                         api_key="fixture-key", base_url=base + "/v1", max_retries=0
                     ) as client:
                         assert [m.id for m in client.models.list().data] == [
-                            "gemini-test"
+                            "gemini-canvas",
+                            "gemini-test",
                         ]
+                        generated = client.images.generate(
+                            model="gemini-canvas",
+                            prompt="draw",
+                            n=2,
+                        )
+                        type(generated).model_validate(generated.model_dump())
+                        assert (
+                            len(generated.data) == 2
+                            and generated.usage.total_tokens == 30
+                        )
+                        assert (
+                            base64.b64decode(generated.data[0].b64_json)
+                            == png_fixture()
+                        )
+                        for images in [
+                            ("input.png", png_fixture(), "image/png"),
+                            [
+                                ("one.png", png_fixture(), "image/png"),
+                                ("two.png", png_fixture(), "image/png"),
+                            ],
+                        ]:
+                            edited = client.images.edit(
+                                model="gemini-canvas",
+                                prompt="edit",
+                                image=images,
+                                output_format="jpeg",
+                                output_compression=85,
+                            )
+                            type(edited).model_validate(edited.model_dump())
+                            assert edited.output_format == "jpeg"
+                            assert base64.b64decode(edited.data[0].b64_json).startswith(
+                                b"\xff\xd8"
+                            )
+                        edited = client.post(
+                            "/images/edits",
+                            cast_to=openai.types.ImagesResponse,
+                            body={
+                                "model": "gemini-canvas",
+                                "prompt": "edit",
+                                "images": [
+                                    {
+                                        "image_url": "data:image/png;base64,"
+                                        + base64.b64encode(png_fixture()).decode()
+                                    }
+                                ],
+                            },
+                        )
+                        type(edited).model_validate(edited.model_dump())
+                        assert (
+                            base64.b64decode(edited.data[0].b64_json) == png_fixture()
+                        )
+                        try:
+                            client.images.generate(model="gemini-test", prompt="draw")
+                        except openai.BadRequestError as error:
+                            assert error.param == "model"
+                        else:
+                            raise AssertionError(
+                                "conversation model accepted for image generation"
+                            )
                         result = client.responses.create(
                             model="gemini-test", input="hello"
                         )

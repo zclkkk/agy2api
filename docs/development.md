@@ -65,9 +65,11 @@ python scripts/release.py --version v0.1.0 --target linux/amd64
 | `internal/auth` | OAuth 凭据及刷新 |
 | `internal/config` | TOML 配置及校验 |
 | `internal/antigravity` | 上游请求、模型发现、SSE 和 schema 转换 |
-| `internal/protocol` | 两种协议的解码、请求规划、历史回放和响应编码 |
+| `internal/protocol` | 协议解码、请求规划、历史回放、响应编码和图片结果处理 |
 | `internal/server` | HTTP 路由、认证、并发控制与媒体下载 |
 | `internal/state` | 有界的 SQLite 状态及密封载体 |
 | `internal/securefile` | 私有文件的原子写入 |
 
-请求经过 `Decoder → Planner → PreparedRequest`。两个协议共享上游流聚合与状态保存，再由各自的编码器生成响应。生成、计数和压缩共用请求规划入口。
+Responses / Messages 请求经过 `Decoder → Planner → PreparedRequest`，共享上游流聚合与状态保存，再由各自的编码器生成响应。生成、计数和压缩共用请求规划入口。
+
+Images 请求独立解码为 `ImageIntent`，复用上游客户端和服务端的认证、并发限制及媒体下载。`ImageCollector` 校验完整图片并编码输出，批量调用逐张执行，不使用对话状态库。

@@ -15,7 +15,6 @@ import re
 import shutil
 import socket
 import sqlite3
-import struct
 import subprocess
 import sys
 import tempfile
@@ -24,13 +23,13 @@ import time
 import urllib.error
 import urllib.request
 import wave
-import zlib
 from pathlib import Path
 
 import anthropic
 import openai
 
 from config_helpers import read_config, write_config
+from media_fixtures import png_fixture
 
 
 class PartialCoverage(Exception):
@@ -40,24 +39,6 @@ class PartialCoverage(Exception):
 def ungroup_numbers(text):
     """Accept plain and LaTeX thousands separators in arithmetic checks."""
     return text.replace("{,}", "").replace(r"\,", "").replace(",", "")
-
-
-def png_fixture():
-    def chunk(kind, value):
-        return (
-            struct.pack("!I", len(value))
-            + kind
-            + value
-            + struct.pack("!I", zlib.crc32(kind + value))
-        )
-
-    rows = b"".join(b"\0" + b"\xff\0\0" * 32 + b"\0\0\xff" * 32 for _ in range(64))
-    return (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack("!IIBBBBB", 64, 64, 8, 2, 0, 0, 0))
-        + chunk(b"IDAT", zlib.compress(rows))
-        + chunk(b"IEND", b"")
-    )
 
 
 def pdf_fixture():
@@ -740,6 +721,85 @@ class Live:
         else:
             assert r.stop_reason == "max_tokens", "output limit not reflected"
         return self.details(r)
+
+    def images_validation(self):
+        calls = [
+            lambda: self.o.images.generate(
+                model="gemini-3.1-flash-image", prompt="draw", n=0
+            ),
+            lambda: self.o.images.generate(
+                model="gemini-3.1-flash-image", prompt="draw", size="1536x1024"
+            ),
+            lambda: self.o.images.generate(model="gemini-3-flash", prompt="draw"),
+            lambda: self.o.images.edit(
+                model="gemini-3.1-flash-image",
+                prompt="edit",
+                image=("input.png", png_fixture(), "image/png"),
+                mask=("mask.png", png_fixture(), "image/png"),
+            ),
+            lambda: self.o.images.edit(
+                model="gemini-3.1-flash-image",
+                prompt="edit",
+                image=("input.png", b"not an image", "image/png"),
+            ),
+        ]
+        for call in calls:
+            try:
+                call()
+            except openai.BadRequestError:
+                continue
+            raise AssertionError("invalid Images request was accepted")
+        return {"rejected_requests": len(calls)}
+
+    def images_generate(self):
+        r = self.o.images.generate(
+            model="gemini-3.1-flash-image",
+            prompt="Generate one image of a red circle on a plain white background.",
+            size="1024x1024",
+            timeout=180,
+        )
+        type(r).model_validate(r.model_dump())
+        assert len(r.data) == 1 and r.output_format == "png" and r.size == "1024x1024"
+        image = base64.b64decode(r.data[0].b64_json)
+        assert image.startswith(b"\x89PNG\r\n\x1a\n")
+        return {"image_bytes": len(image), "size": r.size}
+
+    def images_edit(self):
+        r = self.o.images.edit(
+            model="gemini-3.1-flash-image",
+            image=("input.png", png_fixture(), "image/png"),
+            prompt="Make both halves of this image entirely green. Return the edited image.",
+            output_format="jpeg",
+            output_compression=85,
+            timeout=180,
+        )
+        type(r).model_validate(r.model_dump())
+        assert len(r.data) == 1 and r.output_format == "jpeg"
+        image = base64.b64decode(r.data[0].b64_json)
+        assert image.startswith(b"\xff\xd8")
+        checked = self.o.responses.create(
+            model="gemini-3-flash",
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "What is the main color of this image? Answer in English.",
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/jpeg;base64," + r.data[0].b64_json,
+                        },
+                    ],
+                }
+            ],
+            store=False,
+        )
+        assert "green" in checked.output_text.lower(), (
+            "edit did not apply the requested color"
+        )
+        return {"image_bytes": len(image), "size": r.size, "edit_verified": True}
 
     def cancellation(self):
         with self.o.responses.stream(
@@ -1649,6 +1709,9 @@ def main():
                 ]
         cases += [
             ("media/https_image", suite.remote_image),
+            ("images/generate", suite.images_generate),
+            ("images/edit", suite.images_edit),
+            ("images/validation", suite.images_validation),
             ("http/cancellation", suite.cancellation),
             ("http/negative", suite.negative),
         ]
