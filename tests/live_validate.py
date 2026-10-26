@@ -1447,6 +1447,128 @@ class Live:
         assert "42" in self.text(r)
         return {"gemini_to_claude": True, "claude_to_gemini": True}
 
+    def logged(self, text):
+        self.log.flush()
+        self.log.seek(0)
+        return text in self.log.read()
+
+    def turn_end(self, proto, model):
+        # Antigravity rejects requests that end with an assistant turn; the
+        # service appends a user turn so the model continues the reply.
+        prompt = [
+            {
+                "role": "user",
+                "content": "List the colors red, green and blue, comma separated.",
+            },
+            {"role": "assistant", "content": "red,"},
+        ]
+        r = self.request(proto, model, prompt)
+        text = self.text(r).lower()
+        assert "green" in text or "blue" in text, text
+        assert self.logged("appended a user turn"), "no continuation turn logged"
+        return self.details(r)
+
+    def trailing_reasoning(self):
+        # Claude returns its thinking as a reasoning item before the answer.
+        prompt = "Compute 23*19."
+        r = self.o.responses.create(
+            model="claude-sonnet-4-6",
+            input=prompt,
+            reasoning={"effort": "low", "summary": "auto"},
+            store=False,
+        )
+        reasoning = [
+            v.model_dump(exclude_none=True) for v in r.output if v.type == "reasoning"
+        ]
+        assert reasoning, "no reasoning item to replay"
+        follow = self.o.responses.create(
+            model="claude-sonnet-4-6",
+            input=[{"role": "user", "content": prompt}, reasoning[0]],
+            store=False,
+        )
+        assert "437" in follow.output_text, follow.output_text
+        assert self.logged("dropped trailing reasoning"), "trailing reasoning kept"
+        return self.details(follow)
+
+    COMPACTION_HISTORY = [
+        {
+            "role": "user",
+            "content": "My project codename is BLUEFIN-42. Check the build.",
+        },
+        {
+            "type": "function_call",
+            "call_id": "call_build",
+            "name": "exec_command",
+            "arguments": '{"cmd":"make build"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_build",
+            "output": "build ok in 3.2s",
+        },
+        {
+            "role": "assistant",
+            "content": "The build of BLUEFIN-42 passed in 3.2 seconds.",
+        },
+    ]
+    COMPACTION_TOOLS = [
+        {
+            "type": "function",
+            "name": "exec_command",
+            "parameters": {
+                "type": "object",
+                "properties": {"cmd": {"type": "string"}},
+                "required": ["cmd"],
+            },
+        }
+    ]
+
+    def compaction(self, model, endpoint):
+        payload = {"model": model, "tools": self.COMPACTION_TOOLS, "store": False}
+        if endpoint:
+            compacted = self.raw(
+                "/v1/responses/compact", dict(payload, input=self.COMPACTION_HISTORY)
+            )
+            assert compacted["object"] == "response.compaction", compacted
+        else:
+            compacted = self.raw(
+                "/v1/responses",
+                dict(
+                    payload,
+                    input=self.COMPACTION_HISTORY + [{"type": "compaction_trigger"}],
+                ),
+            )
+        items = compacted["output"]
+        assert [i["type"] for i in items] == ["compaction"], items
+        follow = self.o.responses.create(
+            model=model,
+            tools=self.COMPACTION_TOOLS,
+            input=items
+            + [
+                {
+                    "role": "user",
+                    "content": "What is my project codename and how long did the build take? Answer without tools.",
+                }
+            ],
+            store=False,
+        )
+        text = follow.output_text
+        assert "BLUEFIN-42" in text and "3.2" in text, text
+        return {"usage": compacted["usage"], "answer": text[:160]}
+
+    def user_agent(self):
+        self.log.flush()
+        self.log.seek(0)
+        for line in self.log:
+            if "Antigravity version check" in line:
+                entry = json.loads(line)
+                assert entry["user_agent"].startswith("antigravity/"), entry
+                return {
+                    "user_agent": entry["user_agent"],
+                    "latest": entry.get("latest"),
+                }
+        raise AssertionError("no version check logged")
+
     def search_routed(self):
         r = self.request(
             "messages",
@@ -1579,7 +1701,28 @@ def main():
         cases += [
             ("compat/model_switch", suite.model_switch),
             ("messages/search_routed", suite.search_routed),
+            ("compat/trailing_reasoning", suite.trailing_reasoning),
+            ("upstream/user_agent", suite.user_agent),
         ]
+        for model in ["gemini-3-flash", "claude-sonnet-4-6", "gpt-oss-120b-medium"]:
+            for proto in ["responses", "messages"]:
+                cases.append(
+                    (
+                        f"compat/turn_end/{proto}/{model}",
+                        lambda p=proto, m=model: suite.turn_end(p, m),
+                    )
+                )
+        for model in ["gemini-3-flash", "claude-sonnet-4-6"]:
+            cases += [
+                (
+                    f"compaction/trigger/{model}",
+                    lambda m=model: suite.compaction(m, endpoint=False),
+                ),
+                (
+                    f"compaction/endpoint/{model}",
+                    lambda m=model: suite.compaction(m, endpoint=True),
+                ),
+            ]
         cases += [
             ("media/audio_file", lambda: suite.av_file("audio")),
             ("media/video_file", lambda: suite.av_file("video")),
