@@ -831,7 +831,7 @@ class Live:
             "\n".join(lines)
             + "\nReturn the unique verification code from the records, and nothing else."
         )
-        model = "gemini-3-flash" if proto == "responses" else "claude-sonnet-4-6"
+        model = "gemini-3-flash" if proto == "responses" else "gemini-3.8-flash-medium"
         r = self.request(proto, model, prompt)
         assert "AGY_NEEDLE_920317" in self.text(r)
         assert r.usage.input_tokens > 10000
@@ -974,7 +974,7 @@ class Live:
         else:
             r = self.request(
                 proto,
-                "claude-sonnet-4-6",
+                "gemini-3.8-flash-medium",
                 prompt,
                 tools=[{"name": "inspect", "input_schema": schema}],
                 tool_choice={"type": "tool", "name": "inspect"},
@@ -1416,7 +1416,7 @@ class Live:
 
     def lost_state(self):
         turns = {}
-        for model in ["gemini-3-flash", "claude-sonnet-4-6"]:
+        for model in ["gemini-3-flash", "gemini-3.8-flash-medium"]:
             turns[model] = self.tool_turn(model)
         # Losing state.db drops every replay record and the sealing key.
         self.process.terminate()
@@ -1435,17 +1435,29 @@ class Live:
         return {"continued_after_state_loss": list(turns)}
 
     def model_switch(self):
-        tools, messages = self.tool_turn("gemini-3-flash")
-        r = self.a.messages.create(
-            model="claude-sonnet-4-6", max_tokens=8000, tools=tools, messages=messages
-        )
-        assert "42" in self.text(r)
-        tools, messages = self.tool_turn("claude-sonnet-4-6")
-        r = self.a.messages.create(
-            model="gemini-3-flash", max_tokens=8000, tools=tools, messages=messages
-        )
-        assert "42" in self.text(r)
-        return {"gemini_to_claude": True, "claude_to_gemini": True}
+        # Signatures are bound to the model that produced them.
+        pairs = [
+            ("gemini-3-flash", "gemini-3.8-flash-medium"),
+            ("gemini-3.8-flash-medium", "gemini-3-flash"),
+        ]
+        for first, second in pairs:
+            tools, messages = self.tool_turn(first)
+            r = self.a.messages.create(
+                model=second, max_tokens=8000, tools=tools, messages=messages
+            )
+            assert "42" in self.text(r), f"{first} -> {second}: {self.text(r)}"
+        return {"switched": [f"{a} -> {b}" for a, b in pairs]}
+
+    def gemini_only(self):
+        models = [m.id for m in self.o.models.list()]
+        assert models and not any("claude" in m or "gpt" in m for m in models), models
+        try:
+            self.request("responses", "claude-sonnet-4-6", "hi")
+        except openai.BadRequestError as error:
+            assert "Gemini" in str(error), error
+        else:
+            raise AssertionError("a non-Gemini model was served")
+        return {"models": len(models)}
 
     def logged(self, text):
         self.log.flush()
@@ -1469,20 +1481,22 @@ class Live:
         return self.details(r)
 
     def trailing_reasoning(self):
-        # Claude returns its thinking as a reasoning item before the answer.
+        # At high effort Gemini returns its thinking as a reasoning item before the answer.
         prompt = "Compute 23*19."
         r = self.o.responses.create(
-            model="claude-sonnet-4-6",
+            model="gemini-3-flash",
             input=prompt,
-            reasoning={"effort": "low", "summary": "auto"},
+            reasoning={"effort": "high", "summary": "auto"},
             store=False,
         )
         reasoning = [
-            v.model_dump(exclude_none=True) for v in r.output if v.type == "reasoning"
+            v.model_dump(exclude_none=True)
+            for v in r.output
+            if v.type == "reasoning" and v.summary
         ]
         assert reasoning, "no reasoning item to replay"
         follow = self.o.responses.create(
-            model="claude-sonnet-4-6",
+            model="gemini-3-flash",
             input=[{"role": "user", "content": prompt}, reasoning[0]],
             store=False,
         )
@@ -1570,16 +1584,18 @@ class Live:
         raise AssertionError("no version check logged")
 
     def search_routed(self):
+        # gemini-3-flash is not a search model; the search goes to one that is.
         r = self.request(
             "messages",
-            "claude-sonnet-4-6",
-            "Search the web for the official Python documentation for the json module and give its URL.",
+            "gemini-3-flash",
+            "Search the web: what is the latest stable Python release and when was it released? Cite your sources.",
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
         )
         citations = [
             c for b in r.content if b.type == "text" for c in (b.citations or [])
         ]
         assert citations, "no citations after routing search"
+        assert self.logged("web search routed"), "search was not routed"
         return dict(self.details(r), citation_count=len(citations))
 
 
@@ -1600,7 +1616,11 @@ def main():
                     (f"catalog/{model}", lambda m=model: suite.basic("responses", m))
                 )
         for proto in ["responses", "messages"]:
-            for model in ["gemini-3-flash", "claude-sonnet-4-6", "gpt-oss-120b-medium"]:
+            for model in [
+                "gemini-3-flash",
+                "gemini-3.8-flash-medium",
+                "gemini-2.5-flash",
+            ]:
                 cases += [
                     (
                         f"{proto}/{model}/basic",
@@ -1615,7 +1635,7 @@ def main():
                         lambda p=proto, m=model: suite.tools(p, m),
                     ),
                 ]
-            for model in ["gemini-3-flash", "claude-sonnet-4-6"]:
+            for model in ["gemini-3-flash", "gemini-3.8-flash-medium"]:
                 cases += [
                     (
                         f"{proto}/{model}/parallel_tools",
@@ -1673,7 +1693,7 @@ def main():
                 ),
                 (f"{proto}/schema_tool_fields", lambda p=proto: suite.schema_tool(p)),
             ]
-            for model in ["claude-opus-4-6-thinking", "gemini-3.8-flash-medium"]:
+            for model in ["gemini-3.8-flash-high", "gemini-2.5-flash"]:
                 cases += [
                     (
                         f"{proto}/{model}/thinking",
@@ -1690,7 +1710,7 @@ def main():
             ("http/cancellation", suite.cancellation),
             ("http/negative", suite.negative),
         ]
-        for model in ["gemini-3-flash", "claude-sonnet-4-6"]:
+        for model in ["gemini-3-flash", "gemini-3.8-flash-medium"]:
             cases += [
                 (
                     f"compat/claude_code/{model}",
@@ -1700,11 +1720,12 @@ def main():
             ]
         cases += [
             ("compat/model_switch", suite.model_switch),
+            ("catalog/gemini_only", suite.gemini_only),
             ("messages/search_routed", suite.search_routed),
             ("compat/trailing_reasoning", suite.trailing_reasoning),
             ("upstream/user_agent", suite.user_agent),
         ]
-        for model in ["gemini-3-flash", "claude-sonnet-4-6", "gpt-oss-120b-medium"]:
+        for model in ["gemini-3-flash", "gemini-3.8-flash-medium", "gemini-2.5-flash"]:
             for proto in ["responses", "messages"]:
                 cases.append(
                     (
@@ -1712,7 +1733,7 @@ def main():
                         lambda p=proto, m=model: suite.turn_end(p, m),
                     )
                 )
-        for model in ["gemini-3-flash", "claude-sonnet-4-6"]:
+        for model in ["gemini-3-flash", "gemini-3.8-flash-medium"]:
             cases += [
                 (
                     f"compaction/trigger/{model}",

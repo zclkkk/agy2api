@@ -1,14 +1,14 @@
 {
-  "verified_at": "2026-10-26T00:26:13.445613+00:00",
+  "verified_at": "2026-10-26T01:28:40.034678+00:00",
   "scope": "Real Antigravity account; OpenAI Responses and Anthropic Messages; isolated state; synthetic test content.",
   "sdk_versions": {
     "openai": "3.37.0",
     "anthropic": "2.3.0"
   },
   "summary": {
-    "total": 120,
-    "pass": 117,
-    "blocked": 1,
+    "total": 118,
+    "pass": 113,
+    "blocked": 3,
     "partial": 2,
     "fail": 0
   },
@@ -20,12 +20,17 @@
   },
   "notes": [
     "This is a dated acceptance snapshot, not a guarantee of future upstream availability.",
-    "Ad-hoc checks on the same day, with the same build: Codex CLI 0.164 completed a real file task through its remote compaction (capabilities.remote_compaction = \"v2\", which sends compaction_trigger) with gemini-3-flash and claude-sonnet-4-6, and through its default local compaction with claude-sonnet-4-6.",
-    "Antigravity rejects requests that end with a model turn for every model (\"Requests ending with a model turn are not supported\"; Claude: \"does not support assistant message prefill\"). An empty user turn is treated as missing. agy2api appends a \"Continue.\" user turn, and the models continued the assistant text.",
+    "Only Gemini models are served (catalog apiProvider API_PROVIDER_GOOGLE_GEMINI). Claude and GPT-OSS entries are hidden and rejected with HTTP 400; catalog/gemini_only checks this.",
+    "Ad-hoc checks on the same day, with the same build: Codex CLI 0.164 completed a real file task through remote compaction (compaction_trigger) with gemini-3-flash and gemini-3.8-flash-medium.",
+    "Replaying a signed Gemini function call with the original ID, a different ID or no ID all succeeded on gemini-3-flash, gemini-3.8-flash-medium and gemini-2.5-flash, so the bridge sends the call IDs it issues instead of restoring upstream IDs.",
+    "Gemini accepts function names of up to 128 characters from [a-zA-Z0-9_.:-] that start with a letter or underscore.",
+    "Gemini cannot turn thinking off: thinkingBudget 0 was rejected by gemini-3-flash and ignored by other models. Disabled thinking uses the model's minimum budget with thoughts hidden.",
+    "Antigravity rejects requests that end with a model turn (\"Requests ending with a model turn are not supported\"), and an empty user turn is treated as missing. agy2api appends a \"Continue.\" user turn.",
     "Antigravity gates new models by client version: with User-Agent antigravity/1.0.0, gemini-3.8-flash-high returned 404 while 2.22.0 and later succeeded. The service reported antigravity/2.26.0 from the release manifest during this run.",
-    "Upstream session IDs did not affect caching: Gemini reused its prefix cache across different session IDs, and Claude showed no cache hits with or without the same session ID.",
-    "Antigravity answers 429 RESOURCE_EXHAUSTED to any request whose system prompt contains Claude Code's x-anthropic-billing-header line or its Claude Agent SDK identity line. agy2api forwards the prompt unchanged.",
-    "Gemini 2.5 Pro remained unavailable (MODEL_CAPACITY_EXHAUSTED).",
+    "Upstream session IDs did not affect caching: Gemini reused its prefix cache across different session IDs.",
+    "Antigravity answers 429 RESOURCE_EXHAUSTED to any request whose system prompt contains Claude Code's x-anthropic-billing-header line or its Claude Agent SDK identity line, whichever Gemini model is requested. agy2api forwards the prompt unchanged.",
+    "Blocked: gemini-2.5-pro had no capacity (MODEL_CAPACITY_EXHAUSTED); image generation and image edit hit QUOTA_EXHAUSTED because an earlier run on the same day used the image quota (Retry-After about 3.9 hours). Generated-image replay is covered by unit tests.",
+    "messages/search_routed failed once with its first prompt because the search model answered a well-known fact without searching; with a prompt that needs current information it passed four times in a row, and the recorded result is from that rerun.",
     "Stop sequences truncate text, but exact Anthropic stop_reason/stop_sequence metadata remains partial because upstream exposes only STOP.",
     "Token values are sampled response usage, not total usage across every call in a scenario.",
     "No credential values, project identifiers, generated image bytes, or opaque replay signatures are included."
@@ -34,54 +39,16 @@
     {
       "name": "auth/refresh",
       "status": "pass",
-      "seconds": 0.41,
+      "seconds": 0.45,
       "evidence": {
         "real_refresh_succeeded": true,
         "credentials_saved_privately": true
       }
     },
     {
-      "name": "catalog/claude-opus-4-6-thinking",
-      "status": "pass",
-      "seconds": 1.22,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 15,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 7,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 22
-        }
-      }
-    },
-    {
-      "name": "catalog/claude-sonnet-4-6",
-      "status": "pass",
-      "seconds": 1.05,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 15,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 7,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 22
-        }
-      }
-    },
-    {
       "name": "catalog/gemini-2.5-flash",
       "status": "pass",
-      "seconds": 1.08,
+      "seconds": 1.92,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -100,7 +67,7 @@
     {
       "name": "catalog/gemini-2.5-flash-lite",
       "status": "pass",
-      "seconds": 0.85,
+      "seconds": 1.92,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -119,7 +86,7 @@
     {
       "name": "catalog/gemini-2.5-flash-thinking",
       "status": "pass",
-      "seconds": 0.73,
+      "seconds": 1.52,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -138,13 +105,13 @@
     {
       "name": "catalog/gemini-2.5-pro",
       "status": "blocked",
-      "seconds": 0.19,
+      "seconds": 0.42,
       "detail": "Error code: 503 - {'error': {'code': None, 'message': 'Antigravity returned HTTP 503 (UNAVAILABLE: MODEL_CAPACITY_EXHAUSTED)', 'param': None, 'type': 'api_error'}}"
     },
     {
       "name": "catalog/gemini-3-flash",
       "status": "pass",
-      "seconds": 1.03,
+      "seconds": 1.24,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -163,7 +130,7 @@
     {
       "name": "catalog/gemini-3.1-flash-lite",
       "status": "pass",
-      "seconds": 1.4,
+      "seconds": 1.51,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -182,7 +149,7 @@
     {
       "name": "catalog/gemini-3.5-flash-lite",
       "status": "pass",
-      "seconds": 0.77,
+      "seconds": 1.44,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -201,7 +168,7 @@
     {
       "name": "catalog/gemini-3.8-flash-high",
       "status": "pass",
-      "seconds": 4.32,
+      "seconds": 3.29,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -209,18 +176,18 @@
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 79,
+          "output_tokens": 99,
           "output_tokens_details": {
-            "reasoning_tokens": 75
+            "reasoning_tokens": 95
           },
-          "total_tokens": 88
+          "total_tokens": 108
         }
       }
     },
     {
       "name": "catalog/gemini-3.8-flash-low",
       "status": "pass",
-      "seconds": 4.0,
+      "seconds": 3.28,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -228,18 +195,18 @@
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 102,
+          "output_tokens": 81,
           "output_tokens_details": {
-            "reasoning_tokens": 98
+            "reasoning_tokens": 77
           },
-          "total_tokens": 111
+          "total_tokens": 90
         }
       }
     },
     {
       "name": "catalog/gemini-3.8-flash-medium",
       "status": "pass",
-      "seconds": 3.15,
+      "seconds": 2.72,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -247,18 +214,18 @@
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 106,
+          "output_tokens": 98,
           "output_tokens_details": {
-            "reasoning_tokens": 102
+            "reasoning_tokens": 94
           },
-          "total_tokens": 115
+          "total_tokens": 107
         }
       }
     },
     {
       "name": "catalog/gemini-3.8-flash-tiered",
       "status": "pass",
-      "seconds": 2.15,
+      "seconds": 7.37,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -266,37 +233,26 @@
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 79,
+          "output_tokens": 91,
           "output_tokens_details": {
-            "reasoning_tokens": 75
+            "reasoning_tokens": 87
           },
-          "total_tokens": 88
+          "total_tokens": 100
         }
       }
     },
     {
-      "name": "catalog/gpt-oss-120b-medium",
+      "name": "catalog/gemini_only",
       "status": "pass",
-      "seconds": 0.86,
+      "seconds": 0.01,
       "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 74,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 64
-          },
-          "output_tokens": 54,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 128
-        }
+        "models": 14
       }
     },
     {
       "name": "catalog/tab_flash_lite_preview",
       "status": "pass",
-      "seconds": 0.67,
+      "seconds": 1.14,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -315,7 +271,7 @@
     {
       "name": "catalog/tab_jump_flash_lite_preview",
       "status": "pass",
-      "seconds": 0.61,
+      "seconds": 1.12,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -332,29 +288,9 @@
       }
     },
     {
-      "name": "compaction/endpoint/claude-sonnet-4-6",
-      "status": "pass",
-      "seconds": 4.66,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 846,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 107,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 953
-        },
-        "answer": "Based on our earlier conversation:\n\n- **Project Codename:** BLUEFIN-42\n- **Build Time:** 3.2 seconds\n\nThe build completed successfully with no errors!"
-      }
-    },
-    {
       "name": "compaction/endpoint/gemini-3-flash",
       "status": "pass",
-      "seconds": 1.78,
+      "seconds": 1.83,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 278,
@@ -362,39 +298,19 @@
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 115,
+          "output_tokens": 112,
           "output_tokens_details": {
             "reasoning_tokens": 0
           },
-          "total_tokens": 393
+          "total_tokens": 390
         },
         "answer": "Your project codename is **BLUEFIN-42**, and the build took **3.2 seconds**."
       }
     },
     {
-      "name": "compaction/trigger/claude-sonnet-4-6",
+      "name": "compaction/endpoint/gemini-3.8-flash-medium",
       "status": "pass",
-      "seconds": 5.3,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 846,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 123,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 969
-        },
-        "answer": "Based on the earlier conversation summary:\n\n- **Project codename:** BLUEFIN-42\n- **Build duration:** 3.2 seconds (completed successfully ✅)"
-      }
-    },
-    {
-      "name": "compaction/trigger/gemini-3-flash",
-      "status": "pass",
-      "seconds": 1.93,
+      "seconds": 8.22,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 278,
@@ -402,29 +318,59 @@
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 154,
+          "output_tokens": 572,
           "output_tokens_details": {
-            "reasoning_tokens": 0
+            "reasoning_tokens": 390
           },
-          "total_tokens": 432
+          "total_tokens": 850
         },
-        "answer": "Your project codename is `BLUEFIN-42`, and the build took 3.2 seconds."
+        "answer": "Your project codename is **BLUEFIN-42**, and the build took **3.2 seconds**."
       }
     },
     {
-      "name": "compat/claude_code/claude-sonnet-4-6",
+      "name": "compaction/trigger/gemini-3-flash",
       "status": "pass",
-      "seconds": 4.5,
+      "seconds": 1.75,
       "evidence": {
-        "tool_name_restored": true,
-        "schema_features_cleaned": true,
-        "turns": 2
+        "sampled_tokens": {
+          "input_tokens": 278,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 163,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 441
+        },
+        "answer": "Your project codename is **BLUEFIN-42**, and the build took **3.2 seconds**."
+      }
+    },
+    {
+      "name": "compaction/trigger/gemini-3.8-flash-medium",
+      "status": "pass",
+      "seconds": 10.67,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 278,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 763,
+          "output_tokens_details": {
+            "reasoning_tokens": 513
+          },
+          "total_tokens": 1041
+        },
+        "answer": "Your project codename is **BLUEFIN-42**, and the build took **3.2 seconds**."
       }
     },
     {
       "name": "compat/claude_code/gemini-3-flash",
       "status": "pass",
-      "seconds": 1.87,
+      "seconds": 1.48,
       "evidence": {
         "tool_name_restored": true,
         "schema_features_cleaned": true,
@@ -432,18 +378,28 @@
       }
     },
     {
-      "name": "compat/codex/claude-sonnet-4-6",
+      "name": "compat/claude_code/gemini-3.8-flash-medium",
       "status": "pass",
-      "seconds": 3.84,
+      "seconds": 7.61,
       "evidence": {
-        "namespace_restored": true,
+        "tool_name_restored": true,
+        "schema_features_cleaned": true,
         "turns": 2
       }
     },
     {
       "name": "compat/codex/gemini-3-flash",
       "status": "pass",
-      "seconds": 1.71,
+      "seconds": 1.67,
+      "evidence": {
+        "namespace_restored": true,
+        "turns": 2
+      }
+    },
+    {
+      "name": "compat/codex/gemini-3.8-flash-medium",
+      "status": "pass",
+      "seconds": 4.08,
       "evidence": {
         "namespace_restored": true,
         "turns": 2
@@ -452,47 +408,37 @@
     {
       "name": "compat/model_switch",
       "status": "pass",
-      "seconds": 4.77,
+      "seconds": 5.84,
       "evidence": {
-        "gemini_to_claude": true,
-        "claude_to_gemini": true
+        "switched": [
+          "gemini-3-flash -> gemini-3.8-flash-medium",
+          "gemini-3.8-flash-medium -> gemini-3-flash"
+        ]
       }
     },
     {
       "name": "compat/trailing_reasoning",
       "status": "pass",
-      "seconds": 4.37,
+      "seconds": 2.53,
       "evidence": {
         "sampled_tokens": {
-          "input_tokens": 14,
+          "input_tokens": 9,
           "input_tokens_details": {
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 72,
+          "output_tokens": 100,
           "output_tokens_details": {
             "reasoning_tokens": 0
           },
-          "total_tokens": 86
+          "total_tokens": 109
         }
       }
     },
     {
-      "name": "compat/turn_end/messages/claude-sonnet-4-6",
+      "name": "compat/turn_end/messages/gemini-2.5-flash",
       "status": "pass",
-      "seconds": 0.95,
-      "evidence": {
-        "sampled_tokens": {
-          "cache_read_input_tokens": 0,
-          "input_tokens": 29,
-          "output_tokens": 6
-        }
-      }
-    },
-    {
-      "name": "compat/turn_end/messages/gemini-3-flash",
-      "status": "pass",
-      "seconds": 0.73,
+      "seconds": 0.77,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
@@ -502,40 +448,33 @@
       }
     },
     {
-      "name": "compat/turn_end/messages/gpt-oss-120b-medium",
+      "name": "compat/turn_end/messages/gemini-3-flash",
       "status": "pass",
-      "seconds": 1.06,
+      "seconds": 0.67,
       "evidence": {
         "sampled_tokens": {
-          "cache_read_input_tokens": 64,
-          "input_tokens": 29,
-          "output_tokens": 112
+          "cache_read_input_tokens": 0,
+          "input_tokens": 19,
+          "output_tokens": 3
         }
       }
     },
     {
-      "name": "compat/turn_end/responses/claude-sonnet-4-6",
+      "name": "compat/turn_end/messages/gemini-3.8-flash-medium",
       "status": "pass",
-      "seconds": 1.2,
+      "seconds": 2.96,
       "evidence": {
         "sampled_tokens": {
-          "input_tokens": 29,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 6,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 35
+          "cache_read_input_tokens": 0,
+          "input_tokens": 19,
+          "output_tokens": 122
         }
       }
     },
     {
-      "name": "compat/turn_end/responses/gemini-3-flash",
+      "name": "compat/turn_end/responses/gemini-2.5-flash",
       "status": "pass",
-      "seconds": 0.78,
+      "seconds": 0.68,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 19,
@@ -552,28 +491,47 @@
       }
     },
     {
-      "name": "compat/turn_end/responses/gpt-oss-120b-medium",
+      "name": "compat/turn_end/responses/gemini-3-flash",
       "status": "pass",
-      "seconds": 1.0,
+      "seconds": 0.69,
       "evidence": {
         "sampled_tokens": {
-          "input_tokens": 93,
+          "input_tokens": 19,
           "input_tokens_details": {
             "cache_write_tokens": 0,
-            "cached_tokens": 64
+            "cached_tokens": 0
           },
-          "output_tokens": 134,
+          "output_tokens": 3,
           "output_tokens_details": {
             "reasoning_tokens": 0
           },
-          "total_tokens": 227
+          "total_tokens": 22
+        }
+      }
+    },
+    {
+      "name": "compat/turn_end/responses/gemini-3.8-flash-medium",
+      "status": "pass",
+      "seconds": 4.03,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 19,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 205,
+          "output_tokens_details": {
+            "reasoning_tokens": 202
+          },
+          "total_tokens": 224
         }
       }
     },
     {
       "name": "http/cancellation",
       "status": "pass",
-      "seconds": 1.56,
+      "seconds": 1.36,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -592,7 +550,7 @@
     {
       "name": "http/concurrency",
       "status": "pass",
-      "seconds": 1.46,
+      "seconds": 1.53,
       "evidence": {
         "burst": 10,
         "accepted": 10,
@@ -602,7 +560,7 @@
     {
       "name": "http/negative",
       "status": "pass",
-      "seconds": 0.0,
+      "seconds": 0.01,
       "evidence": {
         "expected_rejections": 7
       }
@@ -610,7 +568,7 @@
     {
       "name": "media/audio_file",
       "status": "pass",
-      "seconds": 2.1,
+      "seconds": 3.84,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 69,
@@ -630,7 +588,7 @@
     {
       "name": "media/https_image",
       "status": "pass",
-      "seconds": 0.9,
+      "seconds": 0.84,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 1112,
@@ -638,50 +596,32 @@
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 1,
+          "output_tokens": 11,
           "output_tokens_details": {
             "reasoning_tokens": 0
           },
-          "total_tokens": 1113
+          "total_tokens": 1123
         }
       }
     },
     {
       "name": "media/image_edit_roundtrip",
-      "status": "pass",
-      "seconds": 27.05,
-      "evidence": {
-        "image_edit_roundtrip": true,
-        "image_bytes": 531835,
-        "vision_check": "The image contains two circular shapes:\n\n* **The inner circle** is **dark blue** (or royal blue).\n* **The outer ring** (annulus) is **light blue** (or sky blue)"
-      }
+      "status": "blocked",
+      "seconds": 0.1,
+      "detail": "Error code: 429 - {'error': {'code': None, 'message': 'Antigravity returned HTTP 429 (RESOURCE_EXHAUSTED: QUOTA_EXHAUSTED)', 'param': None, 'type': 'rate_limit_error'}}",
+      "retry_after_seconds": 14165
     },
     {
       "name": "media/image_generation",
-      "status": "pass",
-      "seconds": 8.51,
-      "evidence": {
-        "image_count": 1,
-        "image_bytes": 362221,
-        "image_sha256": "ffadfbe939d78320c491dbc58fcbb42da7049e33b6b45c6cb7e1fd8e70d389f6",
-        "sampled_tokens": {
-          "input_tokens": 15,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 1418,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 1433
-        }
-      }
+      "status": "blocked",
+      "seconds": 0.76,
+      "detail": "Error code: 429 - {'error': {'code': None, 'message': 'Antigravity returned HTTP 429 (RESOURCE_EXHAUSTED: QUOTA_EXHAUSTED)', 'param': None, 'type': 'rate_limit_error'}}",
+      "retry_after_seconds": 14197
     },
     {
       "name": "media/video_file",
       "status": "pass",
-      "seconds": 2.12,
+      "seconds": 2.23,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 152,
@@ -699,194 +639,77 @@
       }
     },
     {
-      "name": "messages/claude-opus-4-6-thinking/thinking",
+      "name": "messages/gemini-2.5-flash/basic",
       "status": "pass",
-      "seconds": 6.09,
+      "seconds": 0.6,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
-          "input_tokens": 282,
-          "output_tokens": 36
-        },
-        "thinking_blocks": 1
-      }
-    },
-    {
-      "name": "messages/claude-opus-4-6-thinking/thinking_tools",
-      "status": "pass",
-      "seconds": 4.08,
-      "evidence": {
-        "sampled_tokens": {
-          "cache_read_input_tokens": 0,
-          "input_tokens": 762,
-          "output_tokens": 18
-        },
-        "calls": 1,
-        "thinking_blocks": 1,
-        "signed_tool_calls": 0
-      }
-    },
-    {
-      "name": "messages/claude-sonnet-4-6/basic",
-      "status": "pass",
-      "seconds": 0.84,
-      "evidence": {
-        "sampled_tokens": {
-          "cache_read_input_tokens": 0,
-          "input_tokens": 15,
-          "output_tokens": 7
+          "input_tokens": 9,
+          "output_tokens": 4
         }
       }
     },
     {
-      "name": "messages/claude-sonnet-4-6/count",
+      "name": "messages/gemini-2.5-flash/stream",
       "status": "pass",
-      "seconds": 0.45,
-      "evidence": {
-        "input_tokens": 6
-      }
-    },
-    {
-      "name": "messages/claude-sonnet-4-6/image_input",
-      "status": "pass",
-      "seconds": 1.15,
+      "seconds": 0.74,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
-          "input_tokens": 32,
-          "output_tokens": 22
-        }
-      }
-    },
-    {
-      "name": "messages/claude-sonnet-4-6/limit",
-      "status": "pass",
-      "seconds": 0.87,
-      "evidence": {
-        "sampled_tokens": {
-          "cache_read_input_tokens": 0,
-          "input_tokens": 23,
-          "output_tokens": 12
-        }
-      }
-    },
-    {
-      "name": "messages/claude-sonnet-4-6/parallel_tools",
-      "status": "pass",
-      "seconds": 3.67,
-      "evidence": {
-        "sampled_tokens": {
-          "cache_read_input_tokens": 0,
-          "input_tokens": 827,
-          "output_tokens": 60
+          "input_tokens": 11,
+          "output_tokens": 6
         },
-        "calls": 2,
-        "thinking_blocks": 0,
-        "signed_tool_calls": 0
+        "event_count": 13
       }
     },
     {
-      "name": "messages/claude-sonnet-4-6/pdf_input",
+      "name": "messages/gemini-2.5-flash/thinking",
       "status": "pass",
-      "seconds": 1.54,
+      "seconds": 2.8,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
-          "input_tokens": 1602,
-          "output_tokens": 21
-        }
-      }
-    },
-    {
-      "name": "messages/claude-sonnet-4-6/stop_sequence",
-      "status": "partial",
-      "seconds": 0.68,
-      "detail": "Text truncation works, but Antigravity reports only STOP without the matched sequence; the response currently has end_turn/null instead of stop_sequence/the matched value."
-    },
-    {
-      "name": "messages/claude-sonnet-4-6/stream",
-      "status": "pass",
-      "seconds": 0.91,
-      "evidence": {
-        "sampled_tokens": {
-          "cache_read_input_tokens": 0,
-          "input_tokens": 18,
-          "output_tokens": 10
-        },
-        "event_count": 9
-      }
-    },
-    {
-      "name": "messages/claude-sonnet-4-6/structured",
-      "status": "pass",
-      "seconds": 1.12,
-      "evidence": {
-        "sampled_tokens": {
-          "cache_read_input_tokens": 0,
-          "input_tokens": 679,
-          "output_tokens": 50
-        }
-      }
-    },
-    {
-      "name": "messages/claude-sonnet-4-6/thinking",
-      "status": "pass",
-      "seconds": 4.73,
-      "evidence": {
-        "sampled_tokens": {
-          "cache_read_input_tokens": 0,
-          "input_tokens": 309,
-          "output_tokens": 39
-        },
-        "thinking_blocks": 1
-      }
-    },
-    {
-      "name": "messages/claude-sonnet-4-6/thinking_tools",
-      "status": "pass",
-      "seconds": 3.0,
-      "evidence": {
-        "sampled_tokens": {
-          "cache_read_input_tokens": 0,
-          "input_tokens": 768,
-          "output_tokens": 17
-        },
-        "calls": 1,
-        "thinking_blocks": 1,
-        "signed_tool_calls": 0
-      }
-    },
-    {
-      "name": "messages/claude-sonnet-4-6/tool_image",
-      "status": "pass",
-      "seconds": 2.62,
-      "evidence": {
-        "sampled_tokens": {
-          "cache_read_input_tokens": 0,
-          "input_tokens": 655,
-          "output_tokens": 26
-        }
-      }
-    },
-    {
-      "name": "messages/claude-sonnet-4-6/tools",
-      "status": "pass",
-      "seconds": 4.2,
-      "evidence": {
-        "sampled_tokens": {
-          "cache_read_input_tokens": 0,
-          "input_tokens": 691,
+          "input_tokens": 1250,
           "output_tokens": 84
         },
+        "thinking_blocks": 2
+      }
+    },
+    {
+      "name": "messages/gemini-2.5-flash/thinking_tools",
+      "status": "pass",
+      "seconds": 1.55,
+      "evidence": {
+        "sampled_tokens": {
+          "cache_read_input_tokens": 0,
+          "input_tokens": 264,
+          "output_tokens": 26
+        },
+        "calls": 1,
+        "thinking_blocks": 1,
+        "signed_tool_calls": 1
+      }
+    },
+    {
+      "name": "messages/gemini-2.5-flash/tools",
+      "status": "pass",
+      "seconds": 1.52,
+      "evidence": {
+        "sampled_tokens": {
+          "cache_read_input_tokens": 0,
+          "input_tokens": 122,
+          "output_tokens": 4
+        },
         "calls": 1,
         "thinking_blocks": 0,
-        "signed_tool_calls": 0
+        "signed_tool_calls": 1
       }
     },
     {
       "name": "messages/gemini-3-flash/basic",
       "status": "pass",
-      "seconds": 0.61,
+      "seconds": 0.74,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
@@ -898,7 +721,7 @@
     {
       "name": "messages/gemini-3-flash/count",
       "status": "pass",
-      "seconds": 0.42,
+      "seconds": 0.31,
       "evidence": {
         "input_tokens": 6
       }
@@ -906,19 +729,19 @@
     {
       "name": "messages/gemini-3-flash/image_input",
       "status": "pass",
-      "seconds": 0.77,
+      "seconds": 0.91,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
           "input_tokens": 1103,
-          "output_tokens": 13
+          "output_tokens": 9
         }
       }
     },
     {
       "name": "messages/gemini-3-flash/limit",
       "status": "pass",
-      "seconds": 0.66,
+      "seconds": 0.76,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
@@ -930,7 +753,7 @@
     {
       "name": "messages/gemini-3-flash/parallel_tools",
       "status": "pass",
-      "seconds": 1.46,
+      "seconds": 1.57,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
@@ -945,7 +768,7 @@
     {
       "name": "messages/gemini-3-flash/pdf_input",
       "status": "pass",
-      "seconds": 1.51,
+      "seconds": 2.07,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
@@ -957,13 +780,13 @@
     {
       "name": "messages/gemini-3-flash/stop_sequence",
       "status": "partial",
-      "seconds": 0.61,
+      "seconds": 1.53,
       "detail": "Text truncation works, but Antigravity reports only STOP without the matched sequence; the response currently has end_turn/null instead of stop_sequence/the matched value."
     },
     {
       "name": "messages/gemini-3-flash/stream",
       "status": "pass",
-      "seconds": 0.67,
+      "seconds": 0.8,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
@@ -976,24 +799,24 @@
     {
       "name": "messages/gemini-3-flash/structured",
       "status": "pass",
-      "seconds": 0.84,
+      "seconds": 0.82,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
           "input_tokens": 13,
-          "output_tokens": 18
+          "output_tokens": 12
         }
       }
     },
     {
       "name": "messages/gemini-3-flash/thinking",
       "status": "pass",
-      "seconds": 2.84,
+      "seconds": 3.06,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
-          "input_tokens": 1068,
-          "output_tokens": 130
+          "input_tokens": 1217,
+          "output_tokens": 109
         },
         "thinking_blocks": 2
       }
@@ -1001,11 +824,11 @@
     {
       "name": "messages/gemini-3-flash/thinking_tools",
       "status": "pass",
-      "seconds": 1.5,
+      "seconds": 1.58,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
-          "input_tokens": 246,
+          "input_tokens": 240,
           "output_tokens": 26
         },
         "calls": 1,
@@ -1016,7 +839,7 @@
     {
       "name": "messages/gemini-3-flash/tool_image",
       "status": "pass",
-      "seconds": 1.37,
+      "seconds": 1.45,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
@@ -1028,7 +851,7 @@
     {
       "name": "messages/gemini-3-flash/tools",
       "status": "pass",
-      "seconds": 1.84,
+      "seconds": 1.51,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
@@ -1041,14 +864,144 @@
       }
     },
     {
-      "name": "messages/gemini-3.8-flash-medium/thinking",
+      "name": "messages/gemini-3.8-flash-high/thinking",
       "status": "pass",
-      "seconds": 8.06,
+      "seconds": 6.74,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
-          "input_tokens": 432,
-          "output_tokens": 20
+          "input_tokens": 545,
+          "output_tokens": 23
+        },
+        "thinking_blocks": 1
+      }
+    },
+    {
+      "name": "messages/gemini-3.8-flash-high/thinking_tools",
+      "status": "pass",
+      "seconds": 3.47,
+      "evidence": {
+        "sampled_tokens": {
+          "cache_read_input_tokens": 0,
+          "input_tokens": 122,
+          "output_tokens": 4
+        },
+        "calls": 1,
+        "thinking_blocks": 0,
+        "signed_tool_calls": 1
+      }
+    },
+    {
+      "name": "messages/gemini-3.8-flash-medium/basic",
+      "status": "pass",
+      "seconds": 2.46,
+      "evidence": {
+        "sampled_tokens": {
+          "cache_read_input_tokens": 0,
+          "input_tokens": 9,
+          "output_tokens": 98
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3.8-flash-medium/count",
+      "status": "pass",
+      "seconds": 0.36,
+      "evidence": {
+        "input_tokens": 6
+      }
+    },
+    {
+      "name": "messages/gemini-3.8-flash-medium/image_input",
+      "status": "pass",
+      "seconds": 2.51,
+      "evidence": {
+        "sampled_tokens": {
+          "cache_read_input_tokens": 0,
+          "input_tokens": 1103,
+          "output_tokens": 44
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3.8-flash-medium/limit",
+      "status": "pass",
+      "seconds": 1.8,
+      "evidence": {
+        "sampled_tokens": {
+          "cache_read_input_tokens": 0,
+          "input_tokens": 16,
+          "output_tokens": 9
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3.8-flash-medium/parallel_tools",
+      "status": "pass",
+      "seconds": 5.78,
+      "evidence": {
+        "sampled_tokens": {
+          "cache_read_input_tokens": 0,
+          "input_tokens": 258,
+          "output_tokens": 71
+        },
+        "calls": 2,
+        "thinking_blocks": 0,
+        "signed_tool_calls": 1
+      }
+    },
+    {
+      "name": "messages/gemini-3.8-flash-medium/pdf_input",
+      "status": "pass",
+      "seconds": 2.89,
+      "evidence": {
+        "sampled_tokens": {
+          "cache_read_input_tokens": 0,
+          "input_tokens": 530,
+          "output_tokens": 60
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3.8-flash-medium/stop_sequence",
+      "status": "partial",
+      "seconds": 2.08,
+      "detail": "Text truncation works, but Antigravity reports only STOP without the matched sequence; the response currently has end_turn/null instead of stop_sequence/the matched value."
+    },
+    {
+      "name": "messages/gemini-3.8-flash-medium/stream",
+      "status": "pass",
+      "seconds": 2.6,
+      "evidence": {
+        "sampled_tokens": {
+          "cache_read_input_tokens": 0,
+          "input_tokens": 11,
+          "output_tokens": 111
+        },
+        "event_count": 11
+      }
+    },
+    {
+      "name": "messages/gemini-3.8-flash-medium/structured",
+      "status": "pass",
+      "seconds": 3.46,
+      "evidence": {
+        "sampled_tokens": {
+          "cache_read_input_tokens": 0,
+          "input_tokens": 13,
+          "output_tokens": 152
+        }
+      }
+    },
+    {
+      "name": "messages/gemini-3.8-flash-medium/thinking",
+      "status": "pass",
+      "seconds": 5.92,
+      "evidence": {
+        "sampled_tokens": {
+          "cache_read_input_tokens": 0,
+          "input_tokens": 370,
+          "output_tokens": 23
         },
         "thinking_blocks": 1
       }
@@ -1056,7 +1009,7 @@
     {
       "name": "messages/gemini-3.8-flash-medium/thinking_tools",
       "status": "pass",
-      "seconds": 3.55,
+      "seconds": 3.67,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
@@ -1069,54 +1022,41 @@
       }
     },
     {
-      "name": "messages/gpt-oss-120b-medium/basic",
+      "name": "messages/gemini-3.8-flash-medium/tool_image",
       "status": "pass",
-      "seconds": 0.8,
+      "seconds": 4.22,
       "evidence": {
         "sampled_tokens": {
-          "cache_read_input_tokens": 64,
-          "input_tokens": 10,
-          "output_tokens": 50
+          "cache_read_input_tokens": 0,
+          "input_tokens": 1208,
+          "output_tokens": 34
         }
       }
     },
     {
-      "name": "messages/gpt-oss-120b-medium/stream",
+      "name": "messages/gemini-3.8-flash-medium/tools",
       "status": "pass",
-      "seconds": 0.56,
+      "seconds": 4.09,
       "evidence": {
         "sampled_tokens": {
-          "cache_read_input_tokens": 64,
-          "input_tokens": 11,
-          "output_tokens": 53
-        },
-        "event_count": 55
-      }
-    },
-    {
-      "name": "messages/gpt-oss-120b-medium/tools",
-      "status": "pass",
-      "seconds": 2.29,
-      "evidence": {
-        "sampled_tokens": {
-          "cache_read_input_tokens": 128,
-          "input_tokens": 72,
-          "output_tokens": 42
+          "cache_read_input_tokens": 0,
+          "input_tokens": 173,
+          "output_tokens": 20
         },
         "calls": 1,
-        "thinking_blocks": 1,
-        "signed_tool_calls": 0
+        "thinking_blocks": 0,
+        "signed_tool_calls": 1
       }
     },
     {
       "name": "messages/long_context",
       "status": "pass",
-      "seconds": 2.09,
+      "seconds": 3.94,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
-          "input_tokens": 48018,
-          "output_tokens": 11
+          "input_tokens": 54013,
+          "output_tokens": 123
         },
         "input_bytes": 189052
       }
@@ -1124,7 +1064,7 @@
     {
       "name": "messages/schema_tool_fields",
       "status": "pass",
-      "seconds": 2.04,
+      "seconds": 2.5,
       "evidence": {
         "tool_parameters_preserved": true
       }
@@ -1132,12 +1072,12 @@
     {
       "name": "messages/search",
       "status": "pass",
-      "seconds": 1.82,
+      "seconds": 1.88,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
           "input_tokens": 25,
-          "output_tokens": 82
+          "output_tokens": 104
         },
         "citation_count": 2
       }
@@ -1145,25 +1085,25 @@
     {
       "name": "messages/search_routed",
       "status": "pass",
-      "seconds": 3.49,
+      "seconds": 2.93,
       "evidence": {
         "sampled_tokens": {
-          "cache_read_input_tokens": 4,
-          "input_tokens": 14,
-          "output_tokens": 36
+          "cache_read_input_tokens": 0,
+          "input_tokens": 22,
+          "output_tokens": 172
         },
-        "citation_count": 1
+        "citation_count": 5
       }
     },
     {
       "name": "messages/search_stream_unicode",
       "status": "pass",
-      "seconds": 4.02,
+      "seconds": 7.21,
       "evidence": {
         "sampled_tokens": {
-          "cache_read_input_tokens": 0,
-          "input_tokens": 21,
-          "output_tokens": 791
+          "cache_read_input_tokens": 5,
+          "input_tokens": 16,
+          "output_tokens": 795
         },
         "citations": 17,
         "events": 107
@@ -1172,7 +1112,7 @@
     {
       "name": "messages/system_priority",
       "status": "pass",
-      "seconds": 0.71,
+      "seconds": 0.7,
       "evidence": {
         "sampled_tokens": {
           "cache_read_input_tokens": 0,
@@ -1182,279 +1122,112 @@
       }
     },
     {
-      "name": "responses/claude-opus-4-6-thinking/thinking",
+      "name": "responses/gemini-2.5-flash/basic",
       "status": "pass",
-      "seconds": 5.76,
+      "seconds": 0.71,
       "evidence": {
         "sampled_tokens": {
-          "input_tokens": 283,
+          "input_tokens": 9,
           "input_tokens_details": {
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 37,
+          "output_tokens": 4,
           "output_tokens_details": {
             "reasoning_tokens": 0
           },
-          "total_tokens": 320
-        },
-        "thinking_blocks": 1
+          "total_tokens": 13
+        }
       }
     },
     {
-      "name": "responses/claude-opus-4-6-thinking/thinking_tools",
+      "name": "responses/gemini-2.5-flash/stream",
       "status": "pass",
-      "seconds": 3.53,
+      "seconds": 0.71,
       "evidence": {
         "sampled_tokens": {
-          "input_tokens": 762,
+          "input_tokens": 11,
           "input_tokens_details": {
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 25,
+          "output_tokens": 6,
           "output_tokens_details": {
             "reasoning_tokens": 0
           },
-          "total_tokens": 787
+          "total_tokens": 17
+        },
+        "event_count": 12
+      }
+    },
+    {
+      "name": "responses/gemini-2.5-flash/thinking",
+      "status": "pass",
+      "seconds": 2.62,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 1091,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 57,
+          "output_tokens_details": {
+            "reasoning_tokens": 40
+          },
+          "total_tokens": 1148
+        },
+        "thinking_blocks": 2
+      }
+    },
+    {
+      "name": "responses/gemini-2.5-flash/thinking_tools",
+      "status": "pass",
+      "seconds": 1.64,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 258,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 27,
+          "output_tokens_details": {
+            "reasoning_tokens": 23
+          },
+          "total_tokens": 285
         },
         "calls": 1,
         "thinking_blocks": 1,
-        "signed_tool_calls": 0
+        "signed_tool_calls": 1
       }
     },
     {
-      "name": "responses/claude-sonnet-4-6/basic",
+      "name": "responses/gemini-2.5-flash/tools",
       "status": "pass",
-      "seconds": 0.93,
+      "seconds": 2.77,
       "evidence": {
         "sampled_tokens": {
-          "input_tokens": 15,
+          "input_tokens": 122,
           "input_tokens_details": {
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 7,
+          "output_tokens": 4,
           "output_tokens_details": {
             "reasoning_tokens": 0
           },
-          "total_tokens": 22
-        }
-      }
-    },
-    {
-      "name": "responses/claude-sonnet-4-6/count",
-      "status": "pass",
-      "seconds": 0.31,
-      "evidence": {
-        "input_tokens": 6
-      }
-    },
-    {
-      "name": "responses/claude-sonnet-4-6/image_input",
-      "status": "pass",
-      "seconds": 1.25,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 32,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 22,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 54
-        }
-      }
-    },
-    {
-      "name": "responses/claude-sonnet-4-6/limit",
-      "status": "pass",
-      "seconds": 0.86,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 23,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 12,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 35
-        }
-      }
-    },
-    {
-      "name": "responses/claude-sonnet-4-6/parallel_tools",
-      "status": "pass",
-      "seconds": 3.38,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 827,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 62,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 889
-        },
-        "calls": 2,
-        "thinking_blocks": 0,
-        "signed_tool_calls": 0
-      }
-    },
-    {
-      "name": "responses/claude-sonnet-4-6/pdf_input",
-      "status": "pass",
-      "seconds": 1.73,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 1602,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 21,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 1623
-        }
-      }
-    },
-    {
-      "name": "responses/claude-sonnet-4-6/stream",
-      "status": "pass",
-      "seconds": 0.89,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 18,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 10,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 28
-        },
-        "event_count": 10
-      }
-    },
-    {
-      "name": "responses/claude-sonnet-4-6/structured",
-      "status": "pass",
-      "seconds": 1.44,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 679,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 50,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 729
-        }
-      }
-    },
-    {
-      "name": "responses/claude-sonnet-4-6/thinking",
-      "status": "pass",
-      "seconds": 7.04,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 490,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 45,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 535
-        },
-        "thinking_blocks": 1
-      }
-    },
-    {
-      "name": "responses/claude-sonnet-4-6/thinking_tools",
-      "status": "pass",
-      "seconds": 3.42,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 768,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 26,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 794
-        },
-        "calls": 1,
-        "thinking_blocks": 1,
-        "signed_tool_calls": 0
-      }
-    },
-    {
-      "name": "responses/claude-sonnet-4-6/tool_image",
-      "status": "pass",
-      "seconds": 2.47,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 655,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 23,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 678
-        }
-      }
-    },
-    {
-      "name": "responses/claude-sonnet-4-6/tools",
-      "status": "pass",
-      "seconds": 2.39,
-      "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 691,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 0
-          },
-          "output_tokens": 24,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 715
+          "total_tokens": 126
         },
         "calls": 1,
         "thinking_blocks": 0,
-        "signed_tool_calls": 0
+        "signed_tool_calls": 1
       }
     },
     {
       "name": "responses/gemini-3-flash/basic",
       "status": "pass",
-      "seconds": 0.75,
+      "seconds": 1.41,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 9,
@@ -1473,7 +1246,7 @@
     {
       "name": "responses/gemini-3-flash/count",
       "status": "pass",
-      "seconds": 0.3,
+      "seconds": 0.51,
       "evidence": {
         "input_tokens": 6
       }
@@ -1481,7 +1254,7 @@
     {
       "name": "responses/gemini-3-flash/image_input",
       "status": "pass",
-      "seconds": 0.8,
+      "seconds": 1.21,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 1103,
@@ -1489,18 +1262,18 @@
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 13,
+          "output_tokens": 12,
           "output_tokens_details": {
             "reasoning_tokens": 0
           },
-          "total_tokens": 1116
+          "total_tokens": 1115
         }
       }
     },
     {
       "name": "responses/gemini-3-flash/limit",
       "status": "pass",
-      "seconds": 0.71,
+      "seconds": 0.77,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 16,
@@ -1519,7 +1292,7 @@
     {
       "name": "responses/gemini-3-flash/parallel_tools",
       "status": "pass",
-      "seconds": 1.5,
+      "seconds": 2.99,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 181,
@@ -1541,7 +1314,7 @@
     {
       "name": "responses/gemini-3-flash/pdf_input",
       "status": "pass",
-      "seconds": 1.63,
+      "seconds": 2.07,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 530,
@@ -1560,7 +1333,7 @@
     {
       "name": "responses/gemini-3-flash/stream",
       "status": "pass",
-      "seconds": 1.09,
+      "seconds": 1.52,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 11,
@@ -1574,13 +1347,13 @@
           },
           "total_tokens": 17
         },
-        "event_count": 12
+        "event_count": 11
       }
     },
     {
       "name": "responses/gemini-3-flash/structured",
       "status": "pass",
-      "seconds": 1.21,
+      "seconds": 1.51,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 13,
@@ -1588,30 +1361,30 @@
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 12,
+          "output_tokens": 18,
           "output_tokens_details": {
             "reasoning_tokens": 0
           },
-          "total_tokens": 25
+          "total_tokens": 31
         }
       }
     },
     {
       "name": "responses/gemini-3-flash/thinking",
       "status": "pass",
-      "seconds": 3.1,
+      "seconds": 5.95,
       "evidence": {
         "sampled_tokens": {
-          "input_tokens": 885,
+          "input_tokens": 3191,
           "input_tokens_details": {
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 109,
+          "output_tokens": 106,
           "output_tokens_details": {
-            "reasoning_tokens": 89
+            "reasoning_tokens": 87
           },
-          "total_tokens": 994
+          "total_tokens": 3297
         },
         "thinking_blocks": 2
       }
@@ -1619,19 +1392,19 @@
     {
       "name": "responses/gemini-3-flash/thinking_tools",
       "status": "pass",
-      "seconds": 1.76,
+      "seconds": 1.64,
       "evidence": {
         "sampled_tokens": {
-          "input_tokens": 264,
+          "input_tokens": 324,
           "input_tokens_details": {
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 4,
+          "output_tokens": 25,
           "output_tokens_details": {
-            "reasoning_tokens": 0
+            "reasoning_tokens": 21
           },
-          "total_tokens": 268
+          "total_tokens": 349
         },
         "calls": 1,
         "thinking_blocks": 1,
@@ -1641,7 +1414,7 @@
     {
       "name": "responses/gemini-3-flash/tool_image",
       "status": "pass",
-      "seconds": 1.64,
+      "seconds": 61.04,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 1175,
@@ -1649,18 +1422,18 @@
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 28,
+          "output_tokens": 22,
           "output_tokens_details": {
             "reasoning_tokens": 0
           },
-          "total_tokens": 1203
+          "total_tokens": 1197
         }
       }
     },
     {
       "name": "responses/gemini-3-flash/tools",
       "status": "pass",
-      "seconds": 1.62,
+      "seconds": 2.45,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 122,
@@ -1680,41 +1453,41 @@
       }
     },
     {
-      "name": "responses/gemini-3.8-flash-medium/thinking",
+      "name": "responses/gemini-3.8-flash-high/thinking",
       "status": "pass",
-      "seconds": 6.65,
+      "seconds": 7.47,
       "evidence": {
         "sampled_tokens": {
-          "input_tokens": 618,
+          "input_tokens": 736,
           "input_tokens_details": {
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 61,
+          "output_tokens": 76,
           "output_tokens_details": {
-            "reasoning_tokens": 38
+            "reasoning_tokens": 42
           },
-          "total_tokens": 679
+          "total_tokens": 812
         },
         "thinking_blocks": 2
       }
     },
     {
-      "name": "responses/gemini-3.8-flash-medium/thinking_tools",
+      "name": "responses/gemini-3.8-flash-high/thinking_tools",
       "status": "pass",
-      "seconds": 3.97,
+      "seconds": 4.77,
       "evidence": {
         "sampled_tokens": {
-          "input_tokens": 173,
+          "input_tokens": 174,
           "input_tokens_details": {
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 25,
+          "output_tokens": 23,
           "output_tokens_details": {
-            "reasoning_tokens": 21
+            "reasoning_tokens": 19
           },
-          "total_tokens": 198
+          "total_tokens": 197
         },
         "calls": 1,
         "thinking_blocks": 0,
@@ -1722,70 +1495,237 @@
       }
     },
     {
-      "name": "responses/gpt-oss-120b-medium/basic",
+      "name": "responses/gemini-3.8-flash-medium/basic",
       "status": "pass",
-      "seconds": 0.67,
+      "seconds": 2.82,
       "evidence": {
         "sampled_tokens": {
-          "input_tokens": 74,
+          "input_tokens": 9,
           "input_tokens_details": {
             "cache_write_tokens": 0,
-            "cached_tokens": 64
+            "cached_tokens": 0
           },
-          "output_tokens": 39,
+          "output_tokens": 69,
           "output_tokens_details": {
-            "reasoning_tokens": 0
+            "reasoning_tokens": 65
           },
-          "total_tokens": 113
+          "total_tokens": 78
         }
       }
     },
     {
-      "name": "responses/gpt-oss-120b-medium/stream",
+      "name": "responses/gemini-3.8-flash-medium/count",
       "status": "pass",
-      "seconds": 0.84,
+      "seconds": 0.77,
       "evidence": {
-        "sampled_tokens": {
-          "input_tokens": 75,
-          "input_tokens_details": {
-            "cache_write_tokens": 0,
-            "cached_tokens": 64
-          },
-          "output_tokens": 61,
-          "output_tokens_details": {
-            "reasoning_tokens": 0
-          },
-          "total_tokens": 136
-        },
-        "event_count": 38
+        "input_tokens": 6
       }
     },
     {
-      "name": "responses/gpt-oss-120b-medium/tools",
+      "name": "responses/gemini-3.8-flash-medium/image_input",
       "status": "pass",
-      "seconds": 1.47,
+      "seconds": 3.41,
       "evidence": {
         "sampled_tokens": {
-          "input_tokens": 200,
+          "input_tokens": 1103,
           "input_tokens_details": {
             "cache_write_tokens": 0,
-            "cached_tokens": 64
+            "cached_tokens": 0
           },
-          "output_tokens": 37,
+          "output_tokens": 66,
           "output_tokens_details": {
-            "reasoning_tokens": 0
+            "reasoning_tokens": 53
           },
-          "total_tokens": 237
+          "total_tokens": 1169
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3.8-flash-medium/limit",
+      "status": "pass",
+      "seconds": 2.7,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 16,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 9,
+          "output_tokens_details": {
+            "reasoning_tokens": 9
+          },
+          "total_tokens": 25
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3.8-flash-medium/parallel_tools",
+      "status": "pass",
+      "seconds": 5.58,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 242,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 47,
+          "output_tokens_details": {
+            "reasoning_tokens": 43
+          },
+          "total_tokens": 289
+        },
+        "calls": 2,
+        "thinking_blocks": 0,
+        "signed_tool_calls": 1
+      }
+    },
+    {
+      "name": "responses/gemini-3.8-flash-medium/pdf_input",
+      "status": "pass",
+      "seconds": 4.66,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 530,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 60,
+          "output_tokens_details": {
+            "reasoning_tokens": 44
+          },
+          "total_tokens": 590
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3.8-flash-medium/stream",
+      "status": "pass",
+      "seconds": 2.91,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 11,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 87,
+          "output_tokens_details": {
+            "reasoning_tokens": 81
+          },
+          "total_tokens": 98
+        },
+        "event_count": 11
+      }
+    },
+    {
+      "name": "responses/gemini-3.8-flash-medium/structured",
+      "status": "pass",
+      "seconds": 2.54,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 13,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 126,
+          "output_tokens_details": {
+            "reasoning_tokens": 116
+          },
+          "total_tokens": 139
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3.8-flash-medium/thinking",
+      "status": "pass",
+      "seconds": 7.75,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 738,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 67,
+          "output_tokens_details": {
+            "reasoning_tokens": 44
+          },
+          "total_tokens": 805
+        },
+        "thinking_blocks": 2
+      }
+    },
+    {
+      "name": "responses/gemini-3.8-flash-medium/thinking_tools",
+      "status": "pass",
+      "seconds": 5.23,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 172,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 16,
+          "output_tokens_details": {
+            "reasoning_tokens": 12
+          },
+          "total_tokens": 188
         },
         "calls": 1,
-        "thinking_blocks": 1,
-        "signed_tool_calls": 0
+        "thinking_blocks": 0,
+        "signed_tool_calls": 1
+      }
+    },
+    {
+      "name": "responses/gemini-3.8-flash-medium/tool_image",
+      "status": "pass",
+      "seconds": 5.82,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 1222,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 63,
+          "output_tokens_details": {
+            "reasoning_tokens": 42
+          },
+          "total_tokens": 1285
+        }
+      }
+    },
+    {
+      "name": "responses/gemini-3.8-flash-medium/tools",
+      "status": "pass",
+      "seconds": 4.91,
+      "evidence": {
+        "sampled_tokens": {
+          "input_tokens": 178,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 0
+          },
+          "output_tokens": 19,
+          "output_tokens_details": {
+            "reasoning_tokens": 15
+          },
+          "total_tokens": 197
+        },
+        "calls": 1,
+        "thinking_blocks": 0,
+        "signed_tool_calls": 1
       }
     },
     {
       "name": "responses/long_context",
       "status": "pass",
-      "seconds": 1.16,
+      "seconds": 1.09,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 54013,
@@ -1805,7 +1745,7 @@
     {
       "name": "responses/schema_tool_fields",
       "status": "pass",
-      "seconds": 0.75,
+      "seconds": 0.95,
       "evidence": {
         "tool_parameters_preserved": true
       }
@@ -1813,7 +1753,7 @@
     {
       "name": "responses/search",
       "status": "pass",
-      "seconds": 1.74,
+      "seconds": 2.83,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 25,
@@ -1821,19 +1761,19 @@
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 97,
+          "output_tokens": 89,
           "output_tokens_details": {
             "reasoning_tokens": 0
           },
-          "total_tokens": 122
+          "total_tokens": 114
         },
-        "citation_count": 3
+        "citation_count": 2
       }
     },
     {
       "name": "responses/search_stream_unicode",
       "status": "pass",
-      "seconds": 4.77,
+      "seconds": 3.67,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 21,
@@ -1841,20 +1781,20 @@
             "cache_write_tokens": 0,
             "cached_tokens": 0
           },
-          "output_tokens": 926,
+          "output_tokens": 728,
           "output_tokens_details": {
             "reasoning_tokens": 0
           },
-          "total_tokens": 947
+          "total_tokens": 749
         },
-        "citations": 22,
-        "events": 74
+        "citations": 12,
+        "events": 57
       }
     },
     {
       "name": "responses/system_priority",
       "status": "pass",
-      "seconds": 0.75,
+      "seconds": 0.76,
       "evidence": {
         "sampled_tokens": {
           "input_tokens": 17,
@@ -1873,18 +1813,18 @@
     {
       "name": "state/lost_state",
       "status": "pass",
-      "seconds": 4.52,
+      "seconds": 7.15,
       "evidence": {
         "continued_after_state_loss": [
           "gemini-3-flash",
-          "claude-sonnet-4-6"
+          "gemini-3.8-flash-medium"
         ]
       }
     },
     {
       "name": "state/reasoning_tamper",
       "status": "pass",
-      "seconds": 5.91,
+      "seconds": 5.45,
       "evidence": {
         "tampered_reasoning_dropped": true,
         "store_false_verified": true
@@ -1893,7 +1833,7 @@
     {
       "name": "state/restart",
       "status": "pass",
-      "seconds": 1.98,
+      "seconds": 1.9,
       "evidence": {
         "restart_recovered": true,
         "deleted": true
