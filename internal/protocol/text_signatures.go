@@ -30,10 +30,14 @@ func (x *textSignatureIndex) key(text string) string {
 	return digest(raw([2]string{hex.EncodeToString(x.prefix.Sum(nil)), text}))
 }
 
-// RestoreTextSignatures runs after routing and session assignment. Existing
-// client-carried signatures are preserved; a cache miss leaves text unchanged.
+// RestoreTextSignatures runs on Messages generation requests after routing and
+// session assignment. Existing client-carried signatures are preserved. Every
+// reply text is recorded, signed or not, so a missing record means the history
+// before it changed or the state expired; such text is sent unsigned and the
+// count is reported.
 func (d Decoder) RestoreTextSignatures(ctx context.Context, in *Input) error {
 	index := newTextSignatureIndex(in.UpstreamModel(), in.Request.SessionID, in.Request.System)
+	missing := 0
 	for i := range in.Request.Contents {
 		content := &in.Request.Contents[i]
 		index.begin(content.Role)
@@ -42,14 +46,20 @@ func (d Decoder) RestoreTextSignatures(ctx context.Context, in *Input) error {
 			if content.Role == "model" && part.Text != "" && !part.Thought && part.Signature == "" && part.FunctionCall == nil && part.FunctionResponse == nil && part.InlineData == nil && part.FileData == nil {
 				var signature string
 				err := d.State.Get(ctx, "text_signature", index.key(part.Text), &signature)
-				if err == nil {
+				switch {
+				case err == nil:
 					part.Signature = signature
-				} else if !errors.Is(err, state.ErrNotFound) {
+				case errors.Is(err, state.ErrNotFound):
+					missing++
+				default:
 					return err
 				}
 			}
 			index.add(*part)
 		}
+	}
+	if missing > 0 {
+		in.warn("no text signature record for %d earlier assistant text part(s); sent unsigned", missing)
 	}
 	return nil
 }

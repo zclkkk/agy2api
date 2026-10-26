@@ -182,3 +182,46 @@ func TestMessagesTextSignatureIsRestoredWithoutTrailingThinking(t *testing.T) {
 		t.Fatalf("%d %s", res.StatusCode, body)
 	}
 }
+
+func TestTextSignaturesAreOnlyRestoredForMessages(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1internal:fetchAvailableModels":
+			staticModels(w)
+			return
+		case "/v1internal:countTokens":
+			writeJSON(w, 200, map[string]int{"totalTokens": 7})
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		frame(w, chunk([]ag.Part{{Text: "ok"}}, "STOP", nil))
+	}))
+	defer up.Close()
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	store, err := state.Open(cfg.DataDir, time.Hour, 100, 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var logs bytes.Buffer
+	svc := New(cfg, &ag.Client{HTTP: up.Client(), BaseURL: up.URL, Auth: fixedToken{}}, store, slog.New(slog.NewJSONHandler(&logs, nil)))
+	s := httptest.NewServer(svc.Handler())
+	defer s.Close()
+	history := `[{"role":"user","content":"hi"},{"role":"assistant","content":"earlier answer"},{"role":"user","content":"more"}]`
+	if res, body := send(t, s, "/v1/responses", `{"model":"gemini-test","input":`+history+`}`, nil); res.StatusCode != 200 {
+		t.Fatal(body)
+	}
+	if res, body := send(t, s, "/v1/messages/count_tokens", `{"model":"gemini-test","messages":`+history+`}`, nil); res.StatusCode != 200 {
+		t.Fatal(body)
+	}
+	if strings.Contains(logs.String(), "text signature") {
+		t.Fatalf("Responses and token counts must not look up text signatures: %s", logs.String())
+	}
+	if res, body := send(t, s, "/v1/messages", `{"model":"gemini-test","max_tokens":100,"messages":`+history+`}`, nil); res.StatusCode != 200 {
+		t.Fatal(body)
+	}
+	if !strings.Contains(logs.String(), "no text signature record for 1") {
+		t.Fatalf("a Messages miss should be logged: %s", logs.String())
+	}
+}

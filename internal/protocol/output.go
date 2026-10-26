@@ -372,7 +372,8 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 		}
 	}
 	if r.textSignatures != nil {
-		if b.Kind == "text" && b.Signature != "" {
+		// Unsigned text is recorded too, so a later miss means lost state.
+		if b.Kind == "text" {
 			if err := r.state.Put(ctx, "text_signature", r.textSignatures.key(b.Text), b.Signature); err != nil {
 				return err
 			}

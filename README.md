@@ -72,7 +72,7 @@ curl http://127.0.0.1:8080/v1/messages \
 | 客户端 system 标记清理 | 默认清理 billing 归属行和已知 Claude Code 身份行；业务指令、消息、工具数据与签名保留 |
 | `/v1/models` 与 `/v1/models/{id}` | 从账号实时发现，只列出 Gemini 模型，缓存 5 分钟 |
 | `/v1/responses`、`/v1/messages` | 流式、非流式、文本和多轮对话；Messages 支持 `system` 角色消息 |
-| 真实客户端请求形态 | Codex CLI 0.164 端到端通过，本地压缩和远程压缩都可用；Claude Code 2.1 的请求形态通过（见下方已知限制） |
+| 真实客户端请求形态 | Codex CLI 0.164 端到端通过，本地压缩和远程压缩都可用；Claude Code 2.1.310 端到端通过（依赖默认开启的客户端 system 标记清理，见下方） |
 | 函数工具 | 声明、工具选择、并行调用、工具结果回传、签名恢复；Responses 的 `namespace` 工具组与 `custom` 自由文本工具；未强制调用时使用 Gemini 的 `VALIDATED` 模式，参数受 schema 约束 |
 | 工具 schema | 转换为上游接受的子集：内联 `$ref`、合并 `allOf`、类型列表转 `nullable`、`const`/非字符串 `enum` 转换；参数根节点必须是对象，根节点的联合类型保留最具体的分支 |
 | 工具名 | Gemini 接受字母、数字、`_`、`.`、`:`、`-`，以字母或下划线开头，最长 128 字符；其他名字自动映射，返回时还原 |
@@ -140,7 +140,7 @@ remote_compaction = "v2"
 
 日志的 `warnings` 只记录规则与命中数量，例如 `sanitize_client_markers: billing_header=1 claude_identity=1`，不记录被移除的文本。关闭清洗时，Claude Code 的这些标记可能使 Antigravity 返回 `429 RESOURCE_EXHAUSTED`；实际额度耗尽等其他上游错误仍按原样处理。
 
-Messages 正文后不再追加空的 thinking 签名块，以免 Claude Code 把它当作最后一条消息而输出空 `result`。正文签名改用现有状态库保存，索引绑定模型、会话、system 指令、之前的历史和正文哈希，下一轮自动恢复。历史版本返回的签名载体仍可回放。
+Messages 正文后不再追加空的 thinking 签名块，以免 Claude Code 把它当作最后一条消息而输出空 `result`。正文签名改用现有状态库保存，索引绑定模型、会话、system 指令、之前的历史和正文哈希，下一轮 Messages 请求自动恢复；Responses 继续用随响应返回的签名载体，不查这份记录。每段回复正文都会记录，没有签名的也记，因此查不到记录就说明之前的历史有变化（例如客户端删改了更早的思考块）或记录已过期：这些正文不带签名发出，并在日志的 `warnings` 中记录数量。历史版本返回的签名载体仍可回放。
 
 2026-10-26 使用 Claude Code 2.1.310 对照验证：同一请求关闭清洗时返回 429，开启后返回 200；普通回答及只读工具完整回合通过。Codex 0.164.0、OpenCode V2 2.1.4 的回归也通过。详见[本功能验收记录](docs/client-markers-validation-2026-10-26.json)。
 

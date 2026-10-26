@@ -239,7 +239,8 @@ func (s *Server) prepare(w http.ResponseWriter, r *http.Request, data []byte, co
 	if err == nil {
 		err = in.Finalize(r.Header)
 	}
-	if err == nil {
+	// Only Messages replies store text signatures this way.
+	if err == nil && !count && r.URL.Path == "/v1/messages" {
 		err = (protocol.Decoder{State: s.state}).RestoreTextSignatures(r.Context(), &in)
 	}
 	s.note(r, "", in.Warnings...)

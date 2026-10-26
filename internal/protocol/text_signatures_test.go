@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
@@ -172,5 +173,68 @@ func TestTextSignatureCacheSeparatesRepeatedAnswersAndLegacyCarriers(t *testing.
 	}
 	if legacy.Request.Contents[1].Parts[0].Signature != "legacy-signature" {
 		t.Fatal("an existing sealed signature was overwritten")
+	}
+}
+
+func TestMissingTextSignatureRecordsAreReported(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	d := Decoder{State: s}
+	reply := func(session, text, signature string) []Block {
+		t.Helper()
+		in, err := d.Messages(ctx, []byte(`{"model":"gemini-test","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := in.Finalize(http.Header{"Session-Id": []string{session}}); err != nil {
+			t.Fatal(err)
+		}
+		r := NewRenderer("messages", in, s, nil)
+		if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: text, Signature: signature}}, Finish: "STOP"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Finish(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var out struct {
+			Content []Block `json:"content"`
+		}
+		if err := json.Unmarshal(r.Result, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Content
+	}
+	restore := func(session string, assistant []Block) Input {
+		t.Helper()
+		in, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": []any{
+			map[string]string{"role": "user", "content": "hello"}, map[string]any{"role": "assistant", "content": assistant}, map[string]string{"role": "user", "content": "next"},
+		}}), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := in.Finalize(http.Header{"Session-Id": []string{session}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.RestoreTextSignatures(ctx, &in); err != nil {
+			t.Fatal(err)
+		}
+		return in
+	}
+	// A reply that came back unsigned is recorded as such and is not a miss.
+	if in := restore("a", reply("a", "unsigned answer", "")); len(in.Warnings) != 0 || in.Request.Contents[1].Parts[0].Signature != "" {
+		t.Fatalf("unsigned reply: %v %+v", in.Warnings, in.Request.Contents[1].Parts[0])
+	}
+	// A signed reply replayed under another session, or text this bridge never produced, is a miss.
+	signed := reply("a", "signed answer", "sig")
+	for name, in := range map[string]Input{
+		"other session": restore("b", signed),
+		"client text":   restore("a", []Block{{Type: "text", Text: "prefilled by the client"}}),
+	} {
+		if len(in.Warnings) != 1 || !strings.Contains(in.Warnings[0], "no text signature record for 1") {
+			t.Errorf("%s: warnings %v", name, in.Warnings)
+		}
+	}
+	if in := restore("a", signed); len(in.Warnings) != 0 || in.Request.Contents[1].Parts[0].Signature != "sig" {
+		t.Fatalf("matching replay: %v %+v", in.Warnings, in.Request.Contents[1].Parts[0])
 	}
 }
