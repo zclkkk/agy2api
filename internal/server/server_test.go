@@ -35,7 +35,7 @@ func setup(t *testing.T, generate http.HandlerFunc) (*httptest.Server, *atomic.I
 		switch r.URL.Path {
 		case "/v1internal:fetchAvailableModels":
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"models":{"gemini-test":{"displayName":"Gemini Test"},"claude-test":{"maxOutputTokens":64000}},"webSearchModelIds":["gemini-test"]}`)
+			io.WriteString(w, `{"models":{"gemini-test":{"displayName":"Gemini Test","apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"}},"webSearchModelIds":["gemini-test"]}`)
 		case "/v1internal:countTokens":
 			w.Header().Set("Content-Type", "application/json")
 			io.WriteString(w, `{"totalTokens":17}`)
@@ -184,17 +184,17 @@ func TestMessagesToolRoundTrip(t *testing.T) {
 			return
 		}
 		parts := request.Request.Contents[1].Parts
-		if len(parts) != 2 || parts[0].Signature != "think-sig" || parts[1].Signature != "tool-sig" || parts[1].FunctionCall.ID != "upstream-1" {
+		if len(parts) != 2 || parts[0].Signature != "think-sig" || parts[1].Signature != "tool-sig" || !strings.HasPrefix(parts[1].FunctionCall.ID, "toolu_agy_") {
 			t.Errorf("bad replay: %+v", parts)
 		}
 		result := request.Request.Contents[2].Parts[0].FunctionResponse
-		if result == nil || result.ID != "upstream-1" || result.Name != "lookup" {
+		if result == nil || result.ID != parts[1].FunctionCall.ID || result.Name != "lookup" {
 			t.Errorf("bad function result: %+v", result)
 		}
 		frame(w, chunk([]ag.Part{{Text: "finished"}}, "STOP", nil))
 	})
 	messages := []any{map[string]any{"role": "user", "content": "hello"}}
-	request := map[string]any{"model": "claude-test", "max_tokens": 1024, "messages": messages, "tools": []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object", "properties": map[string]any{"title": map[string]string{"type": "string"}}}}}}
+	request := map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": messages, "tools": []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object", "properties": map[string]any{"title": map[string]string{"type": "string"}}}}}}
 	res, body := post(t, s, "/v1/messages", request)
 	if res.StatusCode != 200 {
 		t.Fatal(string(body))
@@ -307,21 +307,25 @@ func TestAttachmentPrivateAddressesRejected(t *testing.T) {
 	}
 }
 
-func TestClaudeReasoningUsesAdvertisedOutputLimit(t *testing.T) {
-	s, _ := setup(t, func(w http.ResponseWriter, r *http.Request) {
-		var envelope ag.Envelope
-		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-			t.Error(err)
-		}
-		g := envelope.Request.Generation
-		if g.MaxTokens == nil || *g.MaxTokens != 64000 || g.Thinking == nil || g.Thinking.Budget == nil || *g.Thinking.Budget != 8192 {
-			t.Errorf("incorrect generation settings: %+v", g)
-		}
+func TestOnlyGeminiModelsAreServed(t *testing.T) {
+	s, calls := setup(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		frame(w, chunk([]ag.Part{{Text: "answer"}}, "STOP", nil))
 	})
-	res, body := post(t, s, "/v1/responses", map[string]any{"model": "claude-test", "input": "think", "reasoning": map[string]string{"effort": "medium"}})
-	if res.StatusCode != 200 {
-		t.Fatal(string(body))
+	req, _ := http.NewRequest(http.MethodGet, s.URL+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer local-key")
+	res, err := s.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listing, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if !bytes.Contains(listing, []byte("gemini-test")) || bytes.Contains(listing, []byte("claude-test")) {
+		t.Fatalf("listing: %s", listing)
+	}
+	before := calls.Load()
+	res, body := post(t, s, "/v1/responses", map[string]any{"model": "claude-test", "input": "hi"})
+	if res.StatusCode != 400 || !bytes.Contains(body, []byte("Gemini")) || calls.Load() != before {
+		t.Fatalf("%d %s", res.StatusCode, body)
 	}
 }

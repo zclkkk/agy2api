@@ -22,7 +22,7 @@ func TestEndWithUser(t *testing.T) {
 			[]string{"user:hi", "model:"}},
 	} {
 		in := Input{Request: ag.Request{Contents: tc.contents}}
-		in.EndWithUser()
+		in.endWithUser()
 		var got []string
 		for _, c := range in.Request.Contents {
 			got = append(got, c.Role+":"+c.Parts[len(c.Parts)-1].Text)
@@ -45,23 +45,41 @@ func TestCompactionCapsule(t *testing.T) {
 	}
 }
 
-func TestSessionFallbacks(t *testing.T) {
-	inherited := Input{Request: ag.Request{SessionID: "-42", Contents: []ag.Content{{Role: "user", Parts: []ag.Part{{Text: "a"}}}}}}
-	inherited.AssignSession(http.Header{})
-	if inherited.Request.SessionID != "-42" {
-		t.Fatal("a session restored from replay state must be kept")
+func TestSessionAssignment(t *testing.T) {
+	conversation := func(texts ...string) *Input {
+		in := &Input{}
+		for i, text := range texts {
+			role := "user"
+			if i%2 == 1 {
+				role = "model"
+			}
+			in.Request.Contents = append(in.Request.Contents, ag.Content{Role: role, Parts: []ag.Part{{Text: text}}})
+		}
+		return in
 	}
-	inherited.AssignSession(http.Header{"Session-Id": {"codex"}})
-	if inherited.Request.SessionID == "-42" {
+	first, followUp := conversation("a"), conversation("a", "ok", "more")
+	first.assignSession(http.Header{})
+	followUp.assignSession(http.Header{})
+	if first.Request.SessionID != followUp.Request.SessionID || !strings.HasPrefix(first.Request.SessionID, "-") {
+		t.Fatal("a conversation and its follow-up must share a session")
+	}
+	other := conversation("b")
+	other.assignSession(http.Header{})
+	if other.Request.SessionID == first.Request.SessionID {
+		t.Fatal("different conversations must not share a session")
+	}
+	client := conversation("b")
+	client.assignSession(http.Header{"Session-Id": {"codex"}})
+	if client.Request.SessionID == other.Request.SessionID {
 		t.Fatal("the client's session must win")
 	}
 	if claudeCodeSession([]byte(`{"user_id":"user_ab_account_cd_session_ef12"}`)) != "ef12" {
 		t.Fatal("legacy Claude Code user_id format")
 	}
-	a, b := Input{}, Input{}
-	a.AssignSession(http.Header{})
-	b.AssignSession(http.Header{})
-	if a.Request.SessionID == b.Request.SessionID || !strings.HasPrefix(a.Request.SessionID, "-") {
+	a, b := conversation(), conversation()
+	a.assignSession(http.Header{})
+	b.assignSession(http.Header{})
+	if a.Request.SessionID == b.Request.SessionID {
 		t.Fatal("requests without any hint get distinct random sessions")
 	}
 }

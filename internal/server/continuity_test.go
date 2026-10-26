@@ -54,7 +54,7 @@ func TestTrailingAssistantTurnIsFollowedByAUserTurn(t *testing.T) {
 	_, s := newService(t, nil, staticModels, rec.handle)
 	for path, body := range map[string]string{
 		"/v1/messages":  `{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"List colors."},{"role":"assistant","content":"Red,"}]}`,
-		"/v1/responses": `{"model":"claude-test","input":[{"role":"user","content":"List colors."},{"role":"assistant","content":"Red,"}]}`,
+		"/v1/responses": `{"model":"gemini-test","input":[{"role":"user","content":"List colors."},{"role":"assistant","content":"Red,"}]}`,
 	} {
 		res, out := send(t, s, path, body, nil)
 		if res.StatusCode != 200 {

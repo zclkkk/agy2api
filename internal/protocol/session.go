@@ -30,11 +30,11 @@ func nativeSession(seed string) string {
 	return "-" + strconv.FormatUint(n&math.MaxInt64, 10)
 }
 
-// AssignSession sets the upstream session ID. A session ID sent by the client
+// assignSession sets the upstream session ID. A session ID sent by the client
 // wins, so all requests of one client session share an upstream session.
-// Otherwise a session restored from replay state is kept, and a new
-// conversation is keyed by its first user message so its follow-ups line up.
-func (in *Input) AssignSession(headers http.Header) {
+// Otherwise the conversation is keyed by its first user message, which every
+// follow-up request repeats.
+func (in *Input) assignSession(headers http.Header) {
 	client := in.ClientSession
 	for _, name := range sessionHeaders {
 		if v := strings.TrimSpace(headers.Get(name)); v != "" {
@@ -42,20 +42,18 @@ func (in *Input) AssignSession(headers http.Header) {
 			break
 		}
 	}
-	switch {
-	case client != "":
+	if client != "" {
 		in.Request.SessionID = nativeSession("client\x00" + client)
-	case in.Request.SessionID != "":
-	default:
-		seed := ""
-		for _, c := range in.Request.Contents {
-			if c.Role == "user" {
-				seed = "user\x00" + string(raw(c.Parts))
-				break
-			}
-		}
-		in.Request.SessionID = nativeSession(seed)
+		return
 	}
+	seed := ""
+	for _, c := range in.Request.Contents {
+		if c.Role == "user" {
+			seed = "user\x00" + string(raw(c.Parts))
+			break
+		}
+	}
+	in.Request.SessionID = nativeSession(seed)
 }
 
 // claudeCodeSession extracts the session from Messages metadata.user_id. Claude

@@ -127,19 +127,19 @@ func TestRejectedTokenIsRefreshedOnce(t *testing.T) {
 	}
 }
 
-func TestCatalogInfoUsesProviderAndModelLists(t *testing.T) {
+func TestCatalogInfoUsesModelLists(t *testing.T) {
 	catalog := Catalog{
-		Models:       map[string]json.RawMessage{"claude-x": json.RawMessage(`{"modelProvider":"MODEL_PROVIDER_ANTHROPIC","maxOutputTokens":64000}`), "painter": json.RawMessage(`{}`), "finder": json.RawMessage(`{"modelProvider":"MODEL_PROVIDER_GOOGLE"}`)},
+		Models:       map[string]json.RawMessage{"thinker": json.RawMessage(`{"minThinkingBudget":128}`), "painter": json.RawMessage(`{}`), "finder": json.RawMessage(`{}`)},
 		SearchModels: []string{"finder"},
 		ImageModels:  []string{"painter"},
 	}
-	if info, ok := catalog.Info("claude-x"); !ok || !info.Claude() || info.MaxOutputTokens != 64000 || info.Image {
+	if info, ok := catalog.Info("thinker"); !ok || info.MinThinkingBudget != 128 || info.Image || info.Search {
 		t.Fatalf("%+v", info)
 	}
 	if info, _ := catalog.Info("painter"); !info.Image || info.Search {
 		t.Fatalf("%+v", info)
 	}
-	if info, _ := catalog.Info("finder"); !info.Search || info.Claude() {
+	if info, _ := catalog.Info("finder"); !info.Search || info.Image {
 		t.Fatalf("%+v", info)
 	}
 	if _, ok := catalog.Info("missing"); ok {
@@ -147,10 +147,11 @@ func TestCatalogInfoUsesProviderAndModelLists(t *testing.T) {
 	}
 }
 
-func TestModelCatalogExcludesInternalProvider(t *testing.T) {
+func TestModelCatalogKeepsOnlyGemini(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"models":{"chat_internal":{"apiProvider":"API_PROVIDER_INTERNAL"},"gemini-test":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},"future-model":{}}}`)
+		io.WriteString(w, `{"models":{"chat_internal":{"apiProvider":"API_PROVIDER_INTERNAL"},"gemini-test":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},
+			"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"},"gpt-oss-test":{"apiProvider":"API_PROVIDER_OPENAI_VERTEX"},"unlabeled":{}}}`)
 	}))
 	defer up.Close()
 	c := Client{HTTP: up.Client(), BaseURL: up.URL, Auth: testToken{}}
@@ -158,11 +159,8 @@ func TestModelCatalogExcludesInternalProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Models) != 2 {
-		t.Fatal(catalog.Models)
-	}
-	if _, ok := catalog.Models["chat_internal"]; ok {
-		t.Fatal("internal model was exposed as generative")
+	if _, ok := catalog.Models["gemini-test"]; !ok || len(catalog.Models) != 1 {
+		t.Fatalf("only Gemini models may be served: %v", catalog.Models)
 	}
 }
 

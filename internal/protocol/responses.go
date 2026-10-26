@@ -2,9 +2,7 @@ package protocol
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"net/http"
 	"strings"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
@@ -81,11 +79,10 @@ type ResponseItem struct {
 	Action       json.RawMessage `json:"action,omitempty"`
 }
 type StoredResponse struct {
-	Model     string            `json:"model"`
-	Contents  []ag.Content      `json:"contents"`
-	Response  json.RawMessage   `json:"response"`
-	Items     []json.RawMessage `json:"items"`
-	SessionID string            `json:"session_id,omitempty"`
+	Model    string            `json:"model"`
+	Contents []ag.Content      `json:"contents"`
+	Response json.RawMessage   `json:"response"`
+	Items    []json.RawMessage `json:"items"`
 }
 
 func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
@@ -124,7 +121,6 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 			in.Request.Contents = stripSignatures(previous.Contents)
 			in.warn("model changed within a stored response chain; prior reasoning was dropped")
 		}
-		in.Request.SessionID = previous.SessionID
 		in.OriginalItems = previous.Items
 		var priorOutput struct {
 			Output []json.RawMessage `json:"output"`
@@ -258,24 +254,6 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 		}
 	}
 	return in, validate(&in)
-}
-
-// restoreImage rebuilds a generated image turn. Without replay metadata the
-// image is still sent with its type detected; NativeRequest adds the Gemini
-// placeholder signature.
-func (d Decoder) restoreImage(ctx context.Context, in *Input, v ResponseItem) ag.Part {
-	var record ImageRecord
-	if err := d.State.Get(ctx, "image", v.ID, &record); err == nil && record.Model == in.Model && record.Digest == digest(raw(v.Result)) {
-		if in.Request.SessionID == "" {
-			in.Request.SessionID = record.SessionID
-		}
-		return ag.Part{InlineData: &ag.Blob{MIMEType: record.MIMEType, Data: v.Result}, Signature: record.Signature}
-	}
-	in.warn("image replay metadata for %s is missing or changed", v.ID)
-	head := v.Result[:min(len(v.Result), 1024)]
-	head = head[:len(head)/4*4]
-	sample, _ := base64.StdEncoding.DecodeString(head)
-	return ag.Part{InlineData: &ag.Blob{MIMEType: http.DetectContentType(sample), Data: v.Result}}
 }
 
 // declareResponseTools flattens namespaces and maps custom (freeform) tools to

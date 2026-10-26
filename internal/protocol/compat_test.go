@@ -12,17 +12,15 @@ import (
 
 var testCatalog = ag.Catalog{
 	Models: map[string]json.RawMessage{
-		"claude-sonnet-4-6": json.RawMessage(`{"modelProvider":"MODEL_PROVIDER_ANTHROPIC","maxOutputTokens":64000}`),
-		"claude-test":       json.RawMessage(`{"modelProvider":"MODEL_PROVIDER_ANTHROPIC","maxOutputTokens":64000}`),
-		"gemini-test":       json.RawMessage(`{"modelProvider":"MODEL_PROVIDER_GOOGLE","maxOutputTokens":65536,"minThinkingBudget":128}`),
-		"gemini-search":     json.RawMessage(`{"modelProvider":"MODEL_PROVIDER_GOOGLE"}`),
+		"gemini-test":   json.RawMessage(`{"minThinkingBudget":128}`),
+		"gemini-search": json.RawMessage(`{}`),
 	},
 	SearchModels: []string{"gemini-search"},
 }
 
 // A trimmed copy of the request shape Claude Code 2.1 sends.
 const claudeCodeRequest = `{
- "model":"claude-sonnet-4-6","max_tokens":32000,"stream":true,
+ "model":"gemini-test","max_tokens":32000,"stream":true,
  "system":[{"type":"text","text":"You are Claude Code."},{"type":"text","text":"Rules","cache_control":{"type":"ephemeral"}}],
  "messages":[
   {"role":"user","content":[{"type":"text","text":"find the tool","cache_control":{"type":"ephemeral"}}]},
@@ -34,7 +32,8 @@ const claudeCodeRequest = `{
   {"name":"ToolSearch","description":"search tools","input_schema":{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}},
   {"name":"NotebookEdit","description":"edit","defer_loading":true,"input_schema":{"type":"object","properties":{"cell":{"type":"integer","exclusiveMinimum":0}}}},
   {"name":"Hidden","description":"never referenced","defer_loading":true,"input_schema":{"type":"object"}},
-  {"name":"mcp__srv.example__do","description":"dotted MCP name","input_schema":{"type":"object","cache_control":{"type":"ephemeral"}}}
+  {"name":"mcp__srv.example__do","description":"dotted MCP name","input_schema":{"type":"object","cache_control":{"type":"ephemeral"}}},
+  {"name":"bad name/x","description":"needs mapping","input_schema":{"type":"object"}}
  ],
  "tool_choice":{"type":"auto","disable_parallel_tool_use":true},
  "metadata":{"user_id":"u"},
@@ -63,16 +62,19 @@ func TestClaudeCodeRequestShapeIsAccepted(t *testing.T) {
 			if strings.Contains(string(f.Parameters), "$schema") || strings.Contains(string(f.Parameters), "exclusiveMinimum") {
 				t.Fatalf("schema not cleaned: %s", f.Parameters)
 			}
-			if strings.ContainsAny(f.Name, ".:") {
+			if invalidNameChars.MatchString(f.Name) {
 				t.Fatalf("invalid native tool name %q", f.Name)
 			}
 		}
 	}
-	if !declared["ToolSearch"] || !declared["NotebookEdit"] || declared["Hidden"] || !declared["mcp__srv.example__do"] {
+	if !declared["ToolSearch"] || !declared["NotebookEdit"] || declared["Hidden"] || !declared["mcp__srv.example__do"] || !declared["bad name/x"] {
 		t.Fatalf("deferred tool handling wrong: %v", declared)
 	}
-	if b := in.Request.Generation.Thinking.Budget; b == nil || *b != 24576 {
-		t.Fatalf("effort not applied: %+v", in.Request.Generation.Thinking)
+	if in.Tools["mcp__srv.example__do"].Name == "" {
+		t.Fatal("a name Gemini accepts must be sent unchanged")
+	}
+	if th := in.Request.Generation.Thinking; th == nil || th.Level != "high" {
+		t.Fatalf("effort not applied: %+v", th)
 	}
 	if len(in.Warnings) != 1 || !strings.Contains(in.Warnings[0], "some_future_field") {
 		t.Fatalf("only the unknown field should be reported: %v", in.Warnings)
@@ -174,12 +176,11 @@ func TestToolIdentityRoundTripsThroughOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	native, err := d.NativeRequest(ctx, next.Request, true)
-	if err != nil {
+	if err := next.Finalize(nil); err != nil {
 		t.Fatal(err)
 	}
-	calls := native.Contents[1].Parts
-	if calls[0].FunctionCall.Name != "multi_agent_v1__close_agent" || calls[0].FunctionCall.ID != "n1" || calls[0].Signature != "sig-1" {
+	calls := next.Request.Contents[1].Parts
+	if calls[0].FunctionCall.Name != "multi_agent_v1__close_agent" || calls[0].FunctionCall.ID != out.Output[0].CallID || calls[0].Signature != "sig-1" {
 		t.Fatalf("first call not restored: %s", raw(calls[0]))
 	}
 	if calls[1].FunctionCall.Name != "apply_patch" || string(calls[1].FunctionCall.Args) != `{"input":"*** Begin Patch"}` {
@@ -211,10 +212,10 @@ func TestMissingReplayStateDegrades(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	native, err := d.NativeRequest(ctx, in.Request, true)
-	if err != nil {
+	if err := in.Finalize(nil); err != nil {
 		t.Fatal(err)
 	}
+	native := in.Request
 	model := native.Contents[1].Parts
 	if len(model) != 1 || model[0].FunctionCall == nil {
 		t.Fatalf("unrestorable thinking should be dropped: %s", raw(model))
@@ -234,15 +235,15 @@ func TestModelChangeInStoredChainDropsSignatures(t *testing.T) {
 	s := testStore(t)
 	d := Decoder{State: s}
 	ctx := context.Background()
-	in, _ := d.Responses(ctx, []byte(`{"model":"claude-test","input":"first"}`))
+	in, _ := d.Responses(ctx, []byte(`{"model":"gemini-other","input":"first"}`))
 	r := NewRenderer("responses", in, s, nil)
-	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "plan", Thought: true, Signature: "claude-sig"}, {Text: "answer"}}, Finish: "STOP"}); err != nil {
+	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "plan", Thought: true, Signature: "other-sig"}, {Text: "answer"}}, Finish: "STOP"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Finish(ctx); err != nil {
 		t.Fatal(err)
 	}
-	next, err := d.Responses(ctx, raw(map[string]any{"model": "gemini-test", "input": "second", "previous_response_id": r.ID}))
+	next, err := d.Responses(ctx, raw(map[string]any{"model": "gemini-test", "input": "second", "previous_response_id": r.id}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +263,7 @@ func TestHiddenThinkingStillReplays(t *testing.T) {
 	s := testStore(t)
 	d := Decoder{State: s}
 	ctx := context.Background()
-	in, err := d.Messages(ctx, []byte(`{"model":"claude-test","max_tokens":2048,"thinking":{"type":"adaptive","display":"omitted"},"messages":[{"role":"user","content":"hi"}]}`), false)
+	in, err := d.Messages(ctx, []byte(`{"model":"gemini-test","max_tokens":2048,"thinking":{"type":"adaptive","display":"omitted"},"messages":[{"role":"user","content":"hi"}]}`), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +288,7 @@ func TestHiddenThinkingStillReplays(t *testing.T) {
 		Content []Block `json:"content"`
 	}
 	_ = json.Unmarshal(r.Result, &out)
-	next, err := d.Messages(ctx, raw(map[string]any{"model": "claude-test", "max_tokens": 2048, "messages": []any{
+	next, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 2048, "messages": []any{
 		map[string]any{"role": "user", "content": "hi"}, map[string]any{"role": "assistant", "content": out.Content}, map[string]any{"role": "user", "content": "more"}}}), false)
 	if err != nil {
 		t.Fatal(err)
@@ -332,7 +333,7 @@ func TestFinishReasonsAndUnknownParts(t *testing.T) {
 
 func TestSearchRoutingAndToolNames(t *testing.T) {
 	d := Decoder{State: testStore(t)}
-	in, err := d.Messages(context.Background(), []byte(`{"model":"claude-test","max_tokens":100,"messages":[{"role":"user","content":"news"}],"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":5}]}`), false)
+	in, err := d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"news"}],"tools":[{"type":"web_search_20250305","name":"web_search","max_uses":5}]}`), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,48 +343,13 @@ func TestSearchRoutingAndToolNames(t *testing.T) {
 	if in.UpstreamModel() != "gemini-search" || in.Kind != ag.KindSearch || in.Request.Tools[0].GoogleSearch == nil {
 		t.Fatalf("search not routed: %+v", in)
 	}
-	for public, want := range map[string]string{"Bash": "Bash", "a.b": "a_b_", "1tool": "_1tool_", strings.Repeat("x", 130): strings.Repeat("x", 119) + "_"} {
+	for public, want := range map[string]string{"Bash": "Bash", "mcp.srv:do-it": "mcp.srv:do-it", "a b": "a_b_", "1tool": "_1tool_", strings.Repeat("x", 130): strings.Repeat("x", 119) + "_"} {
 		got := nativeName(public)
-		if !strings.HasPrefix(got, want) || len(got) > 128 || invalidNameChars.MatchString(got) {
+		if !strings.HasPrefix(got, want) || len(got) > 128 || invalidNameChars.MatchString(got) || (want == public) != (got == public) {
 			t.Errorf("nativeName(%q)=%q", public, got)
 		}
 	}
-	if nativeName("a.b") == nativeName("a_b") {
+	if nativeName("a b") == nativeName("a_b") {
 		t.Error("distinct names collided")
-	}
-}
-
-func TestClaudeForcedToolChoiceDisablesThinking(t *testing.T) {
-	d := Decoder{State: testStore(t)}
-	in, err := d.Responses(context.Background(), []byte(`{"model":"claude-test","input":"x","tool_choice":"required","reasoning":{"effort":"low"},"tools":[{"type":"function","name":"f","parameters":{"type":"object"}}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := in.Prepare(testCatalog); err != nil {
-		t.Fatal(err)
-	}
-	if b := in.Request.Generation.Thinking.Budget; b == nil || *b != 0 || len(in.Warnings) != 1 {
-		t.Fatalf("%+v %v", in.Request.Generation.Thinking, in.Warnings)
-	}
-	in, _ = d.Responses(context.Background(), []byte(`{"model":"gemini-test","input":"x","tool_choice":"required","reasoning":{"effort":"low"},"tools":[{"type":"function","name":"f","parameters":{"type":"object"}}]}`))
-	_ = in.Prepare(testCatalog)
-	if in.Request.Generation.Thinking.Level != "low" {
-		t.Fatal("Gemini thinking should be unaffected")
-	}
-}
-
-func TestClaudeGetsNoSignaturePlaceholder(t *testing.T) {
-	d := Decoder{State: testStore(t)}
-	ctx := context.Background()
-	in, err := d.Messages(ctx, []byte(`{"model":"claude-test","max_tokens":100,"messages":[{"role":"user","content":"x"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_agy_gone","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agy_gone","content":"ok"}]}]}`), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	native, err := d.NativeRequest(ctx, in.Request, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sig := native.Contents[1].Parts[0].Signature; sig != "" {
-		t.Fatalf("Claude call got signature %q", sig)
 	}
 }

@@ -7,9 +7,8 @@ import (
 	"strings"
 )
 
-// Antigravity validates tool and response schemas against a protobuf Schema
-// message rather than JSON Schema, and its Claude bridge re-validates the
-// result as JSON Schema without unions. These keys pass through unchanged;
+// Antigravity validates tool and response schemas against Gemini's protobuf
+// Schema message rather than JSON Schema. These keys pass through unchanged;
 // refs, unions, const, exclusive bounds and type lists are translated, and
 // everything else is dropped.
 var schemaScalars = []string{"format", "title", "description", "minItems", "maxItems", "minLength", "maxLength",
@@ -20,13 +19,12 @@ const maxSchemaDepth = 32
 type schemaCleaner struct {
 	defs   map[string]any
 	active map[string]bool
-	claude bool
 }
 
 // cleanToolSchema returns function parameters in the accepted subset. The root
-// is always an object, as both Gemini and Claude require.
-func cleanToolSchema(raw json.RawMessage, claude bool) (json.RawMessage, error) {
-	out, err := cleanSchemaValue(raw, claude)
+// must be an object, so a root union keeps its most structured branch.
+func cleanToolSchema(raw json.RawMessage) (json.RawMessage, error) {
+	out, err := cleanSchemaValue(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -45,22 +43,22 @@ func cleanToolSchema(raw json.RawMessage, claude bool) (json.RawMessage, error) 
 }
 
 // cleanSchema returns a response schema in the accepted subset.
-func cleanSchema(raw json.RawMessage, claude bool) (json.RawMessage, error) {
-	out, err := cleanSchemaValue(raw, claude)
+func cleanSchema(raw json.RawMessage) (json.RawMessage, error) {
+	out, err := cleanSchemaValue(raw)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(out)
 }
 
-func cleanSchemaValue(raw json.RawMessage, claude bool) (map[string]any, error) {
+func cleanSchemaValue(raw json.RawMessage) (map[string]any, error) {
 	var root any
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
 	if err := d.Decode(&root); err != nil {
 		return nil, err
 	}
-	c := schemaCleaner{defs: map[string]any{}, active: map[string]bool{}, claude: claude}
+	c := schemaCleaner{defs: map[string]any{}, active: map[string]bool{}}
 	if m, ok := root.(map[string]any); ok {
 		for _, key := range []string{"$defs", "definitions"} {
 			if defs, ok := m[key].(map[string]any); ok {
@@ -253,9 +251,6 @@ func (c *schemaCleaner) clean(node any, depth int) map[string]any {
 		mergeMissing(out, union[0])
 	case len(union) > 1:
 		out["anyOf"] = toAny(union)
-		if c.claude {
-			out = flatten(out)
-		}
 	}
 	if nullable {
 		out["nullable"] = true
@@ -268,7 +263,7 @@ func (c *schemaCleaner) clean(node any, depth int) map[string]any {
 }
 
 // flatten replaces a union with its most structured branch, describing the
-// others, for consumers that reject anyOf.
+// others in the description.
 func flatten(s map[string]any) map[string]any {
 	list, ok := s["anyOf"].([]any)
 	if !ok || len(list) == 0 {

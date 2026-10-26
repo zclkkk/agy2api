@@ -31,14 +31,9 @@ const (
 	heartbeatPeriod = 15 * time.Second
 )
 
-type Backend interface {
-	Generate(ctx context.Context, model string, request ag.Request, kind string, emit func(ag.Chunk) error) error
-	Count(context.Context, ag.Request) (int, error)
-	Models(context.Context) (ag.Catalog, error)
-}
 type Server struct {
 	cfg           config.Config
-	backend       Backend
+	upstream      *ag.Client
 	state         *state.Store
 	logger        *slog.Logger
 	slots         chan struct{}
@@ -49,11 +44,11 @@ type Server struct {
 	heartbeat     time.Duration
 }
 
-func New(cfg config.Config, backend Backend, store *state.Store, logger *slog.Logger) *Server {
+func New(cfg config.Config, upstream *ag.Client, store *state.Store, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, backend: backend, state: store, logger: logger, slots: make(chan struct{}, cfg.MaxConcurrentRequests), media: mediaClient(), heartbeat: heartbeatPeriod}
+	return &Server{cfg: cfg, upstream: upstream, state: store, logger: logger, slots: make(chan struct{}, cfg.MaxConcurrentRequests), media: mediaClient(), heartbeat: heartbeatPeriod}
 }
 
 // requestLog collects per-request details for the completion log line.
@@ -216,13 +211,13 @@ func (s *Server) acquire(w http.ResponseWriter, r *http.Request) bool {
 	}
 }
 
-// prepare decodes and shapes a request into the native form sent upstream.
-func (s *Server) prepare(w http.ResponseWriter, r *http.Request, data []byte, count bool) (protocol.Input, ag.Request, bool) {
+// prepare decodes a request and shapes it into the native request sent upstream.
+func (s *Server) prepare(w http.ResponseWriter, r *http.Request, data []byte, count bool) (protocol.Input, bool) {
 	in, err := s.decode(r, data, count)
 	s.note(r, in.Model, in.Warnings...)
 	if err != nil {
 		s.writeError(w, r, err)
-		return in, ag.Request{}, false
+		return in, false
 	}
 	in.Warnings = nil
 	if r.URL.Path == "/v1/responses/compact" {
@@ -238,21 +233,15 @@ func (s *Server) prepare(w http.ResponseWriter, r *http.Request, data []byte, co
 	if err == nil {
 		err = s.resolveMedia(r.Context(), &in.Request)
 	}
-	if err == nil && !count {
-		in.EndWithUser()
-		in.AssignSession(r.Header)
+	if err == nil {
+		err = in.Finalize(r.Header)
 	}
 	s.note(r, "", in.Warnings...)
 	if err != nil {
 		s.writeError(w, r, err)
-		return in, ag.Request{}, false
+		return in, false
 	}
-	native, err := (protocol.Decoder{State: s.state}).NativeRequest(r.Context(), in.Request, !in.Claude)
-	if err != nil {
-		s.writeError(w, r, err)
-		return in, ag.Request{}, false
-	}
-	return in, native, true
+	return in, true
 }
 
 // sseWriter serializes stream writes so heartbeats can share the connection.
@@ -312,7 +301,7 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { <-s.slots }()
-	in, native, ok := s.prepare(w, r, data, false)
+	in, ok := s.prepare(w, r, data, false)
 	if !ok {
 		return
 	}
@@ -347,7 +336,7 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	renderer := protocol.NewRenderer(format, in, s.state, emit)
-	err := s.backend.Generate(r.Context(), in.UpstreamModel(), native, in.Kind, func(chunk ag.Chunk) error { return renderer.Add(r.Context(), chunk) })
+	err := s.upstream.Generate(r.Context(), in.UpstreamModel(), in.Request, in.Kind, func(chunk ag.Chunk) error { return renderer.Add(r.Context(), chunk) })
 	if err == nil {
 		err = renderer.Finish(r.Context())
 	}
@@ -380,14 +369,11 @@ func (s *Server) count(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, native, ok := s.prepare(w, r, data, true)
+	in, ok := s.prepare(w, r, data, true)
 	if !ok {
 		return
 	}
-	native.SessionID = ""
-	native.ToolConfig = nil
-	native.Generation = ag.Generation{}
-	n, err := s.backend.Count(r.Context(), native)
+	n, err := s.upstream.Count(r.Context(), in.Request)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -408,7 +394,7 @@ func (s *Server) getCatalog(ctx context.Context) (ag.Catalog, error) {
 	if now.Before(s.catalogExpiry) {
 		return s.catalog, nil
 	}
-	catalog, err := s.backend.Models(ctx)
+	catalog, err := s.upstream.Models(ctx)
 	if err != nil {
 		if s.catalog.Models != nil {
 			s.catalogExpiry = now.Add(catalogRetry)
@@ -425,8 +411,8 @@ func (s *Server) getCatalog(ctx context.Context) (ag.Catalog, error) {
 func anthropic(r *http.Request) bool {
 	return strings.HasPrefix(r.URL.Path, "/v1/messages") || r.Header.Get("Anthropic-Version") != ""
 }
-func modelObject(id string, value json.RawMessage, claude bool) map[string]any {
-	if !claude {
+func modelObject(id string, value json.RawMessage, anthropicFormat bool) map[string]any {
+	if !anthropicFormat {
 		return map[string]any{"id": id, "object": "model", "created": 0, "owned_by": "antigravity"}
 	}
 	var info struct {

@@ -1,19 +1,28 @@
 package protocol
 
 import (
+	"net/http"
+
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
 )
 
-// Claude through Antigravity takes a numeric budget; sending only a Gemini
-// thinkingLevel succeeds but leaves Claude thinking disabled.
-var claudeBudgets = map[string]int{"minimal": 1024, "low": 1024, "medium": 8192, "high": 24576, "xhigh": 32768, "max": 32768}
+// Gemini thinking levels; some models reject "minimal", so it maps to "low".
+var thinkingLevels = map[string]string{"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
 
-// Gemini levels; some models reject "minimal", so it maps to "low".
-var geminiLevels = map[string]string{"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
+func knownEffort(effort string) bool { _, ok := thinkingLevels[effort]; return ok }
 
-const claudeMinBudget = 1024
-
-func knownEffort(effort string) bool { _, ok := geminiLevels[effort]; return ok }
+// applyEffort records a reasoning effort unless an explicit budget or a
+// disabled state was requested.
+func applyEffort(in *Input, value string) {
+	switch {
+	case value == "none":
+		in.Thinking = ThinkingIntent{Mode: "disabled"}
+	case !knownEffort(value):
+		in.warn("ignored reasoning effort %q", value)
+	case in.Thinking.Mode != "budget" && in.Thinking.Mode != "disabled":
+		in.Thinking = ThinkingIntent{Mode: "effort", Effort: value}
+	}
+}
 
 // Prepare applies model-specific request shaping: it checks the model, routes
 // web search, picks the request type, converts thinking intent and rewrites
@@ -21,7 +30,7 @@ func knownEffort(effort string) bool { _, ok := geminiLevels[effort]; return ok 
 func (in *Input) Prepare(catalog ag.Catalog) error {
 	info, ok := catalog.Info(in.Model)
 	if !ok {
-		return invalid("model", "model is not available to this account")
+		return invalid("model", "model is not available; agy2api serves the Gemini models listed by /v1/models")
 	}
 	in.Kind = ag.KindAgent
 	if info.Image {
@@ -45,14 +54,11 @@ func (in *Input) Prepare(catalog ag.Catalog) error {
 			in.Request.Tools = append(in.Request.Tools, ag.Tool{GoogleSearch: raw(map[string]any{})})
 		}
 	}
-	in.Claude = info.Claude()
-	if err := in.applyThinking(info); err != nil {
-		return err
-	}
+	in.applyThinking(info)
 	for i := range in.Request.Tools {
 		for j := range in.Request.Tools[i].Functions {
 			f := &in.Request.Tools[i].Functions[j]
-			cleaned, err := cleanToolSchema(f.Parameters, info.Claude())
+			cleaned, err := cleanToolSchema(f.Parameters)
 			if err != nil {
 				return invalid("tools", "tool "+in.PublicTool(f.Name).Name+" has an invalid JSON schema")
 			}
@@ -60,7 +66,7 @@ func (in *Input) Prepare(catalog ag.Catalog) error {
 		}
 	}
 	if g := &in.Request.Generation; present(g.Schema) {
-		cleaned, err := cleanSchema(g.Schema, info.Claude())
+		cleaned, err := cleanSchema(g.Schema)
 		if err != nil {
 			return invalid("schema", "response schema is not valid JSON")
 		}
@@ -69,17 +75,59 @@ func (in *Input) Prepare(catalog ag.Catalog) error {
 	return nil
 }
 
+func hasFunctions(tools []ag.Tool) bool {
+	for _, t := range tools {
+		if len(t.Functions) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (in *Input) applyThinking(info ag.ModelInfo) {
+	g := &in.Request.Generation
+	switch t := in.Thinking; t.Mode {
+	case "disabled":
+		// Gemini cannot turn thinking off: a zero budget is rejected by some
+		// models and ignored by others. The minimum budget comes closest.
+		budget := info.MinThinkingBudget
+		g.Thinking = &ag.Thinking{Budget: &budget}
+		in.warn("Gemini cannot disable thinking; using the minimum thinking budget")
+	case "effort":
+		g.Thinking = &ag.Thinking{Level: thinkingLevels[t.Effort], Include: true}
+	case "budget":
+		budget := max(t.Budget, info.MinThinkingBudget)
+		g.Thinking = &ag.Thinking{Budget: &budget, Include: true}
+	case "adaptive":
+		dynamic := -1
+		g.Thinking = &ag.Thinking{Budget: &dynamic, Include: true}
+	}
+}
+
+// Finalize applies Antigravity's rules for the conversation itself: it ends
+// with a user turn, tool results follow the order of their calls, unsigned
+// calls carry the placeholder signature, and the session ID is set.
+func (in *Input) Finalize(headers http.Header) error {
+	in.endWithUser()
+	if err := orderResults(in.Request.Contents); err != nil {
+		return err
+	}
+	addPlaceholders(in.Request.Contents)
+	in.assignSession(headers)
+	return nil
+}
+
 // continuation is the user turn appended after a trailing model turn.
-// Antigravity rejects requests that end with a model turn for every model,
-// and treats an empty user turn as missing.
+// Antigravity rejects requests that end with a model turn, and treats an empty
+// user turn as missing.
 const continuation = "Continue."
 
-// EndWithUser makes the request end with a user turn. A trailing model turn
+// endWithUser makes the request end with a user turn. A trailing model turn
 // that holds only reasoning has nothing to continue from and is dropped; any
 // other trailing model turn gets a short user turn after it, so the model
 // continues from there. A trailing tool call without its result is left for
 // the upstream to reject.
-func (in *Input) EndWithUser() {
+func (in *Input) endWithUser() {
 	c := in.Request.Contents
 	for len(c) > 1 && c[len(c)-1].Role == "model" && reasoningOnly(c[len(c)-1].Parts) {
 		c = c[:len(c)-1]
@@ -107,71 +155,46 @@ func reasoningOnly(parts []ag.Part) bool {
 	return true
 }
 
-func hasFunctions(tools []ag.Tool) bool {
-	for _, t := range tools {
-		if len(t.Functions) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func (in *Input) applyThinking(info ag.ModelInfo) error {
-	g := &in.Request.Generation
-	t := in.Thinking
-	switch t.Mode {
-	case "":
-		return nil
-	case "disabled":
-		zero := 0
-		g.Thinking = &ag.Thinking{Budget: &zero}
-		return nil
-	}
-	if info.Claude() {
-		// Claude rejects thinking while tool_choice forces a tool call; OpenAI
-		// clients commonly combine the two.
-		if c := in.Request.ToolConfig; c != nil && c.FunctionCallingConfig.Mode == "ANY" {
-			zero := 0
-			g.Thinking = &ag.Thinking{Budget: &zero}
-			in.warn("thinking disabled: Claude cannot think while tool_choice forces a tool call")
-			return nil
-		}
-		budget := -1
-		switch t.Mode {
-		case "budget":
-			budget = t.Budget
-		case "effort":
-			budget = claudeBudgets[t.Effort]
-		}
-		if g.MaxTokens == nil {
-			if info.MaxOutputTokens <= 0 {
-				return invalid("max_output_tokens", "specify max_output_tokens when this Claude model's output limit is not advertised")
+// orderResults puts each turn's tool results in the order of the preceding
+// calls, which is how Gemini pairs them. Clients may finish tools in any order;
+// only the result slots are reordered, leaving other user parts in place.
+func orderResults(contents []ag.Content) error {
+	var pending []string
+	for i := range contents {
+		content := &contents[i]
+		if content.Role == "model" {
+			pending = nil
+			for _, p := range content.Parts {
+				if p.FunctionCall != nil {
+					pending = append(pending, p.FunctionCall.ID)
+				}
 			}
-			limit := info.MaxOutputTokens
-			g.MaxTokens = &limit
+			continue
 		}
-		if budget >= *g.MaxTokens {
-			budget = *g.MaxTokens - 1
-			in.warn("thinking budget reduced to %d to fit the output limit", budget)
+		byID := map[string]ag.Part{}
+		var positions []int
+		for j, p := range content.Parts {
+			if p.FunctionResponse != nil {
+				if _, exists := byID[p.FunctionResponse.ID]; exists {
+					return invalid("tool_result", "duplicate result for a tool call")
+				}
+				byID[p.FunctionResponse.ID] = p
+				positions = append(positions, j)
+			}
 		}
-		if budget >= 0 && budget < claudeMinBudget {
-			zero := 0
-			g.Thinking = &ag.Thinking{Budget: &zero}
-			in.warn("thinking disabled: the output limit leaves less than Claude's %d-token minimum budget", claudeMinBudget)
-			return nil
+		var ordered []ag.Part
+		for _, id := range pending {
+			if p, ok := byID[id]; ok {
+				ordered = append(ordered, p)
+			}
 		}
-		g.Thinking = &ag.Thinking{Budget: &budget, Include: true}
-		return nil
-	}
-	switch t.Mode {
-	case "effort":
-		g.Thinking = &ag.Thinking{Level: geminiLevels[t.Effort], Include: true}
-	case "budget":
-		budget := max(t.Budget, info.MinThinkingBudget)
-		g.Thinking = &ag.Thinking{Budget: &budget, Include: true}
-	case "adaptive":
-		dynamic := -1
-		g.Thinking = &ag.Thinking{Budget: &dynamic, Include: true}
+		if len(ordered) != len(positions) {
+			return invalid("tool_result", "tool result does not belong to the preceding assistant turn")
+		}
+		for j, position := range positions {
+			content.Parts[position] = ordered[j]
+		}
+		pending = nil
 	}
 	return nil
 }

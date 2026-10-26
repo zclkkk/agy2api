@@ -28,7 +28,10 @@ class Upstream(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(b'{"models":{"gemini-test":{},"claude-test":{}}}')
+            self.wfile.write(
+                b'{"models":{"gemini-test":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},'
+                b'"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"}}}'
+            )
             return
         if self.path == "/v1internal:countTokens":
             self.send_response(200)
@@ -140,7 +143,9 @@ def check(binary):
                     with openai.OpenAI(
                         api_key="fixture-key", base_url=base + "/v1", max_retries=0
                     ) as client:
-                        assert len(client.models.list().data) == 2
+                        assert [m.id for m in client.models.list().data] == [
+                            "gemini-test"
+                        ]
                         result = client.responses.create(
                             model="gemini-test", input="hello"
                         )
@@ -210,18 +215,18 @@ def check(binary):
                     ) as client:
                         messages = [{"role": "user", "content": "hello"}]
                         result = client.messages.create(
-                            model="claude-test", max_tokens=1024, messages=messages
+                            model="gemini-test", max_tokens=1024, messages=messages
                         )
                         type(result).model_validate(result.model_dump())
                         assert result.content[0].text == "Hello from agy2api"
                         assert (
                             client.messages.count_tokens(
-                                model="claude-test", messages=messages
+                                model="gemini-test", messages=messages
                             ).input_tokens
                             == 17
                         )
                         with client.messages.stream(
-                            model="claude-test", max_tokens=1024, messages=messages
+                            model="gemini-test", max_tokens=1024, messages=messages
                         ) as stream:
                             assert "".join(stream.text_stream) == "Hello from agy2api"
                             type(result).model_validate(
@@ -237,7 +242,7 @@ def check(binary):
                             }
                         ]
                         with client.messages.stream(
-                            model="claude-test",
+                            model="gemini-test",
                             max_tokens=1024,
                             messages=messages,
                             tools=tools,
@@ -271,7 +276,7 @@ def check(binary):
                             },
                         ]
                         result = client.messages.create(
-                            model="claude-test",
+                            model="gemini-test",
                             max_tokens=1024,
                             messages=messages,
                             tools=tools,

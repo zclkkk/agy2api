@@ -17,7 +17,7 @@ import (
 	"github.com/zclkkk/agy2api/internal/state"
 )
 
-const testModels = `{"models":{"gemini-test":{"modelProvider":"MODEL_PROVIDER_GOOGLE"},"claude-test":{"modelProvider":"MODEL_PROVIDER_ANTHROPIC","maxOutputTokens":64000}}}`
+const testModels = `{"models":{"gemini-test":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"}}}`
 
 // newService starts a service against a fake upstream whose catalog and
 // generation handlers are supplied by the test.
@@ -183,7 +183,7 @@ func TestClaudeCodeShapedRequestReachesUpstreamClean(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		frame(w, chunk([]ag.Part{{Text: "plan", Thought: true, Signature: "sig"}, {FunctionCall: &ag.Call{Name: declared, Args: json.RawMessage(`{"cmd":"ls"}`)}, Signature: "call-sig"}}, "STOP", nil))
 	})
-	body := `{"model":"claude-test","max_tokens":32000,"stream":false,
+	body := `{"model":"gemini-test","max_tokens":32000,"stream":false,
 	 "system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral"}}],
 	 "messages":[{"role":"user","content":[{"type":"text","text":"run ls","cache_control":{"type":"ephemeral"}}]}],
 	 "tools":[{"name":"mcp__srv.example__run","input_schema":{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"cmd":{"type":["string","null"]}},"additionalProperties":false}}],
@@ -194,11 +194,11 @@ func TestClaudeCodeShapedRequestReachesUpstreamClean(t *testing.T) {
 		t.Fatal(out)
 	}
 	tool := envelope.Request.Tools[0].Functions[0]
-	if strings.Contains(string(tool.Parameters), "$schema") || tool.Name == "mcp__srv.example__run" {
+	if strings.Contains(string(tool.Parameters), "$schema") || tool.Name != "mcp__srv.example__run" {
 		t.Fatalf("tool not normalized: %+v %s", tool, tool.Parameters)
 	}
-	if b := envelope.Request.Generation.Thinking.Budget; b == nil || *b != 24576 {
-		t.Fatalf("effort not applied: %+v", envelope.Request.Generation.Thinking)
+	if th := envelope.Request.Generation.Thinking; th == nil || th.Level != "high" {
+		t.Fatalf("effort not applied: %+v", th)
 	}
 	if !strings.Contains(out, `"name":"mcp__srv.example__run"`) || strings.Contains(out, `"thinking":"plan"`) {
 		t.Fatalf("response did not restore the tool name or exposed hidden thinking: %s", out)

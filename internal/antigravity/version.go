@@ -18,7 +18,7 @@ const (
 	// FallbackVersion is reported until the release manifest has been read.
 	// Antigravity serves its newest models only to recent client versions.
 	FallbackVersion = "2.24.0"
-	ManifestURL     = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
+	manifestURL     = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
 	versionRefresh  = 6 * time.Hour
 )
 
@@ -35,7 +35,7 @@ type UserAgent struct {
 	fixed    string
 	floor    string
 	latest   string
-	manifest string // overrides ManifestURL in tests
+	manifest string // overrides manifestURL in tests
 }
 
 func NewUserAgent(configured string) *UserAgent {
@@ -70,7 +70,7 @@ func (u *UserAgent) Refresh(ctx context.Context, client *http.Client) (string, e
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	source := ManifestURL
+	source := manifestURL
 	if u.manifest != "" {
 		source = u.manifest
 	}

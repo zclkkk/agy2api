@@ -14,38 +14,41 @@ import (
 	"github.com/zclkkk/agy2api/internal/state"
 )
 
-type OutputBlock struct {
+// outputBlock is one content block or output item being assembled.
+type outputBlock struct {
 	Kind, ID, CallID, Name, Text, Signature string
-	NativeID                                string
 	Public                                  ToolName
 	Args                                    json.RawMessage
 	Parts                                   []ag.Part
 	Blob                                    *ag.Blob
 }
+
+// Renderer turns the upstream stream into a Messages or Responses reply,
+// streamed through emit or collected in Result, and records replay state.
 type Renderer struct {
-	Format    string
-	Input     Input
-	State     *state.Store
-	Emit      func(string, map[string]any) error
-	ID        string
-	Created   int64
-	Started   bool
+	format    string // "messages" or "responses"
+	input     Input
+	state     *state.Store
+	emit      func(string, map[string]any) error
+	id        string
+	created   int64
+	started   bool
 	sequence  int
-	blocks    []OutputBlock
 	items     []map[string]any
-	active    *OutputBlock
+	active    *outputBlock
+	toolUsed  bool
 	usage     ag.Usage
 	finish    string
 	grounding *ag.Grounding
-	Native    []ag.Part
+	native    []ag.Part // the model turn, for stored history
+	summary   strings.Builder
+	bytes     int
 	Result    json.RawMessage
 	Warnings  []string
-	bytes     int
-	summary   strings.Builder // compaction summary text
 }
 
 // model is the upstream model; replay state is bound to it.
-func (r *Renderer) model() string { return r.Input.UpstreamModel() }
+func (r *Renderer) model() string { return r.input.UpstreamModel() }
 
 func (r *Renderer) warn(format string, args ...any) {
 	message := fmt.Sprintf(format, args...)
@@ -73,27 +76,27 @@ func NewRenderer(format string, in Input, s *state.Store, emit func(string, map[
 	if format == "messages" {
 		prefix = "msg_"
 	}
-	return &Renderer{Format: format, Input: in, State: s, Emit: emit, ID: ag.ID(prefix), Created: time.Now().Unix(), items: []map[string]any{}}
+	return &Renderer{format: format, input: in, state: s, emit: emit, id: ag.ID(prefix), created: time.Now().Unix(), items: []map[string]any{}}
 }
 
 func (r *Renderer) event(name string, fields map[string]any) error {
-	if r.Emit == nil {
+	if r.emit == nil {
 		return nil
 	}
 	fields["type"] = name
-	if r.Format == "responses" {
+	if r.format == "responses" {
 		fields["sequence_number"] = r.sequence
 		r.sequence++
 	}
-	return r.Emit(name, fields)
+	return r.emit(name, fields)
 }
 
-func (r *Renderer) Start() error {
-	if r.Started {
+func (r *Renderer) start() error {
+	if r.started {
 		return nil
 	}
-	r.Started = true
-	if r.Format == "messages" {
+	r.started = true
+	if r.format == "messages" {
 		return r.event("message_start", map[string]any{"message": r.message(nil)})
 	}
 	if err := r.event("response.created", map[string]any{"response": r.response("in_progress", nil)}); err != nil {
@@ -130,7 +133,7 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 	if chunk.Grounding != nil {
 		r.grounding = chunk.Grounding
 	}
-	if err := r.Start(); err != nil {
+	if err := r.start(); err != nil {
 		return err
 	}
 	for _, part := range chunk.Parts {
@@ -140,14 +143,14 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 		if part.Empty() {
 			continue
 		}
-		if r.Input.Compact != "" {
+		if r.input.Compact != "" {
 			// The summary is returned whole inside the compaction item.
 			if !part.Thought {
 				r.summary.WriteString(part.Text)
 			}
 			continue
 		}
-		if len(part.ExecutableCode) > 0 || len(part.CodeExecutionResult) > 0 || part.FileData != nil {
+		if part.FileData != nil {
 			return errors.New("upstream returned a content type that cannot be represented by this endpoint")
 		}
 		kind := "text"
@@ -171,7 +174,7 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 			}
 			continue
 		}
-		if kind == "image" && r.Format == "messages" {
+		if kind == "image" && r.format == "messages" {
 			return errors.New("generated images require the Responses endpoint")
 		}
 		if r.active == nil || r.active.Kind != kind || kind == "tool" || kind == "image" {
@@ -180,19 +183,18 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 			}
 			if kind == "tool" {
 				prefix := "call_agy_"
-				if r.Format == "messages" {
+				if r.format == "messages" {
 					prefix = "toolu_agy_"
 				}
 				call := *part.FunctionCall
-				nativeID := call.ID
 				call.ID = ag.ID(prefix)
 				part.FunctionCall = &call
-				public := r.Input.PublicTool(call.Name)
+				public := r.input.PublicTool(call.Name)
 				itemPrefix := "fc_"
 				if public.Custom {
 					itemPrefix = "ctc_"
 				}
-				r.active = &OutputBlock{Kind: kind, ID: ag.ID(itemPrefix), CallID: call.ID, NativeID: nativeID, Name: call.Name, Public: public, Args: call.Args}
+				r.active = &outputBlock{Kind: kind, ID: ag.ID(itemPrefix), CallID: call.ID, Name: call.Name, Public: public, Args: call.Args}
 				if err := r.startBlock(); err != nil {
 					return err
 				}
@@ -218,7 +220,7 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 			}
 			b.Args = args
 			switch {
-			case r.Format == "messages":
+			case r.format == "messages":
 				err = r.event("content_block_delta", map[string]any{"index": len(r.items), "delta": map[string]any{"type": "input_json_delta", "partial_json": string(args)}})
 			case b.Public.Custom:
 				err = r.event("response.custom_tool_call_input.delta", map[string]any{"item_id": b.ID, "output_index": len(r.items), "delta": customInput(args)})
@@ -231,10 +233,10 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 			continue
 		}
 		b.Text += part.Text
-		if kind == "thinking" && r.Input.HideThinking {
+		if kind == "thinking" && r.input.HideThinking {
 			continue
 		}
-		if r.Format == "messages" {
+		if r.format == "messages" {
 			typeName, key := "text_delta", "text"
 			if kind == "thinking" {
 				typeName, key = "thinking_delta", "thinking"
@@ -263,13 +265,13 @@ func (r *Renderer) open(kind string) error {
 	if kind == "image" {
 		prefix = "ig_"
 	}
-	r.active = &OutputBlock{Kind: kind, ID: ag.ID(prefix)}
+	r.active = &outputBlock{Kind: kind, ID: ag.ID(prefix)}
 	return r.startBlock()
 }
 
 // toolItem fills a Responses function or custom tool call item. arguments is
 // empty while the call is in progress.
-func (r *Renderer) toolItem(item map[string]any, b *OutputBlock, arguments string) {
+func (r *Renderer) toolItem(item map[string]any, b *outputBlock, arguments string) {
 	item["call_id"] = b.CallID
 	item["name"] = b.Public.Name
 	if b.Public.Namespace != "" {
@@ -290,7 +292,7 @@ func (r *Renderer) toolItem(item map[string]any, b *OutputBlock, arguments strin
 func (r *Renderer) startBlock() error {
 	b := r.active
 	index := len(r.items)
-	if r.Format == "messages" {
+	if r.format == "messages" {
 		var content map[string]any
 		switch b.Kind {
 		case "text":
@@ -341,7 +343,7 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 		b.Parts = []ag.Part{{Text: b.Text, Thought: b.Kind == "thinking", Signature: b.Signature}}
 	}
 	if b.Kind == "tool" {
-		if err := r.State.Put(ctx, "tool", b.CallID, SignatureRecord{Model: r.model(), Name: b.Name, Digest: digest(b.Args), Signature: b.Signature, NativeID: b.NativeID, SessionID: r.Input.Request.SessionID}); err != nil {
+		if err := r.state.Put(ctx, "tool", b.CallID, SignatureRecord{Model: r.model(), Name: b.Name, Digest: digest(b.Args), Signature: b.Signature}); err != nil {
 			return err
 		}
 		b.Parts = []ag.Part{{FunctionCall: &ag.Call{ID: b.CallID, Name: b.Name, Args: b.Args}, Signature: b.Signature}}
@@ -353,11 +355,11 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 		if _, err := base64.StdEncoding.DecodeString(b.Blob.Data); err != nil {
 			return errors.New("upstream returned invalid image data")
 		}
-		if err := r.State.Put(ctx, "image", b.ID, ImageRecord{Model: r.model(), MIMEType: b.Blob.MIMEType, Digest: digest(raw(b.Blob.Data)), Signature: b.Signature, SessionID: r.Input.Request.SessionID}); err != nil {
+		if err := r.state.Put(ctx, "image", b.ID, ImageRecord{Model: r.model(), MIMEType: b.Blob.MIMEType, Digest: digest(raw(b.Blob.Data)), Signature: b.Signature}); err != nil {
 			return err
 		}
 	}
-	if r.Format == "messages" {
+	if r.format == "messages" {
 		switch b.Kind {
 		case "text":
 			item = map[string]any{"type": "text", "text": b.Text}
@@ -374,12 +376,12 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 				}
 			}
 		case "thinking":
-			sealed, err := r.State.Seal(r.model(), Replay{Parts: b.Parts, SessionID: r.Input.Request.SessionID})
+			sealed, err := r.state.Seal(r.model(), Replay{Parts: b.Parts})
 			if err != nil {
 				return err
 			}
 			visible := b.Text
-			if r.Input.HideThinking {
+			if r.input.HideThinking {
 				visible = ""
 			}
 			item = map[string]any{"type": "thinking", "thinking": visible, "signature": sealed}
@@ -413,7 +415,7 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 				return err
 			}
 		case "thinking":
-			sealed, err := r.State.Seal(r.model(), Replay{Parts: b.Parts, SessionID: r.Input.Request.SessionID})
+			sealed, err := r.state.Seal(r.model(), Replay{Parts: b.Parts})
 			if err != nil {
 				return err
 			}
@@ -448,16 +450,16 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 		}
 	}
 	r.items = append(r.items, item)
-	r.blocks = append(r.blocks, *b)
-	r.Native = append(r.Native, b.Parts...)
+	r.toolUsed = r.toolUsed || b.Kind == "tool"
+	r.native = append(r.native, b.Parts...)
 	r.active = nil
 	if b.Kind == "text" && b.Signature != "" {
 		// A carrier after the text restores a signature on that exact native part.
-		sealed, err := r.State.Seal(r.model(), Replay{PreviousText: digest(raw(b.Text)), Signature: b.Signature, SessionID: r.Input.Request.SessionID})
+		sealed, err := r.state.Seal(r.model(), Replay{PreviousText: digest(raw(b.Text)), Signature: b.Signature})
 		if err != nil {
 			return err
 		}
-		if r.Format == "messages" {
+		if r.format == "messages" {
 			carrier := map[string]any{"type": "thinking", "thinking": "", "signature": sealed}
 			index := len(r.items)
 			if err := r.event("content_block_start", map[string]any{"index": index, "content_block": map[string]any{"type": "thinking", "thinking": "", "signature": ""}}); err != nil {
@@ -518,7 +520,7 @@ func (r *Renderer) messageCitations(text string) ([]any, error) {
 	for _, v := range r.annotations(text) {
 		a := v.(map[string]any)
 		start, end := a["start_index"].(int), a["end_index"].(int)
-		sealed, err := r.State.Seal(r.model(), a)
+		sealed, err := r.state.Seal(r.model(), a)
 		if err != nil {
 			return nil, err
 		}
@@ -528,7 +530,7 @@ func (r *Renderer) messageCitations(text string) ([]any, error) {
 }
 
 func (r *Renderer) searchTrace() error {
-	if r.Format != "responses" || !r.Input.Search || r.grounding == nil {
+	if r.format != "responses" || !r.input.Search || r.grounding == nil {
 		return nil
 	}
 	id := ag.ID("ws_agy_")
@@ -556,29 +558,29 @@ func (r *Renderer) searchTrace() error {
 }
 
 func (r *Renderer) message(stop any) map[string]any {
-	return map[string]any{"id": r.ID, "type": "message", "role": "assistant", "model": r.Input.Model, "content": r.items, "stop_reason": stop, "stop_sequence": nil, "usage": map[string]any{"input_tokens": max(0, r.usage.Input-r.usage.Cached), "output_tokens": r.usage.Output + r.usage.Thoughts, "cache_read_input_tokens": r.usage.Cached}}
+	return map[string]any{"id": r.id, "type": "message", "role": "assistant", "model": r.input.Model, "content": r.items, "stop_reason": stop, "stop_sequence": nil, "usage": map[string]any{"input_tokens": max(0, r.usage.Input-r.usage.Cached), "output_tokens": r.usage.Output + r.usage.Thoughts, "cache_read_input_tokens": r.usage.Cached}}
 }
 func (r *Renderer) response(status string, incomplete any) map[string]any {
-	metadata := r.Input.Metadata
+	metadata := r.input.Metadata
 	if !present(metadata) {
 		metadata = raw(map[string]any{})
 	}
 	var previous any
-	if r.Input.PreviousID != "" {
-		previous = r.Input.PreviousID
+	if r.input.PreviousID != "" {
+		previous = r.input.PreviousID
 	}
 	out := map[string]any{
-		"id": r.ID, "object": "response", "created_at": r.Created,
+		"id": r.id, "object": "response", "created_at": r.created,
 		"status": status, "error": nil, "incomplete_details": incomplete,
-		"model": r.Input.Model, "output": r.items,
-		"previous_response_id": previous, "store": r.Input.Store, "metadata": metadata,
+		"model": r.input.Model, "output": r.items,
+		"previous_response_id": previous, "store": r.input.Store, "metadata": metadata,
 		"parallel_tool_calls": true, "tool_choice": "auto", "tools": []any{},
 		"instructions": nil, "max_output_tokens": nil, "temperature": nil,
 		"top_p": nil, "truncation": "disabled",
 		"usage": r.responseUsage(),
 	}
 	var options map[string]json.RawMessage
-	_ = json.Unmarshal(r.Input.Options, &options)
+	_ = json.Unmarshal(r.input.Options, &options)
 	for _, key := range []string{"instructions", "max_output_tokens", "temperature", "top_p", "tool_choice", "tools", "reasoning", "text"} {
 		if v, ok := options[key]; ok {
 			out[key] = v
@@ -598,8 +600,8 @@ func (r *Renderer) responseUsage() map[string]any {
 }
 
 func (r *Renderer) Finish(ctx context.Context) error {
-	if !r.Started {
-		if err := r.Start(); err != nil {
+	if !r.started {
+		if err := r.start(); err != nil {
 			return err
 		}
 	}
@@ -622,7 +624,7 @@ func (r *Renderer) Finish(ctx context.Context) error {
 	default:
 		r.warn("treated upstream finish reason %s as a normal stop", reason)
 	}
-	if r.Input.Compact != "" {
+	if r.input.Compact != "" {
 		if status != "completed" {
 			return &ag.HTTPError{Status: 502, Message: "Antigravity did not finish the compaction summary (" + r.finish + "); retry the request"}
 		}
@@ -637,14 +639,9 @@ func (r *Renderer) Finish(ctx context.Context) error {
 	if len(r.items) == 0 && status == "completed" {
 		r.warn("upstream completed without content")
 	}
-	if r.Format == "messages" {
-		if stop == "end_turn" {
-			for _, b := range r.blocks {
-				if b.Kind == "tool" {
-					stop = "tool_use"
-					break
-				}
-			}
+	if r.format == "messages" {
+		if stop == "end_turn" && r.toolUsed {
+			stop = "tool_use"
 		}
 		r.Result = raw(r.message(stop))
 		if err := r.event("message_delta", map[string]any{"delta": map[string]any{"stop_reason": stop, "stop_sequence": nil}, "usage": map[string]any{"input_tokens": max(0, r.usage.Input-r.usage.Cached), "output_tokens": r.usage.Output + r.usage.Thoughts, "cache_read_input_tokens": r.usage.Cached}}); err != nil {
@@ -654,11 +651,11 @@ func (r *Renderer) Finish(ctx context.Context) error {
 	}
 	response := r.response(status, incomplete)
 	r.Result = raw(response)
-	if r.Input.Store {
-		contents := append([]ag.Content(nil), r.Input.Request.Contents...)
-		contents = append(contents, ag.Content{Role: "model", Parts: r.Native})
-		items := append([]json.RawMessage(nil), r.Input.OriginalItems...)
-		if err := r.State.Put(ctx, "response", r.ID, StoredResponse{Model: r.Input.Model, Contents: contents, Response: r.Result, Items: items, SessionID: r.Input.Request.SessionID}); err != nil {
+	if r.input.Store {
+		contents := append([]ag.Content(nil), r.input.Request.Contents...)
+		contents = append(contents, ag.Content{Role: "model", Parts: r.native})
+		items := append([]json.RawMessage(nil), r.input.OriginalItems...)
+		if err := r.state.Put(ctx, "response", r.id, StoredResponse{Model: r.input.Model, Contents: contents, Response: r.Result, Items: items}); err != nil {
 			return err
 		}
 	}
@@ -673,9 +670,9 @@ func (r *Renderer) finishCompaction(ctx context.Context) error {
 	if summary == "" {
 		return &ag.HTTPError{Status: 502, Message: "Antigravity returned an empty compaction summary; retry the request"}
 	}
-	item := map[string]any{"id": ag.ID("cmp_"), "type": "compaction", "encrypted_content": sealCompaction(summary, r.Input.Model)}
-	if r.Input.Compact == "endpoint" {
-		r.Result = raw(map[string]any{"id": r.ID, "object": "response.compaction", "created_at": r.Created, "output": []any{item}, "usage": r.responseUsage()})
+	item := map[string]any{"id": ag.ID("cmp_"), "type": "compaction", "encrypted_content": sealCompaction(summary, r.input.Model)}
+	if r.input.Compact == "endpoint" {
+		r.Result = raw(map[string]any{"id": r.id, "object": "response.compaction", "created_at": r.created, "output": []any{item}, "usage": r.responseUsage()})
 		return nil
 	}
 	index := len(r.items)
@@ -688,11 +685,11 @@ func (r *Renderer) finishCompaction(ctx context.Context) error {
 	r.items = append(r.items, item)
 	response := r.response("completed", nil)
 	r.Result = raw(response)
-	if r.Input.Store {
+	if r.input.Store {
 		// A continuation of this response starts from the summary alone.
 		contents := []ag.Content{{Role: "user", Parts: []ag.Part{summaryPart(summary)}}}
-		items := append([]json.RawMessage(nil), r.Input.OriginalItems...)
-		if err := r.State.Put(ctx, "response", r.ID, StoredResponse{Model: r.Input.Model, Contents: contents, Response: r.Result, Items: items, SessionID: r.Input.Request.SessionID}); err != nil {
+		items := append([]json.RawMessage(nil), r.input.OriginalItems...)
+		if err := r.state.Put(ctx, "response", r.id, StoredResponse{Model: r.input.Model, Contents: contents, Response: r.Result, Items: items}); err != nil {
 			return err
 		}
 	}
@@ -700,10 +697,10 @@ func (r *Renderer) finishCompaction(ctx context.Context) error {
 }
 
 func (r *Renderer) Fail(message string) error {
-	if !r.Started {
+	if !r.started {
 		return nil
 	}
-	if r.Format == "messages" {
+	if r.format == "messages" {
 		return r.event("error", map[string]any{"error": map[string]any{"type": "api_error", "message": message}})
 	}
 	resp := r.response("failed", nil)

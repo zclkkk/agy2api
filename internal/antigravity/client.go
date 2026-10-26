@@ -218,11 +218,13 @@ func (c *Client) Models(ctx context.Context) (Catalog, error) {
 	if err == nil && catalog.Models == nil {
 		err = errors.New("Antigravity returned no model catalog")
 	}
+	// Only Gemini models are served. Third-party models (Claude, GPT-OSS) and
+	// internal entries would each need their own request rules.
 	for id, data := range catalog.Models {
 		var info struct {
 			Provider string `json:"apiProvider"`
 		}
-		if json.Unmarshal(data, &info) == nil && info.Provider == "API_PROVIDER_INTERNAL" {
+		if json.Unmarshal(data, &info) != nil || info.Provider != GeminiProvider {
 			delete(catalog.Models, id)
 		}
 	}
@@ -236,6 +238,7 @@ func (c *Client) Count(ctx context.Context, request Request) (int, error) {
 	defer cancel()
 	request.SessionID = ""
 	request.ToolConfig = nil
+	request.Generation = Generation{}
 	r, err := c.post(ctx, "countTokens", struct {
 		Request Request `json:"request"`
 	}{request})

@@ -12,9 +12,8 @@ var allowedSchemaKeys = map[string]bool{"type": true, "format": true, "title": t
 	"propertyOrdering": true, "anyOf": true, "additionalProperties": true}
 
 // checkSchema enforces what upstream accepts: known keys, string enums, a
-// single type, arrays with items, required keys that exist, and for Claude no
-// unions at all.
-func checkSchema(t *testing.T, path string, v any, claude bool) {
+// single type, arrays with items and required keys that exist.
+func checkSchema(t *testing.T, path string, v any) {
 	t.Helper()
 	m, ok := v.(map[string]any)
 	if !ok {
@@ -37,18 +36,15 @@ func checkSchema(t *testing.T, path string, v any, claude bool) {
 			}
 		case "properties":
 			for name, p := range child.(map[string]any) {
-				checkSchema(t, path+"."+name, p, claude)
+				checkSchema(t, path+"."+name, p)
 			}
 		case "items", "additionalProperties":
 			if _, isBool := child.(bool); !isBool {
-				checkSchema(t, path+"."+k, child, claude)
+				checkSchema(t, path+"."+k, child)
 			}
 		case "anyOf":
-			if claude {
-				t.Errorf("%s: Claude rejects anyOf", path)
-			}
 			for _, b := range child.([]any) {
-				checkSchema(t, path+".anyOf", b, claude)
+				checkSchema(t, path+".anyOf", b)
 			}
 		case "required":
 			props, _ := m["properties"].(map[string]any)
@@ -98,55 +94,50 @@ const mcpStyleSchema = `{
 }`
 
 func TestSchemaCleaningProducesAcceptedSubset(t *testing.T) {
-	for _, claude := range []bool{false, true} {
-		out, err := cleanToolSchema(json.RawMessage(mcpStyleSchema), claude)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var v map[string]any
-		if err := json.Unmarshal(out, &v); err != nil {
-			t.Fatal(err)
-		}
-		checkSchema(t, "root", v, claude)
-		props := v["properties"].(map[string]any)
-		get := func(name string) map[string]any { return props[name].(map[string]any) }
-		if get("mode")["type"] != "string" || get("mode")["nullable"] != true {
-			t.Errorf("type list not converted: %v", get("mode"))
-		}
-		if !strings.Contains(get("level")["description"].(string), "[1,2,3]") {
-			t.Errorf("numeric enum not preserved as guidance: %v", get("level"))
-		}
-		if e := get("kind")["enum"].([]any); len(e) != 1 || e[0] != "fixed" {
-			t.Errorf("string const not converted: %v", get("kind"))
-		}
-		if get("count")["minimum"] == nil || get("count")["maximum"] == nil {
-			t.Errorf("exclusive bounds lost: %v", get("count"))
-		}
-		if get("target")["properties"].(map[string]any)["host"] == nil {
-			t.Errorf("$ref not inlined: %v", get("target"))
-		}
-		if get("node")["type"] != "object" {
-			t.Errorf("recursive $ref not cut: %v", get("node"))
-		}
-		merged := get("merged")["properties"].(map[string]any)
-		if merged["a"] == nil || merged["b"] == nil {
-			t.Errorf("allOf not merged: %v", get("merged"))
-		}
-		if req := v["required"].([]any); len(req) != 1 || req[0] != "path" {
-			t.Errorf("required not filtered: %v", req)
-		}
-		if claude && get("choice")["type"] != "object" {
-			t.Errorf("Claude union should keep the object branch: %v", get("choice"))
-		}
-		if !claude && len(get("choice")["anyOf"].([]any)) != 2 {
-			t.Errorf("Gemini union should keep non-null branches: %v", get("choice"))
-		}
+	out, err := cleanToolSchema(json.RawMessage(mcpStyleSchema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(out, &v); err != nil {
+		t.Fatal(err)
+	}
+	checkSchema(t, "root", v)
+	props := v["properties"].(map[string]any)
+	get := func(name string) map[string]any { return props[name].(map[string]any) }
+	if get("mode")["type"] != "string" || get("mode")["nullable"] != true {
+		t.Errorf("type list not converted: %v", get("mode"))
+	}
+	if !strings.Contains(get("level")["description"].(string), "[1,2,3]") {
+		t.Errorf("numeric enum not preserved as guidance: %v", get("level"))
+	}
+	if e := get("kind")["enum"].([]any); len(e) != 1 || e[0] != "fixed" {
+		t.Errorf("string const not converted: %v", get("kind"))
+	}
+	if get("count")["minimum"] == nil || get("count")["maximum"] == nil {
+		t.Errorf("exclusive bounds lost: %v", get("count"))
+	}
+	if get("target")["properties"].(map[string]any)["host"] == nil {
+		t.Errorf("$ref not inlined: %v", get("target"))
+	}
+	if get("node")["type"] != "object" {
+		t.Errorf("recursive $ref not cut: %v", get("node"))
+	}
+	merged := get("merged")["properties"].(map[string]any)
+	if merged["a"] == nil || merged["b"] == nil {
+		t.Errorf("allOf not merged: %v", get("merged"))
+	}
+	if req := v["required"].([]any); len(req) != 1 || req[0] != "path" {
+		t.Errorf("required not filtered: %v", req)
+	}
+	if len(get("choice")["anyOf"].([]any)) != 2 || get("choice")["nullable"] != true {
+		t.Errorf("union should keep its non-null branches: %v", get("choice"))
 	}
 }
 
 func TestSchemaRootIsAlwaysAnObject(t *testing.T) {
 	for _, in := range []string{`{}`, `{"properties":{"a":{"type":"string"}}}`, `{"anyOf":[{"type":"object","properties":{"a":{"type":"string"}}}]}`, `{"type":"string"}`} {
-		out, err := cleanToolSchema(json.RawMessage(in), true)
+		out, err := cleanToolSchema(json.RawMessage(in))
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -58,10 +58,10 @@ func TestResponsesFullOutputReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	native, err := d.NativeRequest(ctx, next.Request, true)
-	if err != nil {
+	if err := next.Finalize(nil); err != nil {
 		t.Fatal(err)
 	}
+	native := next.Request
 	if len(native.Contents) != 3 {
 		t.Fatalf("contents=%s", raw(native.Contents))
 	}
@@ -69,14 +69,15 @@ func TestResponsesFullOutputReplay(t *testing.T) {
 	if len(parts) != 3 || parts[0].Text != "think more" || parts[0].Signature != "thought-signature" || parts[1].Signature != "text-signature" || parts[2].Signature != "tool-signature" {
 		t.Fatalf("lost replay data: %s", raw(parts))
 	}
-	if parts[2].FunctionCall.ID != "native-call" || native.Contents[2].Parts[0].FunctionResponse.ID != "native-call" {
-		t.Fatal("native tool IDs were not restored")
+	// Antigravity pairs calls and results by the IDs sent, so the issued ID is used upstream.
+	if parts[2].FunctionCall.ID != tool.CallID || native.Contents[2].Parts[0].FunctionResponse.ID != tool.CallID {
+		t.Fatal("call and result IDs do not match")
 	}
 	if !strings.Contains(string(parts[2].FunctionCall.Args), `"title":"keep"`) {
 		t.Fatal("tool data modified")
 	}
 	var stored StoredResponse
-	if err := s.Get(ctx, "response", r.ID, &stored); err == nil {
+	if err := s.Get(ctx, "response", r.id, &stored); err == nil {
 		t.Fatal("store:false persisted a response")
 	}
 }
@@ -85,7 +86,7 @@ func TestMessagesFullOutputReplay(t *testing.T) {
 	s := testStore(t)
 	d := Decoder{State: s}
 	ctx := context.Background()
-	in, err := d.Messages(ctx, []byte(`{"model":"claude-test","max_tokens":2048,"messages":[{"role":"user","content":"hello"}]}`), false)
+	in, err := d.Messages(ctx, []byte(`{"model":"gemini-test","max_tokens":2048,"messages":[{"role":"user","content":"hello"}]}`), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,19 +106,19 @@ func TestMessagesFullOutputReplay(t *testing.T) {
 		t.Fatal(output.Stop)
 	}
 	callID := output.Content[len(output.Content)-1].ID
-	next, err := d.Messages(ctx, raw(map[string]any{"model": "claude-test", "max_tokens": 2048, "messages": []any{map[string]any{"role": "user", "content": "hello"}, map[string]any{"role": "assistant", "content": output.Content}, map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": callID, "content": "done"}}}}}), false)
+	next, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 2048, "messages": []any{map[string]any{"role": "user", "content": "hello"}, map[string]any{"role": "assistant", "content": output.Content}, map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": callID, "content": "done"}}}}}), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	native, err := d.NativeRequest(ctx, next.Request, true)
-	if err != nil {
+	if err := next.Finalize(nil); err != nil {
 		t.Fatal(err)
 	}
+	native := next.Request
 	if native.Contents[1].Parts[0].Signature != "opaque-thought" {
 		t.Fatalf("lost signature: %s", raw(native))
 	}
-	if native.Contents[2].Parts[0].FunctionResponse.ID != "native" {
-		t.Fatal("native ID lost")
+	if native.Contents[2].Parts[0].FunctionResponse.ID != callID {
+		t.Fatal("result no longer matches its call")
 	}
 }
 
@@ -151,13 +152,13 @@ func TestStoredResponsesDoNotInheritInstructionsOrIncludeOwnOutputAsInput(t *tes
 		t.Fatal(err)
 	}
 	var stored StoredResponse
-	if err := s.Get(ctx, "response", r.ID, &stored); err != nil {
+	if err := s.Get(ctx, "response", r.id, &stored); err != nil {
 		t.Fatal(err)
 	}
 	if len(stored.Items) != 1 {
 		t.Fatalf("input_items includes own output: %s", raw(stored.Items))
 	}
-	next, err := d.Responses(ctx, raw(map[string]any{"model": "gemini-test", "input": "second", "previous_response_id": r.ID}))
+	next, err := d.Responses(ctx, raw(map[string]any{"model": "gemini-test", "input": "second", "previous_response_id": r.id}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,62 +221,63 @@ func TestGeneratedImageReplayAndUnicodeCitations(t *testing.T) {
 	}
 }
 
-func TestParallelResultsAreReorderedWithoutMutatingCallerHistory(t *testing.T) {
-	d := Decoder{State: testStore(t)}
-	request := ag.Request{Contents: []ag.Content{
+func TestParallelResultsFollowCallOrder(t *testing.T) {
+	contents := []ag.Content{
 		{Role: "user", Parts: []ag.Part{{Text: "start"}}},
 		{Role: "model", Parts: []ag.Part{{FunctionCall: &ag.Call{ID: "a", Name: "first", Args: raw(map[string]any{})}}, {FunctionCall: &ag.Call{ID: "b", Name: "second", Args: raw(map[string]any{})}}}},
 		{Role: "user", Parts: []ag.Part{{FunctionResponse: &ag.Result{ID: "b", Name: "second", Response: raw(map[string]string{"title": "untouched"})}}, {Text: "keep this text"}, {FunctionResponse: &ag.Result{ID: "a", Name: "first", Response: raw(map[string]string{"format": "untouched"})}}}},
-	}}
-	native, err := d.NativeRequest(context.Background(), request, true)
-	if err != nil {
+	}
+	if err := orderResults(contents); err != nil {
 		t.Fatal(err)
 	}
-	parts := native.Contents[2].Parts
+	parts := contents[2].Parts
 	if parts[0].FunctionResponse.ID != "a" || parts[2].FunctionResponse.ID != "b" || parts[1].Text != "keep this text" {
 		t.Fatalf("bad ordering: %s", raw(parts))
-	}
-	if request.Contents[2].Parts[0].FunctionResponse.ID != "b" {
-		t.Fatal("caller history was mutated")
 	}
 	if string(parts[2].FunctionResponse.Response) != `{"title":"untouched"}` {
 		t.Fatal("result data changed")
 	}
+	contents[2].Parts = append(contents[2].Parts, contents[2].Parts[0])
+	if orderResults(contents) == nil {
+		t.Fatal("a duplicate result must be rejected")
+	}
 }
 
-func TestClaudeResponsesEffortUsesBudget(t *testing.T) {
+func TestGeminiThinkingConfig(t *testing.T) {
 	d := Decoder{State: testStore(t)}
-	in, err := d.Responses(context.Background(), []byte(`{"model":"claude-sonnet-4-6","input":"think","reasoning":{"effort":"medium","summary":"auto"}}`))
+	thinking := func(body string) (*ag.Thinking, []string) {
+		t.Helper()
+		in, err := d.Responses(context.Background(), []byte(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := in.Prepare(testCatalog); err != nil {
+			t.Fatal(err)
+		}
+		return in.Request.Generation.Thinking, in.Warnings
+	}
+	if th, _ := thinking(`{"model":"gemini-test","input":"x","reasoning":{"effort":"xhigh"}}`); th.Level != "high" || th.Budget != nil || !th.Include {
+		t.Fatalf("effort: %+v", th)
+	}
+	// A forced tool choice keeps thinking on.
+	if th, _ := thinking(`{"model":"gemini-test","input":"x","tool_choice":"required","reasoning":{"effort":"minimal"},"tools":[{"type":"function","name":"f"}]}`); th.Level != "low" {
+		t.Fatalf("forced tool choice: %+v", th)
+	}
+	if th, _ := thinking(`{"model":"gemini-test","input":"x","reasoning":{"summary":"auto"}}`); th.Budget == nil || *th.Budget != -1 {
+		t.Fatalf("adaptive: %+v", th)
+	}
+	// Gemini cannot turn thinking off; the minimum budget is used and thoughts are hidden.
+	if th, warnings := thinking(`{"model":"gemini-test","input":"x","reasoning":{"effort":"none"}}`); th.Budget == nil || *th.Budget != 128 || th.Include || len(warnings) != 1 {
+		t.Fatalf("disabled: %+v %v", th, warnings)
+	}
+	in, err := d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"thinking":{"type":"enabled","budget_tokens":50},"messages":[{"role":"user","content":"x"}]}`), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := in.Prepare(testCatalog); err != nil {
 		t.Fatal(err)
 	}
-	g := in.Request.Generation
-	if g.Thinking == nil || g.Thinking.Budget == nil || *g.Thinking.Budget != 8192 || g.Thinking.Level != "" || !g.Thinking.Include {
-		t.Fatalf("incorrect Claude thinking config: %+v", g.Thinking)
-	}
-	if g.MaxTokens == nil || *g.MaxTokens != 64000 {
-		t.Fatal("advertised output limit not applied")
-	}
-	// A budget that cannot fit is reduced, and below Claude's minimum thinking
-	// is turned off, instead of failing the request.
-	in, err = d.Responses(context.Background(), []byte(`{"model":"claude-sonnet-4-6","input":"think","max_output_tokens":1024,"reasoning":{"effort":"high"}}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := in.Prepare(testCatalog); err != nil {
-		t.Fatal(err)
-	}
-	if b := in.Request.Generation.Thinking.Budget; b == nil || *b != 0 || len(in.Warnings) == 0 {
-		t.Fatalf("expected thinking off with a warning: %+v %v", in.Request.Generation.Thinking, in.Warnings)
-	}
-	in, _ = d.Responses(context.Background(), []byte(`{"model":"claude-sonnet-4-6","input":"think","max_output_tokens":4000,"reasoning":{"effort":"high"}}`))
-	if err := in.Prepare(testCatalog); err != nil {
-		t.Fatal(err)
-	}
-	if b := in.Request.Generation.Thinking.Budget; b == nil || *b != 3999 {
-		t.Fatalf("budget not reduced to fit: %+v", in.Request.Generation.Thinking)
+	if b := in.Request.Generation.Thinking.Budget; b == nil || *b != 128 {
+		t.Fatalf("budget below the model minimum: %+v", in.Request.Generation.Thinking)
 	}
 }

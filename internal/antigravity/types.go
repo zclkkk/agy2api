@@ -28,15 +28,13 @@ type Result struct {
 	Parts    []Part          `json:"parts,omitempty"`
 }
 type Part struct {
-	Text                string          `json:"text,omitempty"`
-	Thought             bool            `json:"thought,omitempty"`
-	Signature           string          `json:"thoughtSignature,omitempty"`
-	InlineData          *Blob           `json:"inlineData,omitempty"`
-	FileData            *File           `json:"fileData,omitempty"`
-	FunctionCall        *Call           `json:"functionCall,omitempty"`
-	FunctionResponse    *Result         `json:"functionResponse,omitempty"`
-	ExecutableCode      json.RawMessage `json:"executableCode,omitempty"`
-	CodeExecutionResult json.RawMessage `json:"codeExecutionResult,omitempty"`
+	Text             string  `json:"text,omitempty"`
+	Thought          bool    `json:"thought,omitempty"`
+	Signature        string  `json:"thoughtSignature,omitempty"`
+	InlineData       *Blob   `json:"inlineData,omitempty"`
+	FileData         *File   `json:"fileData,omitempty"`
+	FunctionCall     *Call   `json:"functionCall,omitempty"`
+	FunctionResponse *Result `json:"functionResponse,omitempty"`
 	// Unknown lists fields this bridge does not model. They are reported, not
 	// fatal, so new upstream metadata does not break generation.
 	Unknown []string `json:"-"`
@@ -54,7 +52,7 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 	}
 	for key, v := range keys {
 		switch key {
-		case "text", "thought", "thoughtSignature", "inlineData", "fileData", "functionCall", "functionResponse", "executableCode", "codeExecutionResult":
+		case "text", "thought", "thoughtSignature", "inlineData", "fileData", "functionCall", "functionResponse":
 		case "thought_signature":
 			if value.Signature == "" {
 				if err := json.Unmarshal(v, &value.Signature); err != nil {
@@ -72,8 +70,7 @@ func (p *Part) UnmarshalJSON(data []byte) error {
 
 // Empty reports whether the part carries nothing this bridge can represent.
 func (p Part) Empty() bool {
-	return p.Text == "" && p.Signature == "" && p.InlineData == nil && p.FileData == nil && p.FunctionCall == nil &&
-		p.FunctionResponse == nil && len(p.ExecutableCode) == 0 && len(p.CodeExecutionResult) == 0
+	return p.Text == "" && p.Signature == "" && p.InlineData == nil && p.FileData == nil && p.FunctionCall == nil && p.FunctionResponse == nil
 }
 
 type Content struct {
@@ -177,35 +174,25 @@ type Catalog struct {
 
 // ModelInfo is the subset of catalog metadata used to shape requests.
 type ModelInfo struct {
-	ID                string `json:"-"`
-	DisplayName       string `json:"displayName"`
-	Provider          string `json:"modelProvider"`
-	MaxOutputTokens   int    `json:"maxOutputTokens"`
-	MinThinkingBudget int    `json:"minThinkingBudget"`
-	Search            bool   `json:"-"`
-	Image             bool   `json:"-"`
+	MinThinkingBudget int  `json:"minThinkingBudget"`
+	Search            bool `json:"-"`
+	Image             bool `json:"-"`
 }
 
 func (c Catalog) Info(id string) (ModelInfo, bool) {
 	raw, ok := c.Models[id]
 	if !ok {
-		return ModelInfo{ID: id}, false
+		return ModelInfo{}, false
 	}
 	var info ModelInfo
 	_ = json.Unmarshal(raw, &info)
-	info.ID = id
 	info.Search = slices.Contains(c.SearchModels, id)
 	info.Image = slices.Contains(c.ImageModels, id) || (len(c.ImageModels) == 0 && strings.Contains(id, "image"))
 	return info, true
 }
 
-// Claude reports whether Antigravity serves the model through Anthropic.
-func (m ModelInfo) Claude() bool {
-	if m.Provider != "" {
-		return m.Provider == "MODEL_PROVIDER_ANTHROPIC"
-	}
-	return strings.Contains(strings.ToLower(m.ID), "claude")
-}
+// GeminiProvider is the catalog apiProvider of the Gemini models this bridge serves.
+const GeminiProvider = "API_PROVIDER_GOOGLE_GEMINI"
 
 // Request types understood by streamGenerateContent.
 const (
