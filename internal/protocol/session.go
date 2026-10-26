@@ -57,7 +57,7 @@ func (in *RequestIntent) assignSession(headers http.Header) {
 }
 
 // claudeCodeSession extracts the session from Messages metadata.user_id. Claude
-// Code sends a JSON object with session_id; older versions used
+// Code sends either JSON with session_id or the composite string
 // "user_<hash>_account_<id>_session_<id>".
 func claudeCodeSession(metadata json.RawMessage) string {
 	var m struct {

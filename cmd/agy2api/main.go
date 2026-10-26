@@ -36,20 +36,37 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
-	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
+	if len(args) > 0 && args[0] == "help" && len(args) == 2 {
+		switch args[1] {
+		case "login", "serve", "models", "version":
+			return run(ctx, []string{args[1], "--help"})
+		default:
+			return fmt.Errorf("unknown command %q", args[1])
+		}
+	}
+	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		if len(args) > 1 {
+			return errors.New("unexpected arguments after help")
+		}
 		fmt.Println("agy2api — single-account Antigravity API\n\nCommands:\n  login   [--config path]\n  serve   [--config path]\n  models  [--config path]\n  version\n\nAPIs: /v1/responses and /v1/messages")
 		return nil
 	}
-	if args[0] == "version" || args[0] == "--version" {
+	if args[0] == "--version" {
+		if len(args) != 1 {
+			return errors.New("unexpected arguments after --version")
+		}
 		fmt.Println("agy2api", version)
 		return nil
 	}
 	command := args[0]
-	if command != "login" && command != "serve" && command != "models" {
+	if command != "login" && command != "serve" && command != "models" && command != "version" {
 		return fmt.Errorf("unknown command %q", command)
 	}
 	f := flag.NewFlagSet(command, flag.ContinueOnError)
-	configPath := f.String("config", "", "TOML configuration file")
+	var configPath string
+	if command != "version" {
+		f.StringVar(&configPath, "config", "", "TOML configuration file")
+	}
 	if err := f.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -59,7 +76,11 @@ func run(ctx context.Context, args []string) error {
 	if f.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
 	}
-	cfg, err := config.Load(*configPath)
+	if command == "version" {
+		fmt.Println("agy2api", version)
+		return nil
+	}
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
 	}

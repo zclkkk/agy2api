@@ -54,9 +54,6 @@ func Load(path string) (Config, error) {
 		if len(data) > maxConfigBytes {
 			return c, errors.New("config exceeds 1 MiB")
 		}
-		if strings.EqualFold(filepath.Ext(path), ".json") || bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) {
-			return c, errors.New("JSON config is no longer supported; migrate to TOML using config.example.toml")
-		}
 		if err := toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&c); err != nil {
 			var unknown *toml.StrictMissingError
 			if errors.As(err, &unknown) {

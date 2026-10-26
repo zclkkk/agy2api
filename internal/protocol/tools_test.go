@@ -133,7 +133,7 @@ func TestToolIdentityCheckedAcrossHistoryAndDeclarations(t *testing.T) {
 	}
 	call := output.Output[0]
 	result := map[string]any{"type": "custom_tool_call_output", "call_id": call.CallID, "output": "done"}
-	stored, err := (replayStore{s}).response(ctx, r.id)
+	stored, err := LoadResponse(ctx, s, r.id)
 	if err != nil || len(stored.Tools) != 1 || stored.Tools[native] != custom {
 		t.Fatalf("stored identities must describe actual history, not unused declarations: %v", err)
 	}

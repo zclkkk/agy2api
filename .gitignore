@@ -1,6 +1,7 @@
 /agy2api
 /agy2api.exe
 /bin/
+/dist/
 /data/
 /config.json
 /config.toml
@@ -18,6 +19,8 @@ credentials.json
 
 # Generated validation output and local Python environments.
 /tests/live-report*.json
+/docs/**/*validation*.json
+/docs/**/*report*.json
 __pycache__/
 *.py[cod]
 .venv/

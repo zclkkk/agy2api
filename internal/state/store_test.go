@@ -2,9 +2,7 @@ package state
 
 import (
 	"context"
-	"database/sql"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -125,27 +123,5 @@ func TestSizeLimitEvictsOldestButKeepsNewest(t *testing.T) {
 	}
 	if err := s.Get(ctx, "x", "d", &value); !errors.Is(err, ErrNotFound) {
 		t.Fatal("older records were kept over the size limit")
-	}
-}
-
-func TestLegacyTableIsMigrated(t *testing.T) {
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE records(kind TEXT NOT NULL,id TEXT NOT NULL,data BLOB NOT NULL,expires INTEGER NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(kind,id));
-INSERT INTO records VALUES('tool','call_agy_1','"kept"',?,1)`, time.Now().Add(time.Hour).Unix()); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	s, err := Open(dir, time.Hour, 10, 1<<30)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	var value string
-	if err := s.Get(context.Background(), "tool", "call_agy_1", &value); err != nil || value != "kept" {
-		t.Fatalf("legacy record lost: %q %v", value, err)
 	}
 }

@@ -207,8 +207,8 @@ func TestMissingReplayStateDegrades(t *testing.T) {
 	s := testStore(t)
 	d := testPipeline{State: s}
 	ctx := context.Background()
-	foreign, _ := s.Seal("other-model", Replay{Parts: []ag.Part{{Text: "x", Thought: true, Signature: "s"}}})
-	own, _ := s.Seal("gemini-test", Replay{Parts: []ag.Part{{Text: "real thought", Thought: true, Signature: "s"}}})
+	foreign, _ := (replayStore{s}).seal("other-model", Replay{Parts: []ag.Part{{Text: "x", Thought: true, Signature: "s"}}})
+	own, _ := (replayStore{s}).seal("gemini-test", Replay{Parts: []ag.Part{{Text: "real thought", Thought: true, Signature: "s"}}})
 	body := raw(map[string]any{"model": "gemini-test", "max_tokens": 100, "messages": []any{
 		map[string]any{"role": "user", "content": "hi"},
 		map[string]any{"role": "assistant", "content": []any{

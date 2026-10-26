@@ -467,8 +467,7 @@ func (s *Server) model(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) stored(w http.ResponseWriter, r *http.Request) (protocol.StoredResponse, bool) {
-	var record protocol.StoredResponse
-	err := s.state.Get(r.Context(), "response", r.PathValue("id"), &record)
+	record, err := protocol.LoadResponse(r.Context(), s.state, r.PathValue("id"))
 	if errors.Is(err, state.ErrNotFound) {
 		s.error(w, r, 404, "not_found_error", "response not found or expired", "")
 		return record, false

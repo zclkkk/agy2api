@@ -70,9 +70,6 @@ func Open(dir string, ttl time.Duration, capacity int, maxBytes int64) (*Store, 
 	if _, err := db.Exec(schema); err != nil {
 		return fail(err)
 	}
-	if err := migrate(db); err != nil {
-		return fail(fmt.Errorf("migrate state: %w", err))
-	}
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return fail(err)
@@ -96,27 +93,6 @@ func Open(dir string, ttl time.Duration, capacity int, maxBytes int64) (*Store, 
 		return fail(err)
 	}
 	return s, nil
-}
-
-// migrate moves rows from the first release's table, whose BLOB column came
-// before the columns used for eviction.
-func migrate(db *sql.DB) error {
-	var legacy int
-	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='records'`).Scan(&legacy); err != nil || legacy == 0 {
-		return err
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT OR IGNORE INTO entries(kind,id,expires,created,size,data) SELECT kind,id,expires,created,length(data),data FROM records`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DROP TABLE records`); err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -215,7 +191,7 @@ func (s *Store) Delete(ctx context.Context, kind, id string) (bool, error) {
 }
 
 // Seal creates an authenticated, client-carried replay item. It does not write a record.
-func (s *Store) Seal(model string, value any) (string, error) {
+func (s *Store) Seal(scope string, value any) (string, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -224,18 +200,18 @@ func (s *Store) Seal(model string, value any) (string, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
-	sealed := s.aead.Seal(nonce, nonce, data, []byte(model))
-	return "agy1." + base64.RawURLEncoding.EncodeToString(sealed), nil
+	sealed := s.aead.Seal(nonce, nonce, data, []byte(scope))
+	return "agy2." + base64.RawURLEncoding.EncodeToString(sealed), nil
 }
-func (s *Store) Unseal(model, token string, value any) error {
-	if !strings.HasPrefix(token, "agy1.") {
+func (s *Store) Unseal(scope, token string, value any) error {
+	if !strings.HasPrefix(token, "agy2.") {
 		return errors.New("reasoning item was not issued by this agy2api instance")
 	}
-	data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, "agy1."))
+	data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, "agy2."))
 	if err != nil || len(data) < s.aead.NonceSize() {
 		return errors.New("invalid reasoning item")
 	}
-	data, err = s.aead.Open(nil, data[:s.aead.NonceSize()], data[s.aead.NonceSize():], []byte(model))
+	data, err = s.aead.Open(nil, data[:s.aead.NonceSize()], data[s.aead.NonceSize():], []byte(scope))
 	if err != nil {
 		return errors.New("reasoning item belongs to another model or instance, or was modified")
 	}

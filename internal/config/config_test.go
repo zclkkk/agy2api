@@ -90,15 +90,15 @@ max_concurrent_requests = 2
 	}
 }
 
-func TestInvalidAndRetiredConfigIsRejected(t *testing.T) {
+func TestInvalidConfigIsRejected(t *testing.T) {
 	clearConfigEnv(t)
 	for _, tc := range []struct{ name, body, errorText string }{
 		{"unknown", "max_concurrent_request = 4", "max_concurrent_request"},
 		{"nested", "[server]\nlisten = '127.0.0.1:8000'", "unknown config fields"},
-		{"retired upstream", "upstream_url = 'http://localhost:8080'", "upstream_url"},
-		{"retired agent", "user_agent = 'antigravity/2.24.0'", "user_agent"},
-		{"retired count", "max_state_entries = 10000", "max_state_entries"},
-		{"json", `{"listen":"127.0.0.1:8000"}`, "migrate to TOML"},
+		{"unsupported upstream", "upstream_url = 'http://localhost:8080'", "upstream_url"},
+		{"unsupported agent", "user_agent = 'antigravity/2.24.0'", "user_agent"},
+		{"unsupported count", "max_state_entries = 10000", "max_state_entries"},
+		{"json", `{"listen":"127.0.0.1:8000"}`, "decode config"},
 		{"duplicate", "listen = '127.0.0.1:8000'\nlisten = '127.0.0.1:8001'", "line 2"},
 		{"type", "max_concurrent_requests = '4'", "line 1"},
 		{"syntax", "api_key = \"unterminated", "line 1"},

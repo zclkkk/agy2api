@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -46,60 +45,55 @@ func TestDecodeDefersStateAccessAndPlannerPreservesIntent(t *testing.T) {
 	}
 }
 
-func TestLegacyHistoryMigrationAndReplayVersions(t *testing.T) {
+func TestStoredResponseRequiresCurrentFormat(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
-	legacy := StoredResponse{Model: "gemini-test", Contents: []ag.Content{
-		{Role: "user", Parts: []ag.Part{{Text: "first"}}},
-		{Role: "model", Parts: []ag.Part{{Text: "old thought", Thought: true, Signature: "legacy-signature"}, {Text: "answer"}}},
-	}, Items: []json.RawMessage{raw(map[string]string{"role": "developer", "content": "Always use JSON."}), raw(map[string]string{"role": "user", "content": "first"})},
-		Response: raw(map[string]any{"output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]string{"type": "output_text", "text": "answer"}}}}})}
-	if err := s.Put(ctx, "response", "legacy", legacy); err != nil {
-		t.Fatal(err)
-	}
-	in, err := (testPipeline{State: s}).Responses(ctx, []byte(`{"model":"gemini-test","input":"next","previous_response_id":"legacy"}`))
+	in, err := (testPipeline{State: s}).Responses(ctx, []byte(`{"model":"gemini-test","input":[{"role":"developer","content":"Use JSON."},{"role":"user","content":"first"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if in.Request.System == nil || in.Request.System.Parts[0].Text != "Always use JSON." || len(in.Request.Contents) != 3 {
-		t.Fatal("legacy visible history or developer instructions were lost")
-	}
-	for _, c := range in.Request.Contents {
-		for _, p := range c.Parts {
-			if p.Thought || p.Signature != "" {
-				t.Fatal("legacy signatures without provenance were trusted")
-			}
-		}
-	}
 	r := NewRenderer(in, s, nil)
-	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "new"}}, Finish: "STOP"}); err != nil {
+	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "answer"}}, Finish: "STOP"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Finish(ctx); err != nil {
 		t.Fatal(err)
 	}
-	stored, err := (replayStore{s}).response(ctx, r.id)
+	stored, err := LoadResponse(ctx, s, r.id)
 	if err != nil || stored.Version != recordVersion || stored.UpstreamModel != "gemini-test" || stored.HistorySystem == nil {
-		t.Fatalf("new response did not use versioned history: %v %+v", err, stored)
+		t.Fatalf("current response format was not persisted: %v", err)
 	}
-	store := replayStore{s}
-	for _, version := range []string{"v1", "v2"} {
-		replay := Replay{Parts: []ag.Part{{Text: "plan", Thought: true, Signature: "sig"}}}
-		var token string
-		if version == "v1" {
-			token, err = s.Seal("gemini-search", replay)
-		} else {
-			token, err = store.seal("gemini-search", replay)
+	for _, version := range []int{0, recordVersion - 1, recordVersion + 1} {
+		stored.Version = version
+		if err := s.Put(ctx, "response", "unsupported", stored); err != nil {
+			t.Fatal(err)
 		}
+		if _, err := LoadResponse(ctx, s, "unsupported"); err == nil {
+			t.Fatalf("unsupported record version %d accepted", version)
+		}
+	}
+}
+
+func TestReplayRequiresAuthenticatedCurrentEnvelope(t *testing.T) {
+	s := testStore(t)
+	store := replayStore{s}
+	for _, replay := range []Replay{
+		{Parts: []ag.Part{{Text: "plan", Thought: true, Signature: "sig"}}},
+		{PreviousText: digest(raw("answer")), Signature: "sig"},
+	} {
+		token, err := store.seal("gemini-search", replay)
 		if err != nil {
 			t.Fatal(err)
 		}
 		got, err := store.open("gemini-search", token)
-		if err != nil || len(got.Parts) != 1 || got.Parts[0].Signature != "sig" {
-			t.Fatalf("%s replay lost: %v %+v", version, err, got)
+		if err != nil || got.Version != recordVersion || got.Model != "gemini-search" || got.Kind != "reasoning" {
+			t.Fatalf("valid replay envelope rejected: %v", err)
 		}
 		if _, err := store.open("gemini-test", token); err == nil {
-			t.Fatalf("%s crossed upstream models", version)
+			t.Fatal("replay crossed upstream models")
+		}
+		if _, err := (replayStore{testStore(t)}).open("gemini-search", token); err == nil {
+			t.Fatal("replay crossed instances")
 		}
 		mid := len(token) / 2
 		replacement := "A"
@@ -107,8 +101,28 @@ func TestLegacyHistoryMigrationAndReplayVersions(t *testing.T) {
 			replacement = "B"
 		}
 		if _, err := store.open("gemini-search", token[:mid]+replacement+token[mid+1:]); err == nil {
-			t.Fatalf("%s accepted a modified carrier", version)
+			t.Fatal("modified replay accepted")
 		}
+	}
+	for _, replay := range []Replay{
+		{Version: 0, Model: "gemini-search", Kind: "reasoning"},
+		{Version: recordVersion + 1, Model: "gemini-search", Kind: "reasoning"},
+		{Version: recordVersion, Model: "gemini-search", Kind: "citation"},
+	} {
+		token, err := s.Seal("agy2api/replay/v2", replay)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.open("gemini-search", token); err == nil {
+			t.Fatal("unsupported replay envelope accepted")
+		}
+	}
+	token, err := s.Seal("unrelated-purpose", Replay{Version: recordVersion, Model: "gemini-search", Kind: "reasoning"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.open("gemini-search", token); err == nil {
+		t.Fatal("replay from another authenticated scope accepted")
 	}
 }
 

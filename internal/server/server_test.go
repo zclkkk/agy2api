@@ -22,6 +22,27 @@ import (
 
 type fixedToken struct{}
 
+func TestStoredResponseRoutesRejectUnsupportedFormats(t *testing.T) {
+	store, err := state.Open(t.TempDir(), time.Hour, 10, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Put(context.Background(), "response", "unsupported", map[string]any{
+		"version": 999, "response": map[string]string{"id": "unsupported"}, "items": []any{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(config.Default(), nil, store, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
+	for _, path := range []string{"/v1/responses/unsupported", "/v1/responses/unsupported/input_items"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://localhost"+path, nil))
+		if response.Code != http.StatusBadGateway {
+			t.Fatalf("%s returned unsupported state: status=%d", path, response.Code)
+		}
+	}
+}
+
 func (fixedToken) AccessToken(context.Context) (string, error) { return "test-token", nil }
 func (fixedToken) ProjectID() string                           { return "test-project" }
 

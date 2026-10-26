@@ -74,7 +74,7 @@ func TestSessionAssignment(t *testing.T) {
 		t.Fatal("the client's session must win")
 	}
 	if claudeCodeSession([]byte(`{"user_id":"user_ab_account_cd_session_ef12"}`)) != "ef12" {
-		t.Fatal("legacy Claude Code user_id format")
+		t.Fatal("composite Claude Code user_id format")
 	}
 	a, b := conversation(), conversation()
 	a.assignSession(http.Header{})

@@ -29,10 +29,12 @@ type StoredResponse struct {
 // cache entries may degrade; storage failures are returned to the caller.
 type replayStore struct{ State *state.Store }
 
-func (s replayStore) response(ctx context.Context, id string) (StoredResponse, error) {
+// LoadResponse is shared by history continuation and the HTTP retrieval routes.
+// Records are interpreted only in the current format.
+func LoadResponse(ctx context.Context, s *state.Store, id string) (StoredResponse, error) {
 	var value StoredResponse
-	err := s.State.Get(ctx, "response", id, &value)
-	if err == nil && value.Version > recordVersion {
+	err := s.Get(ctx, "response", id, &value)
+	if err == nil && value.Version != recordVersion {
 		err = errors.New("unsupported stored response version")
 	}
 	return value, err
@@ -40,32 +42,21 @@ func (s replayStore) response(ctx context.Context, id string) (StoredResponse, e
 
 func (s replayStore) seal(model string, replay Replay) (string, error) {
 	replay.Version, replay.Model, replay.Kind = recordVersion, model, "reasoning"
-	token, err := s.State.Seal("agy2api/replay/v2", replay)
-	if err != nil {
-		return "", err
-	}
-	return "agy2." + strings.TrimPrefix(token, "agy1."), nil
+	return s.State.Seal("agy2api/replay/v2", replay)
 }
 
 func (s replayStore) open(model, token string) (Replay, error) {
 	var replay Replay
-	if strings.HasPrefix(token, "agy2.") {
-		err := s.State.Unseal("agy2api/replay/v2", "agy1."+strings.TrimPrefix(token, "agy2."), &replay)
-		if err != nil {
-			return replay, err
-		}
-		if replay.Version != recordVersion || replay.Kind != "reasoning" {
-			return Replay{}, errors.New("unsupported replay record")
-		}
-		if replay.Model != model {
-			return Replay{}, errors.New("reasoning belongs to a different upstream model")
-		}
-		return replay, nil
+	if err := s.State.Unseal("agy2api/replay/v2", token, &replay); err != nil {
+		return Replay{}, err
 	}
-	// v1 carriers are authenticated against the selected upstream model, never
-	// the public alias. New carriers carry authenticated model provenance.
-	err := s.State.Unseal(model, token, &replay)
-	return replay, err
+	if replay.Version != recordVersion || replay.Kind != "reasoning" {
+		return Replay{}, errors.New("unsupported replay record")
+	}
+	if replay.Model != model {
+		return Replay{}, errors.New("reasoning belongs to a different upstream model")
+	}
+	return replay, nil
 }
 
 type replayReference struct {
@@ -95,13 +86,13 @@ func (in *requestPlan) prependHistory(previous StoredResponse) error {
 			return err
 		}
 		if name != native {
-			return invalid("previous_response_id", "stored tool names no longer match; start a new conversation")
+			return invalid("previous_response_id", "stored tool identity is inconsistent")
 		}
 	}
 	contents := cloneContents(previous.Contents)
-	if previous.Version < recordVersion || previous.UpstreamModel != in.UpstreamModel() {
+	if previous.UpstreamModel != in.UpstreamModel() {
 		contents = stripSignatures(contents)
-		in.warn("upstream model changed or legacy history has no model provenance; prior reasoning was dropped")
+		in.warn("upstream model changed; prior reasoning was dropped")
 	}
 	for i := range in.references {
 		in.references[i].Content += len(contents)
@@ -110,23 +101,6 @@ func (in *requestPlan) prependHistory(previous StoredResponse) error {
 		in.historyCalls[i].Content += len(contents)
 	}
 	in.Request.Contents = append(contents, in.Request.Contents...)
-	if previous.Version < recordVersion {
-		// v1 retained the public input items but lost system messages from native
-		// history. Recover these messages without inheriting top-level instructions.
-		for _, item := range previous.Items {
-			var v ResponseItem
-			if json.Unmarshal(item, &v) != nil {
-				return errors.New("invalid legacy response history")
-			}
-			if (v.Type == "" || v.Type == "message") && (v.Role == "developer" || v.Role == "system") {
-				parts, err := mediaParts(v.Content)
-				if err != nil {
-					return err
-				}
-				previous.HistorySystem = joinSystem(previous.HistorySystem, &ag.Content{Parts: parts})
-			}
-		}
-	}
 	in.HistorySystem = joinSystem(previous.HistorySystem, in.HistorySystem)
 	var output struct {
 		Output []json.RawMessage `json:"output"`

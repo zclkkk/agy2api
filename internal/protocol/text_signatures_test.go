@@ -96,7 +96,7 @@ func TestMessagesEndsWithTextAndRestoresItsSignature(t *testing.T) {
 	}
 }
 
-func TestTextSignatureCacheSeparatesRepeatedAnswersAndLegacyCarriers(t *testing.T) {
+func TestTextSignatureCacheSeparatesRepeatedAnswers(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
 	d := testPipeline{State: s}
@@ -130,19 +130,7 @@ func TestTextSignatureCacheSeparatesRepeatedAnswersAndLegacyCarriers(t *testing.
 	if in.Request.Contents[1].Parts[0].Signature != "signature-one" || in.Request.Contents[3].Parts[0].Signature != "signature-two" {
 		t.Fatal("equal text in different turns shared a signature")
 	}
-	carrier, err := s.Seal("gemini-test", Replay{PreviousText: digest(raw("legacy")), Signature: "legacy-signature"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacy, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": []any{
-		map[string]string{"role": "user", "content": "first"}, map[string]any{"role": "assistant", "content": []Block{{Type: "text", Text: "legacy"}, {Type: "thinking", Signature: carrier}}}, map[string]string{"role": "user", "content": "next"},
-	}}), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if legacy.Request.Contents[1].Parts[0].Signature != "legacy-signature" {
-		t.Fatal("an existing sealed signature was overwritten")
-	}
+
 }
 
 func TestMissingTextSignatureRecordsAreReported(t *testing.T) {

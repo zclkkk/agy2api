@@ -86,7 +86,7 @@ func (p Planner) Prepare(ctx context.Context, intent RequestIntent, catalog ag.C
 	}
 	var previous *StoredResponse
 	if in.PreviousID != "" {
-		value, err := (replayStore{p.State}).response(ctx, in.PreviousID)
+		value, err := LoadResponse(ctx, p.State, in.PreviousID)
 		if err != nil {
 			if errors.Is(err, state.ErrNotFound) {
 				err = invalid("previous_response_id", "previous response is missing, expired, or was not stored")

@@ -1746,7 +1746,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=Path("config.toml"))
     parser.add_argument("--binary", type=Path, default=Path("bin/agy2api"))
-    parser.add_argument("--report", type=Path, default=Path("tests/live-report.json"))
+    parser.add_argument(
+        "--report", type=Path, default=Path(".cache/validation/live-report.json")
+    )
     parser.add_argument("--only", action="append", default=[])
     args = parser.parse_args()
     suite = Live(args.config, args.binary, args.report)

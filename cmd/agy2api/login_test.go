@@ -187,11 +187,11 @@ func TestReadAuthorizationCodeCancellation(t *testing.T) {
 	}
 }
 
-func TestLoginRejectsRemovedFlags(t *testing.T) {
+func TestLoginRejectsUnsupportedFlags(t *testing.T) {
 	for _, flag := range []string{"--manual", "--port", "--callback-port", "--token"} {
 		err := run(context.Background(), []string{"login", flag})
 		if err == nil || !strings.Contains(err.Error(), "flag provided but not defined") {
-			t.Fatalf("removed flag %q accepted: %v", flag, err)
+			t.Fatalf("unsupported flag %q accepted: %v", flag, err)
 		}
 	}
 }
