@@ -67,6 +67,7 @@ func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Inp
 	if len(ignored) > 0 {
 		in.warn("ignored request fields: %s", strings.Join(ignored, ", "))
 	}
+	in.ClientSession = claudeCodeSession(r.Metadata)
 	if !countOnly && r.MaxTokens == nil {
 		return in, invalid("max_tokens", "max_tokens is required")
 	}

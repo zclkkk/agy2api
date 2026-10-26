@@ -42,10 +42,12 @@ type ResponsesRequest struct {
 	Truncation   string          `json:"truncation,omitempty"`
 	Conversation json.RawMessage `json:"conversation,omitempty"`
 	Prompt       json.RawMessage `json:"prompt,omitempty"`
+	// Codex sets prompt_cache_key to its session ID.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 }
 
 // Fields with no effect on what the model generates.
-var quietResponseFields = map[string]bool{"prompt_cache_key": true, "prompt_cache_retention": true, "client_metadata": true,
+var quietResponseFields = map[string]bool{"prompt_cache_retention": true, "client_metadata": true,
 	"user": true, "safety_identifier": true, "service_tier": true, "stream_options": true, "top_logprobs": true}
 
 type ResponseTool struct {
@@ -92,7 +94,7 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 	if err != nil {
 		return Input{}, err
 	}
-	in := Input{Model: r.Model, Stream: r.Stream, Store: r.Store == nil || *r.Store, PreviousID: r.PreviousID, Metadata: r.Metadata, Options: data, Request: ag.Request{Generation: ag.Generation{MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP}}}
+	in := Input{Model: r.Model, Stream: r.Stream, Store: r.Store == nil || *r.Store, PreviousID: r.PreviousID, Metadata: r.Metadata, Options: data, ClientSession: r.PromptCacheKey, Request: ag.Request{Generation: ag.Generation{MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP}}}
 	if len(ignored) > 0 {
 		in.warn("ignored request fields: %s", strings.Join(ignored, ", "))
 	}
@@ -208,6 +210,17 @@ func (d Decoder) Responses(ctx context.Context, data []byte) (Input, error) {
 		case "web_search_call":
 			// A server-side tool trace. Its answer and citations are carried by
 			// adjacent message items; it is not a client-executed function call.
+		case "compaction", "compaction_summary":
+			summary, ok := openCompaction(v.Encrypted)
+			if !ok {
+				// Like a foreign reasoning item, its content cannot be restored.
+				in.warn("dropped a compaction item not issued by agy2api; the history it replaced is unavailable")
+				continue
+			}
+			appendContent(&in.Request, "user", []ag.Part{summaryPart(summary)})
+		case "compaction_trigger":
+			// Codex asks for the history to be compacted (remote_compaction v2).
+			in.Compact = "trigger"
 		default:
 			return in, unsupported("input item " + v.Type)
 		}

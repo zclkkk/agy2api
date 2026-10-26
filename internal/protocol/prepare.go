@@ -69,6 +69,44 @@ func (in *Input) Prepare(catalog ag.Catalog) error {
 	return nil
 }
 
+// continuation is the user turn appended after a trailing model turn.
+// Antigravity rejects requests that end with a model turn for every model,
+// and treats an empty user turn as missing.
+const continuation = "Continue."
+
+// EndWithUser makes the request end with a user turn. A trailing model turn
+// that holds only reasoning has nothing to continue from and is dropped; any
+// other trailing model turn gets a short user turn after it, so the model
+// continues from there. A trailing tool call without its result is left for
+// the upstream to reject.
+func (in *Input) EndWithUser() {
+	c := in.Request.Contents
+	for len(c) > 1 && c[len(c)-1].Role == "model" && reasoningOnly(c[len(c)-1].Parts) {
+		c = c[:len(c)-1]
+		in.warn("dropped trailing reasoning that had no reply after it")
+	}
+	in.Request.Contents = c
+	if len(c) == 0 || c[len(c)-1].Role != "model" {
+		return
+	}
+	for _, p := range c[len(c)-1].Parts {
+		if p.FunctionCall != nil {
+			return
+		}
+	}
+	appendContent(&in.Request, "user", []ag.Part{{Text: continuation}})
+	in.warn("appended a user turn: Antigravity rejects requests that end with an assistant turn")
+}
+
+func reasoningOnly(parts []ag.Part) bool {
+	for _, p := range parts {
+		if !p.Thought && (p.Text != "" || p.FunctionCall != nil || p.InlineData != nil || p.FileData != nil) {
+			return false
+		}
+	}
+	return true
+}
+
 func hasFunctions(tools []ag.Tool) bool {
 	for _, t := range tools {
 		if len(t.Functions) > 0 {

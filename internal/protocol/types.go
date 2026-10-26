@@ -63,6 +63,8 @@ type Input struct {
 	HideThinking  bool                // Messages thinking.display=omitted
 	Claude        bool                // upstream model is served by Anthropic; set by Prepare
 	Tools         map[string]ToolName // native function name -> client identity
+	ClientSession string              // session ID found in the request body
+	Compact       string              // "trigger" (compaction_trigger item) or "endpoint" (/v1/responses/compact)
 	Warnings      []string
 }
 
@@ -221,6 +223,9 @@ func (d Decoder) restoreCall(ctx context.Context, in *Input, call *ag.Call) stri
 		in.warn("tool replay state for %s is missing or expired; using a placeholder signature", call.ID)
 		return ""
 	}
+	if in.Request.SessionID == "" {
+		in.Request.SessionID = r.SessionID
+	}
 	if r.Model != in.Model || r.Name != call.Name || r.Digest != digest(call.Args) {
 		in.warn("tool call %s changed or came from another model; using a placeholder signature", call.ID)
 		return ""
@@ -347,9 +352,6 @@ func (d Decoder) NativeRequest(ctx context.Context, request ag.Request, placehol
 				// Without a record the public ID is a valid correlation ID upstream.
 				if err := d.State.Get(ctx, "tool", call.ID, &record); err == nil {
 					ids[call.ID] = record.NativeID
-					if native.SessionID == "" {
-						native.SessionID = record.SessionID
-					}
 					call.ID = record.NativeID
 				}
 			}

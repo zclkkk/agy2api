@@ -2,7 +2,7 @@
 
 把一个 Antigravity 账号接入 **OpenAI Responses** 和 **Anthropic Messages** API。Go 编写，交付一个原生可执行文件；运行数据保存在本地目录。
 
-2026-10-26 的真实订阅验收覆盖 **108 个场景：87 项通过、19 项受上游额度或容量阻止、2 项存在结束元数据兼容差异，无失败**。结果见 [验收记录](docs/validation-2026-10-26.json)。上游模型与额度会变化，接口覆盖范围见下表。
+2026-10-26 的真实订阅验收覆盖 **120 个场景：117 项通过、1 项受上游容量阻止、2 项存在结束元数据兼容差异，无失败**。结果见 [验收记录](docs/validation-2026-10-26.json)。上游模型与额度会变化，接口覆盖范围见下表。
 
 ## 构建
 
@@ -69,7 +69,7 @@ curl http://127.0.0.1:8080/v1/messages \
 | OAuth 登录、自动刷新与凭据原子更新 | 已实现 |
 | `/v1/models` 与 `/v1/models/{id}` | 从账号实时发现，缓存 5 分钟；排除 `API_PROVIDER_INTERNAL` 条目 |
 | `/v1/responses`、`/v1/messages` | 流式、非流式、文本和多轮对话；Messages 支持 `system` 角色消息 |
-| 真实客户端请求形态 | Codex CLI 0.164 端到端通过；Claude Code 2.1 的请求形态通过（见下方已知限制） |
+| 真实客户端请求形态 | Codex CLI 0.164 端到端通过，本地压缩和远程压缩都可用；Claude Code 2.1 的请求形态通过（见下方已知限制） |
 | 函数工具 | 声明、工具选择、并行调用、工具结果回传、原始 ID 和签名恢复；Responses 的 `namespace` 工具组与 `custom` 自由文本工具 |
 | 工具 schema | 转换为上游接受的子集：内联 `$ref`、合并 `allOf`、类型列表转 `nullable`、`const`/非字符串 `enum` 转换、Claude 模型展开 `anyOf` |
 | 工具名 | 含 `.`、`:` 等字符或超长的名字自动映射，返回时还原 |
@@ -77,14 +77,17 @@ curl http://127.0.0.1:8080/v1/messages \
 | 图片与文件输入 | 图片、PDF、HTTPS 图片均通过；Responses 的音频和视频文件输入通过；`gs://` URI 透传尚未实测 |
 | JSON 输出与 JSON Schema | 映射到上游；`strict:true` 暂不支持 |
 | 原生搜索 | 两个协议的搜索、引用及中文流式引用均通过；模型不支持搜索时转给目录中的搜索模型 |
-| 图片生成输出 | Responses 图片生成通过；后续图片编辑被上游额度阻止，尚未完成验收 |
+| 图片生成输出 | Responses 图片生成，以及基于生成图片的后续编辑均通过 |
 | token 计数 | `/v1/messages/count_tokens`、`/v1/responses/input_tokens` |
 | Responses 历史 | `previous_response_id`、查询、删除、`input_items`；SQLite 持久化 |
 | 取消、限流、流中错误 | 取消传播到上游；保留 `Retry-After`；断流不返回成功终止事件；并发满时排队等待；空闲流定时心跳 |
 | 状态缺失时的降级 | 工具签名记录过期、数据库丢失、会话中途换模型时，丢弃无法恢复的思考块并对 Gemini 使用占位签名，会话继续 |
+| 以 assistant 结尾的请求 | Antigravity 对所有模型都拒绝以 assistant 结尾的请求（空的 user 轮也不行）。服务会补一个内容为 `Continue.` 的 user 轮，模型会接着已有内容写下去，近似 Anthropic 的预填。末尾只有推理内容的轮次没有可接续的内容，直接丢弃 |
+| 上下文压缩 | `/v1/responses/compact`，以及 Codex 远程压缩发出的 `compaction_trigger`。由请求的模型写摘要，结果以 `compaction` 项返回，后续请求带回该项时展开为摘要。用法见下方“Codex 远程压缩” |
+| 上游会话 ID | 优先使用客户端自己的会话 ID（Codex 的 `Session-Id` 请求头或 `prompt_cache_key`，Claude Code 的会话 ID），否则按对话的第一条用户消息生成，同一对话的后续请求使用同一个会话。格式与官方客户端一致 |
 | 停止序列 | 文本截断通过；精确的 `stop_reason` / `stop_sequence` 匹配元数据尚不能还原 |
 
-尚未实现：Chat Completions（明确不在范围内）、Files 上传服务与 `file_id`、后台任务、WebSocket、Conversations 服务、远程 MCP、托管代码执行、音视频专用接口、compaction、显式 prompt cache 控制、严格结构化输出保证，以及完整的平台级参数集合。
+尚未实现：Chat Completions（明确不在范围内）、Files 上传服务与 `file_id`、后台任务、WebSocket、Conversations 服务、远程 MCP、托管代码执行、音视频专用接口、显式 prompt cache 控制、严格结构化输出保证，以及完整的平台级参数集合。
 
 请求字段的处理原则：
 
@@ -95,9 +98,25 @@ curl http://127.0.0.1:8080/v1/messages \
 
 具体模型是否接受某种输入或思考参数，还取决于 Antigravity 上游。
 
-原生搜索不能与函数工具同时发送给上游：两者同时出现时保留函数工具、忽略搜索，并在日志里记录。Codex 默认附带搜索工具，因此不受影响。图片生成目前使用账号提供的图片模型及其默认生成设置，未提供独立 Images API；Messages 不能返回生成图片。`user_agent` 可在配置里更新，以适应上游客户端版本要求。
+原生搜索不能与函数工具同时发送给上游：两者同时出现时保留函数工具、忽略搜索，并在日志里记录。Codex 默认附带搜索工具，因此不受影响。图片生成目前使用账号提供的图片模型及其默认生成设置，未提供独立 Images API；Messages 不能返回生成图片。上游只对较新的客户端版本开放新模型（实测 `antigravity/1.0.0` 调用 `gemini-3.8-flash-high` 返回 404）。`user_agent` 留空时，服务在启动时和之后每 6 小时读取 Antigravity 官方发布清单，以最新版本号发送 `antigravity/<版本>`；读取失败时沿用已知版本，初始值为 2.24.0。配置为 `antigravity/<版本>` 时，该版本作为最低版本，发布清单中的版本更新时仍会升级；其他值原样发送，不再自动更新。读取发布清单经过 `proxy_url`。
 
 Claude 模型的推理强度映射为预算：`minimal`/`low=1024`、`medium=8192`、`high=24576`、`xhigh`/`max=32768`。未指定输出上限时使用模型目录的 `maxOutputTokens`。预算放不下时会自动缩小到输出上限以内；低于 Claude 最小预算 1024 时关闭思考。`tool_choice` 强制调用工具时，Claude 不允许同时思考，也会自动关闭思考。以上调整都会写入日志的 `warnings`。Gemini 使用原生推理等级（`minimal` 按 `low` 发送）。部分 Gemini 模型会只把思考签名放在工具调用上，未必返回可见思考块。Messages 的 `thinking.display: "omitted"` 会返回不含思考文本的签名块，回放照常生效。
+
+### Codex 远程压缩
+
+Codex 对自定义服务商默认使用本地压缩：它自己发一次普通请求生成摘要，再用摘要替换历史，这种方式无需服务端额外支持，已可正常使用。在服务商配置里声明远程压缩后，Codex 改为在请求末尾附加 `compaction_trigger`，由 agy2api 生成摘要：
+
+```toml
+[model_providers.agy]
+name = "agy"
+base_url = "http://127.0.0.1:8080/v1"
+wire_api = "responses"
+
+[model_providers.agy.capabilities]
+remote_compaction = "v2"
+```
+
+摘要由请求的模型生成，期间禁止调用工具。`compaction` 项的 `encrypted_content` 携带摘要本身：它只包含客户端自己的对话内容，因此只做编码、不加密，也不依赖本地状态库，状态库丢失后压缩过的会话仍能继续。其他服务商签发的 `compaction` 项无法展开，会被丢弃并记录到日志的 `warnings`，模型将看不到它代表的历史。`/v1/responses/compact` 返回 `response.compaction` 对象，不保存记录；`compaction_trigger` 请求按普通 Responses 请求处理，`store:true` 时保存的上下文只包含摘要。
 
 ### 已知限制：Claude Code
 
@@ -131,7 +150,7 @@ go test -race ./...
 CGO_ENABLED=0 go build -trimpath -o bin/agy2api ./cmd/agy2api
 ```
 
-测试会启动仅监听本机的模拟上游，无需真实账号，不消耗订阅额度。测试覆盖流式事件顺序、拆分 usage、错误结束、工具第二轮、客户端取消、凭据刷新竞争、401 后强制刷新、SQLite 重启恢复、旧表迁移、状态体积上限、签名篡改、Claude Code 与 Codex 请求形态、schema 转换、工具名映射、状态缺失降级、本机访问限制、排队、目录缓存兜底和流式心跳。
+测试会启动仅监听本机的模拟上游，无需真实账号，不消耗订阅额度。测试覆盖流式事件顺序、拆分 usage、错误结束、工具第二轮、客户端取消、凭据刷新竞争、401 后强制刷新、SQLite 重启恢复、旧表迁移、状态体积上限、签名篡改、Claude Code 与 Codex 请求形态、schema 转换、工具名映射、状态缺失降级、本机访问限制、排队、目录缓存兜底、流式心跳、以 assistant 结尾的请求、上游会话 ID、上下文压缩和客户端版本更新。
 
 可选的官方 Python SDK 验收脚本（仅开发测试需要 Python）：
 
@@ -151,11 +170,12 @@ python tests/live_validate.py --config config.json --report /tmp/agy2api-live-re
 python tests/live_validate.py --only thinking --report /tmp/agy2api-thinking-report.json
 ```
 
-验收覆盖模型目录、两个协议的流式和非流式调用、系统指令、约 4.8 万输入 token 的长上下文、单个/并行工具、工具返回图片、思考及签名回放、结构化输出、图片/PDF/音视频文件、搜索引用与搜索转发、输出上限、取消、真实 OAuth 刷新、重启恢复、删除、API 密钥验证、并发排队、Claude Code 与 Codex 请求形态、会话中途换模型和状态库丢失后的续聊。测试使用合成内容；报告不包含凭据或原始签名。原始运行报告属于生成文件，Git 会忽略 `tests/live-report*.json`；`docs/` 只保留整理后的验收记录。
+验收覆盖模型目录、两个协议的流式和非流式调用、系统指令、约 4.8 万输入 token 的长上下文、单个/并行工具、工具返回图片、思考及签名回放、结构化输出、图片/PDF/音视频文件、搜索引用与搜索转发、输出上限、取消、真实 OAuth 刷新、重启恢复、删除、API 密钥验证、并发排队、Claude Code 与 Codex 请求形态、会话中途换模型、状态库丢失后的续聊、以 assistant 结尾的请求、两种上下文压缩方式和客户端版本检查。测试使用合成内容；报告不包含凭据或原始签名。原始运行报告属于生成文件，Git 会忽略 `tests/live-report*.json`；`docs/` 只保留整理后的验收记录。
 
 该次验收的限制：
 
-- 验收后段，Claude、GPT-OSS 和图片模型的额度被用完（`429 / QUOTA_EXHAUSTED`，上游要求约 2.9 小时后重试），相关 18 项记为阻止；Gemini 用例在修正脚本后复跑全部通过。同一天、同一版本的额外验证覆盖了这些路径：Codex CLI 0.164 用 `gemini-3-flash` 和 `claude-sonnet-4-6` 完成真实文件任务；抓取的 Claude Code 2.1 请求（27 个工具、延迟加载工具、`system` 角色消息）去掉两行身份标识后在 5 个模型上通过；两个协议的 6 组多轮工具循环、状态丢失后续聊和 Gemini/Claude 中途互切均通过。额度恢复后应复跑被阻止的用例。
+- 同一天、同一版本的额外验证：Codex CLI 0.164 用 `gemini-3-flash` 和 `claude-sonnet-4-6` 通过远程压缩完成真实文件任务，用默认的本地压缩也完成了同一任务。
+- 上游会话 ID 不影响缓存命中：实测 Gemini 按请求前缀缓存，换会话 ID 仍然命中；Claude 无论是否使用同一会话 ID 都没有缓存命中。固定会话 ID 只是让请求与官方客户端一致。
 - Claude Code 的请求会被 Antigravity 按身份标识拒绝，见上方“已知限制”。
 - `gemini-2.5-pro`：上游持续返回 `503 / MODEL_CAPACITY_EXHAUSTED`。模型仍保留在目录里，不把暂时无容量误判为永久不支持。
 - `stop_sequences` 可以正确截断文本，但上游仅返回 `STOP`，不包含命中的序列。当前 Messages 仍返回 `end_turn` 和 `null`，这两项验收标记为 `partial`，不能视为完整 Anthropic 元数据兼容。

@@ -28,9 +28,10 @@ type TokenSource interface {
 // invalidator is implemented by token sources that can drop a rejected token.
 type invalidator interface{ Invalidate(token string) }
 type Client struct {
-	HTTP      *http.Client
-	BaseURL   string
-	UserAgent string
+	HTTP    *http.Client
+	BaseURL string
+	// UserAgent returns the User-Agent header; nil sends the fallback version.
+	UserAgent func() string
 	Auth      TokenSource
 }
 type HTTPError struct {
@@ -98,7 +99,11 @@ func (c *Client) postToken(ctx context.Context, method string, payload any, toke
 	}
 	r.Header.Set("Authorization", "Bearer "+token)
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("User-Agent", c.UserAgent)
+	agent := "antigravity/" + FallbackVersion
+	if c.UserAgent != nil {
+		agent = c.UserAgent()
+	}
+	r.Header.Set("User-Agent", agent)
 	resp, err := c.HTTP.Do(r)
 	if err != nil {
 		return nil, fmt.Errorf("Antigravity connection failed: %w", err)

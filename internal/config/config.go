@@ -28,7 +28,7 @@ type Config struct {
 }
 
 func Default() Config {
-	return Config{Listen: "127.0.0.1:8080", DataDir: "./data", UpstreamURL: "https://daily-cloudcode-pa.googleapis.com", UserAgent: "antigravity/2.24.0", MaxBodyBytes: 32 << 20, MaxConcurrentRequests: 4, StateTTLHours: 168, MaxStateEntries: 10000, MaxStateBytes: 1 << 30}
+	return Config{Listen: "127.0.0.1:8080", DataDir: "./data", UpstreamURL: "https://daily-cloudcode-pa.googleapis.com", MaxBodyBytes: 32 << 20, MaxConcurrentRequests: 4, StateTTLHours: 168, MaxStateEntries: 10000, MaxStateBytes: 1 << 30}
 }
 
 func Load(path string) (Config, error) {
@@ -96,7 +96,8 @@ func (c Config) Validate() error {
 			return errors.New("invalid proxy_url")
 		}
 	}
-	if strings.ContainsAny(c.UserAgent, "\r\n") || c.UserAgent == "" {
+	// An empty user_agent follows the latest Antigravity release.
+	if strings.ContainsAny(c.UserAgent, "\r\n") {
 		return errors.New("invalid user_agent")
 	}
 	return nil

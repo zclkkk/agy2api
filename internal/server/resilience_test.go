@@ -44,7 +44,7 @@ func newService(t *testing.T, configure func(*config.Config), models func(http.R
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	svc := New(cfg, &ag.Client{HTTP: up.Client(), BaseURL: up.URL, UserAgent: "test", Auth: fixedToken{}}, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	svc := New(cfg, &ag.Client{HTTP: up.Client(), BaseURL: up.URL, UserAgent: func() string { return "test" }, Auth: fixedToken{}}, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	down := httptest.NewServer(svc.Handler())
 	t.Cleanup(down.Close)
 	return svc, down

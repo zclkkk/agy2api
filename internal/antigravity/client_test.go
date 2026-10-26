@@ -50,7 +50,7 @@ func TestGenerateDoesNotTreatTruncationOrTrailingErrorAsSuccess(t *testing.T) {
 				fmt.Fprint(w, tc.body)
 			}))
 			defer up.Close()
-			client := Client{HTTP: up.Client(), BaseURL: up.URL, UserAgent: "test", Auth: testToken{}}
+			client := Client{HTTP: up.Client(), BaseURL: up.URL, UserAgent: func() string { return "test" }, Auth: testToken{}}
 			err := client.Generate(context.Background(), "gemini-test", Request{}, KindAgent, func(Chunk) error { return nil })
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("error=%v, wantErr=%v", err, tc.wantErr)

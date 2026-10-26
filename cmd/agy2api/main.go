@@ -76,15 +76,19 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	defer client.CloseIdleConnections()
+	agent := ag.NewUserAgent(cfg.UserAgent)
 	if command == "login" {
-		return login(ctx, cfg, client, manual, port)
+		return login(ctx, cfg, client, agent, manual, port)
 	}
 	manager, err := auth.Load(cfg.CredentialsPath(), client)
 	if err != nil {
 		return err
 	}
-	upstream := &ag.Client{HTTP: client, BaseURL: cfg.UpstreamURL, UserAgent: cfg.UserAgent, Auth: manager}
+	upstream := &ag.Client{HTTP: client, BaseURL: cfg.UpstreamURL, UserAgent: agent.String, Auth: manager}
 	if command == "models" {
+		if _, err := agent.Refresh(ctx, client); err != nil {
+			fmt.Fprintln(os.Stderr, "agy2api: using", agent.String()+":", err)
+		}
 		catalog, err := upstream.Models(ctx)
 		if err != nil {
 			return err
@@ -108,6 +112,13 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	go agent.Run(ctx, client, func(version string, err error) {
+		if err != nil {
+			logger.Warn("Antigravity version check failed", "user_agent", agent.String(), "error", err.Error())
+			return
+		}
+		logger.Info("Antigravity version checked", "latest", version, "user_agent", agent.String())
+	})
 	api := server.New(cfg, upstream, store, logger)
 	listener, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -139,7 +150,7 @@ type callbackResult struct {
 	err  error
 }
 
-func login(parent context.Context, cfg config.Config, client *http.Client, manual bool, port int) error {
+func login(parent context.Context, cfg config.Config, client *http.Client, agent *ag.UserAgent, manual bool, port int) error {
 	if port < 1 || port > 65535 {
 		return errors.New("port must be between 1 and 65535")
 	}
@@ -230,7 +241,7 @@ func login(parent context.Context, cfg config.Config, client *http.Client, manua
 	if err != nil {
 		return errors.New("OAuth token exchange failed; verify the account and try again")
 	}
-	upstream := &ag.Client{HTTP: client, BaseURL: cfg.UpstreamURL, UserAgent: cfg.UserAgent}
+	upstream := &ag.Client{HTTP: client, BaseURL: cfg.UpstreamURL, UserAgent: agent.String}
 	project, err := upstream.DiscoverProject(ctx, token.AccessToken)
 	if err != nil {
 		return err

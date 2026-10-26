@@ -56,7 +56,7 @@ func setup(t *testing.T, generate http.HandlerFunc) (*httptest.Server, *atomic.I
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	client := &ag.Client{HTTP: up.Client(), BaseURL: up.URL, UserAgent: "test", Auth: fixedToken{}}
+	client := &ag.Client{HTTP: up.Client(), BaseURL: up.URL, UserAgent: func() string { return "test" }, Auth: fixedToken{}}
 	svc := New(cfg, client, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	down := httptest.NewServer(svc.Handler())
 	t.Cleanup(down.Close)

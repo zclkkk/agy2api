@@ -41,6 +41,7 @@ type Renderer struct {
 	Result    json.RawMessage
 	Warnings  []string
 	bytes     int
+	summary   strings.Builder // compaction summary text
 }
 
 // model is the upstream model; replay state is bound to it.
@@ -137,6 +138,13 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 			r.warn("ignored upstream part fields: %s", strings.Join(part.Unknown, ", "))
 		}
 		if part.Empty() {
+			continue
+		}
+		if r.Input.Compact != "" {
+			// The summary is returned whole inside the compaction item.
+			if !part.Thought {
+				r.summary.WriteString(part.Text)
+			}
 			continue
 		}
 		if len(part.ExecutableCode) > 0 || len(part.CodeExecutionResult) > 0 || part.FileData != nil {
@@ -567,13 +575,7 @@ func (r *Renderer) response(status string, incomplete any) map[string]any {
 		"parallel_tool_calls": true, "tool_choice": "auto", "tools": []any{},
 		"instructions": nil, "max_output_tokens": nil, "temperature": nil,
 		"top_p": nil, "truncation": "disabled",
-		"usage": map[string]any{
-			"input_tokens":          r.usage.Input,
-			"input_tokens_details":  map[string]int{"cached_tokens": r.usage.Cached, "cache_write_tokens": 0},
-			"output_tokens":         r.usage.Output + r.usage.Thoughts,
-			"output_tokens_details": map[string]int{"reasoning_tokens": r.usage.Thoughts},
-			"total_tokens":          r.usage.Input + r.usage.Output + r.usage.Thoughts,
-		},
+		"usage": r.responseUsage(),
 	}
 	var options map[string]json.RawMessage
 	_ = json.Unmarshal(r.Input.Options, &options)
@@ -583,6 +585,16 @@ func (r *Renderer) response(status string, incomplete any) map[string]any {
 		}
 	}
 	return out
+}
+
+func (r *Renderer) responseUsage() map[string]any {
+	return map[string]any{
+		"input_tokens":          r.usage.Input,
+		"input_tokens_details":  map[string]int{"cached_tokens": r.usage.Cached, "cache_write_tokens": 0},
+		"output_tokens":         r.usage.Output + r.usage.Thoughts,
+		"output_tokens_details": map[string]int{"reasoning_tokens": r.usage.Thoughts},
+		"total_tokens":          r.usage.Input + r.usage.Output + r.usage.Thoughts,
+	}
 }
 
 func (r *Renderer) Finish(ctx context.Context) error {
@@ -609,6 +621,12 @@ func (r *Renderer) Finish(ctx context.Context) error {
 		return &ag.HTTPError{Status: 502, Message: "Antigravity ended generation with " + reason + "; retry the request"}
 	default:
 		r.warn("treated upstream finish reason %s as a normal stop", reason)
+	}
+	if r.Input.Compact != "" {
+		if status != "completed" {
+			return &ag.HTTPError{Status: 502, Message: "Antigravity did not finish the compaction summary (" + r.finish + "); retry the request"}
+		}
+		return r.finishCompaction(ctx)
 	}
 	if err := r.closeBlock(ctx); err != nil {
 		return err
@@ -645,6 +663,40 @@ func (r *Renderer) Finish(ctx context.Context) error {
 		}
 	}
 	return r.event("response."+status, map[string]any{"response": response})
+}
+
+// finishCompaction returns the summary as one compaction item. The
+// /v1/responses/compact endpoint returns a response.compaction object; a
+// compaction_trigger request returns an ordinary response.
+func (r *Renderer) finishCompaction(ctx context.Context) error {
+	summary := strings.TrimSpace(r.summary.String())
+	if summary == "" {
+		return &ag.HTTPError{Status: 502, Message: "Antigravity returned an empty compaction summary; retry the request"}
+	}
+	item := map[string]any{"id": ag.ID("cmp_"), "type": "compaction", "encrypted_content": sealCompaction(summary, r.Input.Model)}
+	if r.Input.Compact == "endpoint" {
+		r.Result = raw(map[string]any{"id": r.ID, "object": "response.compaction", "created_at": r.Created, "output": []any{item}, "usage": r.responseUsage()})
+		return nil
+	}
+	index := len(r.items)
+	if err := r.event("response.output_item.added", map[string]any{"output_index": index, "item": item}); err != nil {
+		return err
+	}
+	if err := r.event("response.output_item.done", map[string]any{"output_index": index, "item": item}); err != nil {
+		return err
+	}
+	r.items = append(r.items, item)
+	response := r.response("completed", nil)
+	r.Result = raw(response)
+	if r.Input.Store {
+		// A continuation of this response starts from the summary alone.
+		contents := []ag.Content{{Role: "user", Parts: []ag.Part{summaryPart(summary)}}}
+		items := append([]json.RawMessage(nil), r.Input.OriginalItems...)
+		if err := r.State.Put(ctx, "response", r.ID, StoredResponse{Model: r.Input.Model, Contents: contents, Response: r.Result, Items: items, SessionID: r.Input.Request.SessionID}); err != nil {
+			return err
+		}
+	}
+	return r.event("response.completed", map[string]any{"response": response})
 }
 
 func (r *Renderer) Fail(message string) error {

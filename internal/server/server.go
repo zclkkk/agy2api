@@ -100,6 +100,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("POST /v1/responses", s.generate)
+	mux.HandleFunc("POST /v1/responses/compact", s.generate)
 	mux.HandleFunc("POST /v1/messages", s.generate)
 	mux.HandleFunc("POST /v1/messages/count_tokens", s.count)
 	mux.HandleFunc("POST /v1/responses/input_tokens", s.count)
@@ -224,12 +225,22 @@ func (s *Server) prepare(w http.ResponseWriter, r *http.Request, data []byte, co
 		return in, ag.Request{}, false
 	}
 	in.Warnings = nil
+	if r.URL.Path == "/v1/responses/compact" {
+		in.Compact, in.Stream, in.Store = "endpoint", false, false
+	}
+	if in.Compact != "" && !count {
+		in.PrepareCompaction()
+	}
 	catalog, err := s.getCatalog(r.Context())
 	if err == nil {
 		err = in.Prepare(catalog)
 	}
 	if err == nil {
 		err = s.resolveMedia(r.Context(), &in.Request)
+	}
+	if err == nil && !count {
+		in.EndWithUser()
+		in.AssignSession(r.Header)
 	}
 	s.note(r, "", in.Warnings...)
 	if err != nil {
@@ -335,10 +346,6 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
-	if native.SessionID == "" {
-		native.SessionID = ag.ID("session-")
-	}
-	in.Request.SessionID = native.SessionID
 	renderer := protocol.NewRenderer(format, in, s.state, emit)
 	err := s.backend.Generate(r.Context(), in.UpstreamModel(), native, in.Kind, func(chunk ag.Chunk) error { return renderer.Add(r.Context(), chunk) })
 	if err == nil {
