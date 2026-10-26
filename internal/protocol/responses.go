@@ -337,6 +337,7 @@ func responseChoice(in *Input, value json.RawMessage) error {
 	case "web_search", "web_search_preview", "web_search_2025_08_26", "web_search_preview_2025_03_11":
 		// A search request is sent with Google Search as its tool already.
 		if in.Search {
+			in.SearchChosen = true
 			return nil
 		}
 	}

@@ -484,3 +484,41 @@ func TestMessagesSearchReturnsResultBlocks(t *testing.T) {
 		t.Fatalf("empty search reported blocks: %s", r.Result)
 	}
 }
+
+func TestChosenSearchDropsFunctionTools(t *testing.T) {
+	d := Decoder{State: testStore(t)}
+	prepared := func(name, body string) Input {
+		t.Helper()
+		var in Input
+		var err error
+		if name == "messages" {
+			in, err = d.Messages(context.Background(), []byte(body), false)
+		} else {
+			in, err = d.Responses(context.Background(), []byte(body))
+		}
+		if err == nil {
+			err = in.Prepare(testCatalog)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return in
+	}
+	for name, body := range map[string]string{
+		"messages":  `{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"news"}],"tools":[{"type":"web_search_20250305","name":"web_search"},{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"web_search"}}`,
+		"responses": `{"model":"gemini-test","input":"news","tools":[{"type":"web_search"},{"type":"function","name":"lookup","parameters":{"type":"object"}}],"tool_choice":{"type":"web_search"}}`,
+	} {
+		in := prepared(name, body)
+		if !in.Search || in.Kind != ag.KindSearch || in.Request.ToolConfig != nil || len(in.Request.Tools) != 1 || in.Request.Tools[0].GoogleSearch == nil {
+			t.Errorf("%s: chosen search must replace the functions: %+v", name, in.Request.Tools)
+		}
+		if len(in.Warnings) == 0 || !strings.Contains(in.Warnings[0], "function tools omitted") {
+			t.Errorf("%s: warnings %v", name, in.Warnings)
+		}
+	}
+	// Without an explicit choice the functions win, as Codex expects.
+	in := prepared("responses", `{"model":"gemini-test","input":"news","tools":[{"type":"web_search"},{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`)
+	if in.Search || !hasFunctions(in.Request.Tools) {
+		t.Fatalf("auto choice must keep the functions: %+v", in.Request.Tools)
+	}
+}

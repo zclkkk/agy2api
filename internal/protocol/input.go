@@ -47,6 +47,7 @@ type Input struct {
 	PreviousID    string
 	OriginalItems []json.RawMessage
 	Search        bool
+	SearchChosen  bool // tool_choice selects the search tool
 	Metadata      json.RawMessage
 	Options       json.RawMessage
 	Thinking      ThinkingIntent

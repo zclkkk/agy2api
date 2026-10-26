@@ -223,3 +223,29 @@ func mustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
+
+func TestChosenSearchKeepsFunctionHistoryValid(t *testing.T) {
+	var envelope ag.Envelope
+	_, s := newService(t, nil, func(w http.ResponseWriter) {
+		io.WriteString(w, `{"models":{"gemini-test":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},"gemini-search":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"}},"webSearchModelIds":["gemini-search"]}`)
+	}, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&envelope)
+		w.Header().Set("Content-Type", "text/event-stream")
+		frame(w, chunk([]ag.Part{{Text: "found"}}, "STOP", nil))
+	})
+	body := `{"model":"gemini-test","max_tokens":100,"tool_choice":{"type":"tool","name":"web_search"},
+		"tools":[{"type":"web_search_20250305","name":"web_search"},{"name":"lookup","input_schema":{"type":"object"}}],
+		"messages":[{"role":"user","content":"look it up"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_client_1","name":"lookup","input":{}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_client_1","content":"topic"},{"type":"text","text":"now search the web"}]}]}`
+	if res, out := send(t, s, "/v1/messages", body, nil); res.StatusCode != 200 {
+		t.Fatalf("%d %s", res.StatusCode, out)
+	}
+	req := envelope.Request
+	if envelope.RequestType != ag.KindSearch || envelope.Model != "gemini-search" || len(req.Tools) != 1 || req.Tools[0].GoogleSearch == nil {
+		t.Fatalf("not sent as a search request: %s %s %+v", envelope.RequestType, envelope.Model, req.Tools)
+	}
+	// Antigravity accepts earlier calls without declarations, but only signed.
+	if call := req.Contents[1].Parts[0]; call.FunctionCall == nil || call.Signature == "" {
+		t.Fatalf("history call must keep a signature: %+v", call)
+	}
+}

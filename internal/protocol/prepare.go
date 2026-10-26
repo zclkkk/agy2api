@@ -36,11 +36,22 @@ func (in *Input) Prepare(catalog ag.Catalog) error {
 	if info.Image {
 		in.Kind = ag.KindImage
 	}
-	if in.Search {
-		switch {
-		case hasFunctions(in.Request.Tools):
+	// Antigravity rejects Google Search next to function declarations. A
+	// request that chooses search drops the functions; history with earlier
+	// calls stays valid because every call keeps a signature. Otherwise the
+	// functions win, as clients such as Codex declare search alongside them.
+	if in.Search && hasFunctions(in.Request.Tools) {
+		if in.SearchChosen {
+			in.Request.Tools = nil
+			in.Request.ToolConfig = nil
+			in.warn("function tools omitted: tool_choice selects web search, which Antigravity cannot combine with function tools")
+		} else {
 			in.Search = false
 			in.warn("web search ignored: Antigravity cannot combine it with function tools")
+		}
+	}
+	if in.Search {
+		switch {
 		case !info.Search && len(catalog.SearchModels) == 0:
 			return invalid("tools", "web search is not available to this account")
 		default:

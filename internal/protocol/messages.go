@@ -197,10 +197,10 @@ func (d Decoder) Messages(ctx context.Context, data []byte, countOnly bool) (Inp
 		}
 		// Choosing the search tool needs no function config: a search request
 		// is sent with Google Search as its tool.
-		if !(choice.Type == "tool" && searchTools[choice.Name]) {
-			if err := setChoice(&in, choice.Type, choice.Name); err != nil {
-				return in, err
-			}
+		if choice.Type == "tool" && searchTools[choice.Name] {
+			in.SearchChosen = true
+		} else if err := setChoice(&in, choice.Type, choice.Name); err != nil {
+			return in, err
 		}
 	}
 	if t := r.Thinking; t != nil {
