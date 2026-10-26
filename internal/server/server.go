@@ -220,6 +220,9 @@ func (s *Server) prepare(w http.ResponseWriter, r *http.Request, data []byte, co
 		return in, false
 	}
 	in.Warnings = nil
+	if s.cfg.SanitizeClientMarkers {
+		in.SanitizeClientMarkers()
+	}
 	if r.URL.Path == "/v1/responses/compact" {
 		in.Compact, in.Stream, in.Store = "endpoint", false, false
 	}
@@ -235,6 +238,9 @@ func (s *Server) prepare(w http.ResponseWriter, r *http.Request, data []byte, co
 	}
 	if err == nil {
 		err = in.Finalize(r.Header)
+	}
+	if err == nil {
+		err = (protocol.Decoder{State: s.state}).RestoreTextSignatures(r.Context(), &in)
 	}
 	s.note(r, "", in.Warnings...)
 	if err != nil {

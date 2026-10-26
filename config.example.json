@@ -5,6 +5,7 @@
   "upstream_url": "https://daily-cloudcode-pa.googleapis.com",
   "user_agent": "",
   "proxy_url": "",
+  "sanitize_client_markers": true,
   "max_body_bytes": 33554432,
   "max_concurrent_requests": 4,
   "state_ttl_hours": 168,

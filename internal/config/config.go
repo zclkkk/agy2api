@@ -20,6 +20,7 @@ type Config struct {
 	UpstreamURL           string `json:"upstream_url"`
 	UserAgent             string `json:"user_agent"`
 	ProxyURL              string `json:"proxy_url"`
+	SanitizeClientMarkers bool   `json:"sanitize_client_markers"`
 	MaxBodyBytes          int64  `json:"max_body_bytes"`
 	MaxConcurrentRequests int    `json:"max_concurrent_requests"`
 	StateTTLHours         int    `json:"state_ttl_hours"`
@@ -28,7 +29,13 @@ type Config struct {
 }
 
 func Default() Config {
-	return Config{Listen: "127.0.0.1:8080", DataDir: "./data", UpstreamURL: "https://daily-cloudcode-pa.googleapis.com", MaxBodyBytes: 32 << 20, MaxConcurrentRequests: 4, StateTTLHours: 168, MaxStateEntries: 10000, MaxStateBytes: 1 << 30}
+	return Config{
+		Listen: "127.0.0.1:8080", DataDir: "./data",
+		UpstreamURL:           "https://daily-cloudcode-pa.googleapis.com",
+		SanitizeClientMarkers: true,
+		MaxBodyBytes:          32 << 20, MaxConcurrentRequests: 4,
+		StateTTLHours: 168, MaxStateEntries: 10000, MaxStateBytes: 1 << 30,
+	}
 }
 
 func Load(path string) (Config, error) {

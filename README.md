@@ -69,6 +69,7 @@ curl http://127.0.0.1:8080/v1/messages \
 | 功能 | 状态 |
 | --- | --- |
 | OAuth 登录、自动刷新与凭据原子更新 | 已实现 |
+| 客户端 system 标记清理 | 默认清理 billing 归属行和已知 Claude Code 身份行；业务指令、消息、工具数据与签名保留 |
 | `/v1/models` 与 `/v1/models/{id}` | 从账号实时发现，只列出 Gemini 模型，缓存 5 分钟 |
 | `/v1/responses`、`/v1/messages` | 流式、非流式、文本和多轮对话；Messages 支持 `system` 角色消息 |
 | 真实客户端请求形态 | Codex CLI 0.164 端到端通过，本地压缩和远程压缩都可用；Claude Code 2.1 的请求形态通过（见下方已知限制） |
@@ -122,9 +123,26 @@ remote_compaction = "v2"
 
 摘要由请求的模型生成，期间禁止调用工具。`compaction` 项的 `encrypted_content` 携带摘要本身：它只包含客户端自己的对话内容，因此只做编码、不加密，也不依赖本地状态库，状态库丢失后压缩过的会话仍能继续。其他服务商签发的 `compaction` 项无法展开，会被丢弃并记录到日志的 `warnings`，模型将看不到它代表的历史。`/v1/responses/compact` 返回 `response.compaction` 对象，不保存记录；`compaction_trigger` 请求按普通 Responses 请求处理，`store:true` 时保存的上下文只包含摘要。
 
-### 已知限制：Claude Code
+### 客户端 system 标记清理
 
-Antigravity 会拒绝 Claude Code 发出的请求。Claude Code 的 system prompt 带有两行身份标识：`x-anthropic-billing-header: …` 和 “You are a Claude agent, built on Anthropic's Claude Agent SDK.”，上游对含有其中任意一行的请求返回 `429 RESOURCE_EXHAUSTED`，与额度和所选的 Gemini 模型都无关。agy2api 原样转发 system prompt，不做绕过处理；这类错误会照常返回给客户端。其余请求形态（`cache_control`、`context_management`、`defer_loading` 工具、`system` 角色消息、自适应思考等）已经过真实账号验证。
+`sanitize_client_markers` 默认开启，已有配置省略此项时也会开启。设为 `false` 可以原样转发 system 标记，便于对照排查：
+
+```json
+{"sanitize_client_markers": false}
+```
+
+清洗在两个协议统一解码为 system 指令后执行，生成、流式、计数和压缩共用这一步。仅删除以下独立文本行：
+
+- 去掉首尾空白后以 `x-anthropic-billing-header:` 开头的归属行。
+- 与以下已知身份句完全匹配的行：`You are Claude Code, Anthropic's official CLI for Claude.`、`You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.`、`You are a Claude agent, built on Anthropic's Claude Agent SDK.`。
+
+同一文本块里的其他指令及其换行保持原样；代码围栏中的示例、引用行、用户消息、工具描述、工具参数、工具结果和已有签名不参与清洗。完全清空的 system 块会移除。没有零宽字符替换、通用关键词过滤或自定义正则规则。
+
+日志的 `warnings` 只记录规则与命中数量，例如 `sanitize_client_markers: billing_header=1 claude_identity=1`，不记录被移除的文本。关闭清洗时，Claude Code 的这些标记可能使 Antigravity 返回 `429 RESOURCE_EXHAUSTED`；实际额度耗尽等其他上游错误仍按原样处理。
+
+Messages 正文后不再追加空的 thinking 签名块，以免 Claude Code 把它当作最后一条消息而输出空 `result`。正文签名改用现有状态库保存，索引绑定模型、会话、system 指令、之前的历史和正文哈希，下一轮自动恢复。历史版本返回的签名载体仍可回放。
+
+2026-10-26 使用 Claude Code 2.1.310 对照验证：同一请求关闭清洗时返回 429，开启后返回 200；普通回答及只读工具完整回合通过。Codex 0.164.0、OpenCode V2 2.1.4 的回归也通过。详见[本功能验收记录](docs/client-markers-validation-2026-10-26.json)。
 
 ## 数据与状态
 
@@ -136,7 +154,7 @@ data/
   state.db           Responses 历史、工具签名索引和回放加密密钥
 ```
 
-Responses 默认 `store:true`。设为 `false` 时不保存该响应及其上下文，也不能用其 ID 继续会话；为了工具回合能继续，短期工具签名索引仍保留模型、工具名、参数摘要和签名，不保存工具参数原文。思考回放数据随响应加密返回客户端。普通保存的会话记录没有数据库级加密，请保护数据目录。
+Responses 默认 `store:true`。设为 `false` 时不保存该响应及其上下文，也不能用其 ID 继续会话；为了工具回合能继续，短期工具签名索引仍保留模型、工具名、参数摘要和签名，不保存工具参数原文。Messages 的正文签名也使用有界缓存，仅保存摘要索引和签名，不保存正文原文；缓存未命中时保留正文、继续请求。思考回放数据随响应加密返回客户端。普通保存的会话记录没有数据库级加密，请保护数据目录。
 
 状态默认保留 168 小时，最多 10000 条、总计 1 GiB（`max_state_bytes`）；超限时先清理最旧的记录，上限为软限制，可能短暂超出几十条小记录。记录过期、被清理或数据库丢失后，旧会话仍能继续：无法恢复的思考块会被丢弃，工具调用改用 Antigravity 接受的占位签名，代价是模型看不到之前的思考内容。状态绑定 Antigravity project，更换账号应使用新的数据目录。不要同时运行多个进程使用同一份账号数据。
 
@@ -181,7 +199,7 @@ python tests/live_validate.py --only thinking --report /tmp/agy2api-thinking-rep
 - 同一天的额外验证：Codex CLI 0.164 用 `gemini-3-flash` 完成真实文件任务，并用 `gemini-3-flash` 和 `gemini-3.8-flash-medium` 通过远程压缩完成同一任务；抓取的 Codex（22 个工具）和 Claude Code（23 个工具）请求在 `VALIDATED` 模式下均被接受。
 - 图片生成和图片编辑两项受图片模型额度阻止（`429 / QUOTA_EXHAUSTED`，同一天的前一轮验收用掉了额度，上游要求约 3.9 小时后重试）；前一轮验收中这两项通过，生成图片的回放由单元测试覆盖。
 - 上游会话 ID 不影响缓存命中：实测 Gemini 按请求前缀缓存，换会话 ID 仍然命中。固定会话 ID 只是让请求与官方客户端一致。
-- Claude Code 的请求会被 Antigravity 按身份标识拒绝，见上方“已知限制”。
+- 该次验收发生在加入客户端标记清理之前；原样转发的 Claude Code 标记会被上游拒绝。当前行为见上方“客户端 system 标记清理”。
 - `gemini-2.5-pro`：上游持续返回 `503 / MODEL_CAPACITY_EXHAUSTED`。模型仍保留在目录里，不把暂时无容量误判为永久不支持。
 - `stop_sequences` 可以正确截断文本，但上游仅返回 `STOP`，不包含命中的序列。当前 Messages 仍返回 `end_turn` 和 `null`，这两项验收标记为 `partial`，不能视为完整 Anthropic 元数据兼容。
 - `gs://` 文件 URI 尚未使用真实可访问对象验收；后台任务等未实现能力仍按上面的范围明确拒绝。

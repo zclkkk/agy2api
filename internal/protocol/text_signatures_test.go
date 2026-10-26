@@ -1,0 +1,176 @@
+package protocol
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"testing"
+
+	ag "github.com/zclkkk/agy2api/internal/antigravity"
+)
+
+func TestMessagesEndsWithTextAndRestoresItsSignature(t *testing.T) {
+	for _, withThinking := range []bool{false, true} {
+		t.Run(map[bool]string{false: "text only", true: "thinking then text"}[withThinking], func(t *testing.T) {
+			ctx := context.Background()
+			s := testStore(t)
+			d := Decoder{State: s}
+			headers := http.Header{"Session-Id": []string{"text-signature-test"}}
+			in, err := d.Messages(ctx, []byte(`{"model":"gemini-test","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := in.Finalize(headers); err != nil {
+				t.Fatal(err)
+			}
+			var blockTypes []string
+			r := NewRenderer("messages", in, s, func(name string, event map[string]any) error {
+				if name == "content_block_start" {
+					blockTypes = append(blockTypes, event["content_block"].(map[string]any)["type"].(string))
+				}
+				return nil
+			})
+			if withThinking {
+				if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Thought: true, Text: "Plan", Signature: "thought-signature"}}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "Hello "}}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "world", Signature: "text-signature"}}, Finish: "STOP"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Finish(ctx); err != nil {
+				t.Fatal(err)
+			}
+			var reply struct {
+				Content []Block `json:"content"`
+			}
+			if err := json.Unmarshal(r.Result, &reply); err != nil {
+				t.Fatal(err)
+			}
+			if blockTypes[len(blockTypes)-1] != "text" || reply.Content[len(reply.Content)-1].Type != "text" {
+				t.Fatal("a synthetic thinking block followed the visible answer")
+			}
+			if !withThinking && len(reply.Content) != 1 {
+				t.Fatal("plain text acquired an extra thinking block")
+			}
+			body := raw(map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": []any{
+				map[string]any{"role": "user", "content": "hello"}, map[string]any{"role": "assistant", "content": reply.Content}, map[string]any{"role": "user", "content": "continue"},
+			}})
+			next, err := d.Messages(ctx, body, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := next.Finalize(headers); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.RestoreTextSignatures(ctx, &next); err != nil {
+				t.Fatal(err)
+			}
+			parts := next.Request.Contents[1].Parts
+			last := parts[len(parts)-1]
+			if last.Text != "Hello world" || last.Signature != "text-signature" {
+				t.Fatalf("text signature was lost: %+v", last)
+			}
+			if withThinking && parts[0].Signature != "thought-signature" {
+				t.Fatal("thinking signature changed")
+			}
+			changed, err := d.Messages(ctx, body, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := changed.Finalize(http.Header{"Session-Id": []string{"another-session"}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.RestoreTextSignatures(ctx, &changed); err != nil {
+				t.Fatal(err)
+			}
+			last = changed.Request.Contents[1].Parts[len(parts)-1]
+			if last.Signature != "" || last.Text != "Hello world" {
+				t.Fatal("text signature crossed sessions or text was changed")
+			}
+			changed, err = d.Messages(ctx, body, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := changed.Finalize(headers); err != nil {
+				t.Fatal(err)
+			}
+			changed.Request.System = &ag.Content{Parts: []ag.Part{{Text: "Different instructions"}}}
+			if err := d.RestoreTextSignatures(ctx, &changed); err != nil {
+				t.Fatal(err)
+			}
+			if changed.Request.Contents[1].Parts[len(parts)-1].Signature != "" {
+				t.Fatal("text signature crossed system contexts")
+			}
+		})
+	}
+}
+
+func TestTextSignatureCacheSeparatesRepeatedAnswersAndLegacyCarriers(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	d := Decoder{State: s}
+	headers := http.Header{"Session-Id": []string{"same-session"}}
+	history := []any{map[string]string{"role": "user", "content": "first"}}
+	for _, signature := range []string{"signature-one", "signature-two"} {
+		in, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": history}), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := in.Finalize(headers); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.RestoreTextSignatures(ctx, &in); err != nil {
+			t.Fatal(err)
+		}
+		r := NewRenderer("messages", in, s, nil)
+		if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "OK", Signature: signature}}, Finish: "STOP"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Finish(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var reply struct {
+			Content []Block `json:"content"`
+		}
+		if err := json.Unmarshal(r.Result, &reply); err != nil {
+			t.Fatal(err)
+		}
+		history = append(history, map[string]any{"role": "assistant", "content": reply.Content}, map[string]string{"role": "user", "content": "next"})
+	}
+	in, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": history}), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := in.Finalize(headers); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RestoreTextSignatures(ctx, &in); err != nil {
+		t.Fatal(err)
+	}
+	if in.Request.Contents[1].Parts[0].Signature != "signature-one" || in.Request.Contents[3].Parts[0].Signature != "signature-two" {
+		t.Fatal("equal text in different turns shared a signature")
+	}
+	carrier, err := s.Seal("gemini-test", Replay{PreviousText: digest(raw("legacy")), Signature: "legacy-signature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": []any{
+		map[string]string{"role": "user", "content": "first"}, map[string]any{"role": "assistant", "content": []Block{{Type: "text", Text: "legacy"}, {Type: "thinking", Signature: carrier}}}, map[string]string{"role": "user", "content": "next"},
+	}}), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Finalize(headers); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RestoreTextSignatures(ctx, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Request.Contents[1].Parts[0].Signature != "legacy-signature" {
+		t.Fatal("an existing sealed signature was overwritten")
+	}
+}

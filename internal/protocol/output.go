@@ -26,25 +26,26 @@ type outputBlock struct {
 // Renderer turns the upstream stream into a Messages or Responses reply,
 // streamed through emit or collected in Result, and records replay state.
 type Renderer struct {
-	format    string // "messages" or "responses"
-	input     Input
-	state     *state.Store
-	emit      func(string, map[string]any) error
-	id        string
-	created   int64
-	started   bool
-	sequence  int
-	items     []map[string]any
-	active    *outputBlock
-	toolUsed  bool
-	usage     ag.Usage
-	finish    string
-	grounding *ag.Grounding
-	native    []ag.Part // the model turn, for stored history
-	summary   strings.Builder
-	bytes     int
-	Result    json.RawMessage
-	Warnings  []string
+	format         string // "messages" or "responses"
+	input          Input
+	state          *state.Store
+	emit           func(string, map[string]any) error
+	id             string
+	created        int64
+	started        bool
+	sequence       int
+	items          []map[string]any
+	active         *outputBlock
+	toolUsed       bool
+	usage          ag.Usage
+	finish         string
+	grounding      *ag.Grounding
+	native         []ag.Part // the model turn, for stored history
+	summary        strings.Builder
+	bytes          int
+	Result         json.RawMessage
+	Warnings       []string
+	textSignatures *textSignatureIndex
 }
 
 // model is the upstream model; replay state is bound to it.
@@ -76,7 +77,18 @@ func NewRenderer(format string, in Input, s *state.Store, emit func(string, map[
 	if format == "messages" {
 		prefix = "msg_"
 	}
-	return &Renderer{format: format, input: in, state: s, emit: emit, id: ag.ID(prefix), created: time.Now().Unix(), items: []map[string]any{}}
+	r := &Renderer{format: format, input: in, state: s, emit: emit, id: ag.ID(prefix), created: time.Now().Unix(), items: []map[string]any{}}
+	if format == "messages" {
+		r.textSignatures = newTextSignatureIndex(in.UpstreamModel(), in.Request.SessionID, in.Request.System)
+		for _, content := range in.Request.Contents {
+			r.textSignatures.begin(content.Role)
+			for _, part := range content.Parts {
+				r.textSignatures.add(part)
+			}
+		}
+		r.textSignatures.begin("model")
+	}
+	return r
 }
 
 func (r *Renderer) event(name string, fields map[string]any) error {
@@ -359,6 +371,16 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 			return err
 		}
 	}
+	if r.textSignatures != nil {
+		if b.Kind == "text" && b.Signature != "" {
+			if err := r.state.Put(ctx, "text_signature", r.textSignatures.key(b.Text), b.Signature); err != nil {
+				return err
+			}
+		}
+		for _, part := range b.Parts {
+			r.textSignatures.add(part)
+		}
+	}
 	if r.format == "messages" {
 		switch b.Kind {
 		case "text":
@@ -453,36 +475,21 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 	r.toolUsed = r.toolUsed || b.Kind == "tool"
 	r.native = append(r.native, b.Parts...)
 	r.active = nil
-	if b.Kind == "text" && b.Signature != "" {
+	if b.Kind == "text" && b.Signature != "" && r.format == "responses" {
 		// A carrier after the text restores a signature on that exact native part.
 		sealed, err := r.state.Seal(r.model(), Replay{PreviousText: digest(raw(b.Text)), Signature: b.Signature})
 		if err != nil {
 			return err
 		}
-		if r.format == "messages" {
-			carrier := map[string]any{"type": "thinking", "thinking": "", "signature": sealed}
-			index := len(r.items)
-			if err := r.event("content_block_start", map[string]any{"index": index, "content_block": map[string]any{"type": "thinking", "thinking": "", "signature": ""}}); err != nil {
-				return err
-			}
-			if err := r.event("content_block_delta", map[string]any{"index": index, "delta": map[string]any{"type": "signature_delta", "signature": sealed}}); err != nil {
-				return err
-			}
-			if err := r.event("content_block_stop", map[string]any{"index": index}); err != nil {
-				return err
-			}
-			r.items = append(r.items, carrier)
-		} else {
-			carrier := map[string]any{"id": ag.ID("rs_"), "type": "reasoning", "summary": []any{}, "encrypted_content": sealed, "status": "completed"}
-			index := len(r.items)
-			if err := r.event("response.output_item.added", map[string]any{"output_index": index, "item": map[string]any{"id": carrier["id"], "type": "reasoning", "summary": []any{}, "status": "in_progress"}}); err != nil {
-				return err
-			}
-			if err := r.event("response.output_item.done", map[string]any{"output_index": index, "item": carrier}); err != nil {
-				return err
-			}
-			r.items = append(r.items, carrier)
+		carrier := map[string]any{"id": ag.ID("rs_"), "type": "reasoning", "summary": []any{}, "encrypted_content": sealed, "status": "completed"}
+		index := len(r.items)
+		if err := r.event("response.output_item.added", map[string]any{"output_index": index, "item": map[string]any{"id": carrier["id"], "type": "reasoning", "summary": []any{}, "status": "in_progress"}}); err != nil {
+			return err
 		}
+		if err := r.event("response.output_item.done", map[string]any{"output_index": index, "item": carrier}); err != nil {
+			return err
+		}
+		r.items = append(r.items, carrier)
 	}
 	return nil
 }

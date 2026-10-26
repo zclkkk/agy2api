@@ -12,8 +12,9 @@ import (
 // Gemini attaches thought signatures to function calls, generated images and
 // text, and rejects a turn whose first function call or image arrives without
 // one. Clients do not carry signatures on tool calls, so the bridge keeps them
-// in local state keyed by the call IDs it issues; thinking and text signatures
-// travel sealed inside the reasoning items returned to the client.
+// in local state keyed by the call IDs it issues. Thinking signatures travel
+// sealed inside reasoning items. Responses text signatures use a sealed carrier;
+// Messages text signatures use a history-scoped cache to keep text last.
 
 // SkipSignature is Antigravity's documented placeholder for a function call
 // whose original thought signature is unavailable.
