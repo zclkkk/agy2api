@@ -31,6 +31,17 @@ cp config.example.toml config.toml
 
 默认监听 `127.0.0.1:8080`，数据保存在当前目录的 `data/`。对外提供服务或通过域名反向代理访问时，先在配置中设置 `api_key`。完整选项见[配置参考](docs/configuration.md)。
 
+## 模型选择
+
+使用 Gemini 3.8 Flash 时，若账号模型列表中包含 **`gemini-3.8-flash-high`**，推荐选择这个入口，并通过请求参数显式设置思考等级。该入口支持 `low`、`medium`、`high`，模型名中的 `-high` 不会锁定思考深度。
+
+在生成请求中补充以下字段即可选择 `low`，也可以替换为 `medium` 或 `high`：
+
+- Responses：`"reasoning":{"effort":"low"}`。
+- Messages：`"thinking":{"type":"adaptive"},"output_config":{"effort":"low"}`。
+
+这一建议仅针对 Gemini 3.8 Flash。其他模型的后缀含义由上游决定，按账号返回的完整 ID 使用；实际可用模型和额度取决于账号。
+
 ## 调用
 
 将 `MODEL_ID` 替换为 `models` 命令返回的模型 ID。
