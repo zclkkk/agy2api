@@ -581,7 +581,16 @@ class Live:
             ]
         assert citations, "no search citations returned"
         type(r).model_validate(r.model_dump())
-        return dict(self.details(r), citation_count=len(citations))
+        # Search redirect links are replaced by the pages they point to.
+        urls = [c.url for c in citations]
+        resolved = [u for u in urls if "grounding-api-redirect" not in u]
+        assert resolved, f"citation links were not resolved: {urls}"
+        return dict(
+            self.details(r),
+            citation_count=len(citations),
+            resolved_links=f"{len(resolved)}/{len(urls)}",
+            sample_url=resolved[0],
+        )
 
     def count(self, proto, model):
         if proto == "messages":
