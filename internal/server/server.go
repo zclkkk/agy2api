@@ -473,13 +473,15 @@ func (s *Server) stored(w http.ResponseWriter, r *http.Request) (protocol.Stored
 	return record, true
 }
 func (s *Server) retrieve(w http.ResponseWriter, r *http.Request) {
+	// A client asking for an event stream cannot use the stored JSON instead.
+	query := r.URL.Query()
+	if stream := query.Get("stream"); (stream != "" && stream != "false") || query.Has("starting_after") {
+		s.error(w, r, 400, "invalid_request_error", "streaming retrieval is not supported; retrieve the stored response without stream or starting_after", "stream")
+		return
+	}
 	record, ok := s.stored(w, r)
 	if !ok {
 		return
-	}
-	query := r.URL.Query()
-	if stream := query.Get("stream"); (stream != "" && stream != "false") || query.Has("starting_after") {
-		s.note(r, record.Model, "stream and starting_after are ignored for response retrieval; only stored JSON retrieval is implemented")
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(record.Response)

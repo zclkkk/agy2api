@@ -68,7 +68,9 @@ func (messagesEncoder) close(r *wireState, b *outputBlock) error {
 }
 
 func (r *wireState) messageUsage() map[string]any {
-	return map[string]any{"input_tokens": max(0, r.usage.Input-r.usage.Cached), "output_tokens": r.usage.Output + r.usage.Thoughts, "cache_read_input_tokens": r.usage.Cached}
+	// Gemini caches implicitly and reports no cache writes.
+	return map[string]any{"input_tokens": max(0, r.usage.Input-r.usage.Cached), "output_tokens": r.usage.Output + r.usage.Thoughts,
+		"cache_creation_input_tokens": 0, "cache_read_input_tokens": r.usage.Cached}
 }
 
 func (r *wireState) message(stop any) map[string]any {

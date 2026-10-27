@@ -90,11 +90,16 @@ func (Decoder) Images(data []byte, edit bool) (ImageIntent, error) {
 	if r.ResponseFormat != "" && r.ResponseFormat != "b64_json" {
 		return in, invalid("response_format", "only b64_json output is supported")
 	}
+	// A background choice changes what the image must contain; it cannot be
+	// ignored. Quality and policy hints still yield a valid image.
+	if r.Background != "" && r.Background != "auto" {
+		return in, invalid("background", "background only supports auto")
+	}
 	for _, option := range []struct{ name, value string }{
-		{"quality", r.Quality}, {"background", r.Background}, {"moderation", r.Moderation},
+		{"quality", r.Quality}, {"moderation", r.Moderation}, {"input_fidelity", r.InputFidelity}, {"style", r.Style},
 	} {
 		if option.value != "" && option.value != "auto" {
-			return in, invalid(option.name, option.name+" only supports auto")
+			in.Warnings = append(in.Warnings, option.name+" is not applied; the upstream model has no equivalent control")
 		}
 	}
 	switch {
@@ -104,10 +109,6 @@ func (Decoder) Images(data []byte, edit bool) (ImageIntent, error) {
 		return in, unsupported("partial_images")
 	case present(r.Mask):
 		return in, unsupported("mask")
-	case r.InputFidelity != "":
-		return in, unsupported("input_fidelity")
-	case r.Style != "":
-		return in, unsupported("style")
 	}
 	if edit && (len(r.Images) == 0 || len(r.Images) > 16) {
 		return in, invalid("images", "editing requires between 1 and 16 input images")

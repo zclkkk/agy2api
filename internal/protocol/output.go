@@ -29,7 +29,7 @@ type Renderer struct {
 	state          *state.Store
 	started        bool
 	active         *outputBlock
-	toolUsed       bool
+	toolCalls      int
 	finish         string
 	native         []ag.Part // the model turn, for stored history
 	summary        strings.Builder
@@ -230,7 +230,9 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 	if err := r.encoder.close(&r.wireState, b); err != nil {
 		return err
 	}
-	r.toolUsed = r.toolUsed || b.Kind == "tool"
+	if b.Kind == "tool" {
+		r.toolCalls++
+	}
 	r.native = append(r.native, b.Parts...)
 	r.active = nil
 	return nil
@@ -272,7 +274,14 @@ func (r *Renderer) Finish(ctx context.Context) error {
 	if len(r.items) == 0 && status == "completed" {
 		r.warn("upstream completed without content")
 	}
-	if stop == "end_turn" && r.toolUsed {
+	if r.input.SingleCall && r.toolCalls > 1 {
+		control := "parallel_tool_calls=false"
+		if r.input.Format == Messages {
+			control = "disable_parallel_tool_use"
+		}
+		r.warn("%s is not enforced; %d tool calls were returned", control, r.toolCalls)
+	}
+	if stop == "end_turn" && r.toolCalls > 0 {
 		stop = "tool_use"
 	}
 	r.Result = r.encoder.result(&r.wireState, status, stop, incomplete)

@@ -38,6 +38,7 @@ type PreparedRequest struct {
 	Metadata      json.RawMessage
 	Options       map[string]json.RawMessage
 	HideThinking  bool
+	SingleCall    bool
 	Tools         map[string]ToolName
 	Compact       string
 	Warnings      []string
@@ -71,7 +72,7 @@ func (p Planner) Prepare(ctx context.Context, intent RequestIntent, catalog ag.C
 		return PreparedRequest{Format: in.Format, Model: in.Model,
 			Request: in.Request, Stream: in.Stream, Store: in.Store,
 			PreviousID: in.PreviousID, OriginalItems: in.OriginalItems, Metadata: in.Metadata, Options: in.Options,
-			HideThinking: in.HideThinking, Tools: in.Tools, Compact: in.Compact,
+			HideThinking: in.HideThinking, SingleCall: in.SingleCall, Tools: in.Tools, Compact: in.Compact,
 			Warnings: in.Warnings, HistorySystem: in.HistorySystem}
 	}
 	var previous *StoredResponse

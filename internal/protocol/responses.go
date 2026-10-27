@@ -41,16 +41,21 @@ type ResponsesRequest struct {
 	Conversation json.RawMessage `json:"conversation,omitempty"`
 	Prompt       json.RawMessage `json:"prompt,omitempty"`
 	// Codex sets prompt_cache_key to its session ID.
-	PromptCacheKey       string          `json:"prompt_cache_key,omitempty"`
-	ContextManagement    json.RawMessage `json:"context_management,omitempty"`
-	PromptCacheRetention json.RawMessage `json:"prompt_cache_retention,omitempty"`
-	ServiceTier          json.RawMessage `json:"service_tier,omitempty"`
-	StreamOptions        json.RawMessage `json:"stream_options,omitempty"`
-	TopLogprobs          json.RawMessage `json:"top_logprobs,omitempty"`
+	PromptCacheKey    string          `json:"prompt_cache_key,omitempty"`
+	ContextManagement json.RawMessage `json:"context_management,omitempty"`
+	TopLogprobs       json.RawMessage `json:"top_logprobs,omitempty"`
 }
 
-// Client metadata has no corresponding provider control.
-var quietResponseFields = map[string]bool{"client_metadata": true, "user": true, "safety_identifier": true}
+// Accepted without effect, which the standard allows: client identifiers,
+// cache retention and service tiers carry no output guarantee, obfuscation is
+// optional, and max_tool_calls only limits built-in tools, which are rejected.
+var quietResponseFields = map[string]bool{"client_metadata": true, "user": true, "safety_identifier": true,
+	"prompt_cache_retention": true, "service_tier": true, "stream_options": true, "max_tool_calls": true}
+
+// Include values that only concern hosted tools or input echoes this adapter
+// never returns. reasoning.encrypted_content is always included.
+var quietIncludes = map[string]bool{"reasoning.encrypted_content": true, "web_search_call.results": true, "web_search_call.action.sources": true,
+	"file_search_call.results": true, "code_interpreter_call.outputs": true, "computer_call_output.output.image_url": true, "message.input_image.image_url": true}
 
 type ResponseTool struct {
 	Type        string          `json:"type"`
@@ -92,9 +97,6 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 		in.warn("ignored request fields: %s", strings.Join(ignored, ", "))
 	}
 	in.warnIgnoredOption("context_management", r.ContextManagement, "[]", "{}")
-	in.warnIgnoredOption("prompt_cache_retention", r.PromptCacheRetention)
-	in.warnIgnoredOption("service_tier", r.ServiceTier, `"auto"`, `"default"`)
-	in.warnIgnoredOption("stream_options", r.StreamOptions, `{"include_obfuscation":false}`)
 	in.warnIgnoredOption("top_logprobs", r.TopLogprobs, "0")
 	switch {
 	case r.Background:
@@ -104,14 +106,15 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 	case present(r.Prompt):
 		return in, unsupported("prompt")
 	}
-	if r.Parallel != nil && !*r.Parallel {
-		in.warn("parallel_tool_calls=false is not enforced; multiple tool calls remain possible")
-	}
+	// Reported by the renderer only if several calls are actually returned.
+	in.SingleCall = r.Parallel != nil && !*r.Parallel
 	if r.Truncation != "" && r.Truncation != "disabled" {
 		in.warn("truncation is ignored; automatic input truncation is not implemented")
 	}
 	for _, v := range r.Include {
-		if v != "reasoning.encrypted_content" {
+		if v == "message.output_text.logprobs" {
+			in.warn("include message.output_text.logprobs is ignored; logprobs are not returned")
+		} else if !quietIncludes[v] {
 			in.warn("ignored include %s", v)
 		}
 	}
@@ -203,14 +206,17 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 		}
 	}
 	if r.Reasoning != nil {
-		if r.Reasoning.Summary != "" && r.Reasoning.Summary != "auto" {
+		summary := r.Reasoning.Summary
+		if summary != "" && summary != "auto" && summary != "none" {
 			in.warn("reasoning.summary level is not enforced; upstream reasoning summaries are returned as available")
 		}
 		if r.Reasoning.Effort != "" {
 			applyEffort(&in, r.Reasoning.Effort)
 		}
-		if r.Reasoning.Summary != "" && r.Reasoning.Summary != "none" && in.Thinking.Mode == "" {
-			in.Thinking = ThinkingIntent{Mode: "adaptive"}
+		// Reasoning text is returned only when a summary is requested.
+		in.Thinking.Show = summary != "" && summary != "none"
+		if in.Thinking.Show && in.Thinking.Mode == "" {
+			in.Thinking.Mode = "adaptive"
 		}
 	}
 	if r.Text != nil && r.Text.Verbosity != "" {
@@ -336,7 +342,7 @@ func responseOptions(data []byte) map[string]json.RawMessage {
 	var input map[string]json.RawMessage
 	_ = json.Unmarshal(data, &input)
 	result := map[string]json.RawMessage{}
-	for _, key := range []string{"instructions", "max_output_tokens", "temperature", "top_p", "tool_choice", "tools", "reasoning", "text"} {
+	for _, key := range []string{"instructions", "max_output_tokens", "temperature", "top_p", "tool_choice", "tools", "parallel_tool_calls", "reasoning", "text"} {
 		if value, ok := input[key]; ok {
 			result[key] = value
 		}

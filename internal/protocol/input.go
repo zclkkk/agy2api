@@ -32,6 +32,7 @@ type ThinkingIntent struct {
 	Mode   string // "", "budget", "adaptive", "disabled" or "effort"
 	Budget int
 	Effort string
+	Show   bool // return thought text: Messages thinking enabled, Responses summary requested
 }
 
 // RequestIntent preserves client intent. Decoding performs no state or network
@@ -50,6 +51,7 @@ type RequestIntent struct {
 	Options       map[string]json.RawMessage
 	Thinking      ThinkingIntent
 	HideThinking  bool                // Messages thinking.display=omitted
+	SingleCall    bool                // parallel tool calls disabled; reported, not enforced
 	Tools         map[string]ToolName // native function name -> client identity
 	ClientSession string              // session ID found in the request body
 	Compact       string              // "trigger" (compaction_trigger item) or "endpoint" (/v1/responses/compact)

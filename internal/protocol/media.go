@@ -12,32 +12,43 @@ import (
 )
 
 type Source struct {
-	Type      string `json:"type"`
-	MediaType string `json:"media_type,omitempty"`
-	Data      string `json:"data,omitempty"`
-	URL       string `json:"url,omitempty"`
+	Type      string          `json:"type"`
+	MediaType string          `json:"media_type,omitempty"`
+	Data      string          `json:"data,omitempty"`
+	URL       string          `json:"url,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
 }
 type Block struct {
-	Type         string          `json:"type"`
-	Text         string          `json:"text,omitempty"`
-	Thinking     string          `json:"thinking,omitempty"`
-	Signature    string          `json:"signature,omitempty"`
-	ID           string          `json:"id,omitempty"`
-	Name         string          `json:"name,omitempty"`
-	Input        json.RawMessage `json:"input,omitempty"`
-	ToolUseID    string          `json:"tool_use_id,omitempty"`
-	Content      json.RawMessage `json:"content,omitempty"`
-	IsError      bool            `json:"is_error,omitempty"`
-	Source       *Source         `json:"source,omitempty"`
-	ImageURL     string          `json:"image_url,omitempty"`
-	Detail       string          `json:"detail,omitempty"`
-	FileData     string          `json:"file_data,omitempty"`
-	FileURL      string          `json:"file_url,omitempty"`
-	Filename     string          `json:"filename,omitempty"`
-	FileID       string          `json:"file_id,omitempty"`
-	Citations    json.RawMessage `json:"citations,omitempty"`
-	ToolName     string          `json:"tool_name,omitempty"`
-	CacheControl json.RawMessage `json:"cache_control,omitempty"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
+	// Source is an object for images and documents and a URL string for search results.
+	Source    json.RawMessage `json:"source,omitempty"`
+	Title     string          `json:"title,omitempty"`
+	Context   string          `json:"context,omitempty"`
+	ImageURL  string          `json:"image_url,omitempty"`
+	Detail    string          `json:"detail,omitempty"`
+	FileData  string          `json:"file_data,omitempty"`
+	FileURL   string          `json:"file_url,omitempty"`
+	Filename  string          `json:"filename,omitempty"`
+	FileID    string          `json:"file_id,omitempty"`
+	Citations json.RawMessage `json:"citations,omitempty"`
+	ToolName  string          `json:"tool_name,omitempty"`
+}
+
+func (b Block) mediaSource() (Source, error) {
+	var s Source
+	if !present(b.Source) || json.Unmarshal(b.Source, &s) != nil {
+		return s, invalid("source", "media source must be an object")
+	}
+	return s, nil
 }
 
 // blocks decodes string or block-array content.
@@ -69,14 +80,20 @@ func (in *RequestIntent) warnContentOptions(content json.RawMessage) {
 	}
 }
 
+// warnBlockOptions reports accepted block options whose guarantee does not
+// hold. cache_control needs no report: caching is never guaranteed.
 func (in *RequestIntent) warnBlockOptions(b Block) {
-	in.warnIgnoredOption("cache_control", b.CacheControl)
-	if b.Type == "document" {
+	switch b.Type {
+	case "document", "search_result":
 		var citations struct {
 			Enabled bool `json:"enabled"`
 		}
 		if json.Unmarshal(b.Citations, &citations) == nil && citations.Enabled {
-			in.warn("document citations.enabled is ignored; structured document citations are not implemented")
+			in.warn("%s citations.enabled is ignored; citations are not produced", b.Type)
+		}
+	case "input_image":
+		if b.Detail != "" && b.Detail != "auto" {
+			in.warn("image detail is not applied; images use the model's default resolution")
 		}
 	}
 }
@@ -88,13 +105,116 @@ func mediaParts(content json.RawMessage) ([]ag.Part, error) {
 	}
 	parts := make([]ag.Part, 0, len(items))
 	for _, b := range items {
-		p, err := mediaPart(b)
+		p, err := blockParts(b)
 		if err != nil {
 			return nil, err
 		}
-		parts = append(parts, p)
+		parts = append(parts, p...)
 	}
 	return parts, nil
+}
+
+// blockParts converts one content block, which may need several parts.
+func blockParts(b Block) ([]ag.Part, error) {
+	switch b.Type {
+	case "document":
+		return documentParts(b)
+	case "search_result":
+		return searchResultParts(b)
+	}
+	p, err := mediaPart(b)
+	if err != nil {
+		return nil, err
+	}
+	return []ag.Part{p}, nil
+}
+
+// documentParts passes a document's title and context to the model before
+// its content, as Anthropic does.
+func documentParts(b Block) ([]ag.Part, error) {
+	s, err := b.mediaSource()
+	if err != nil {
+		return nil, err
+	}
+	var parts []ag.Part
+	var header []string
+	if b.Title != "" {
+		header = append(header, "Document title: "+b.Title)
+	}
+	if b.Context != "" {
+		header = append(header, "Document context: "+b.Context)
+	}
+	if len(header) > 0 {
+		parts = append(parts, ag.Part{Text: strings.Join(header, "\n")})
+	}
+	switch s.Type {
+	case "base64", "url":
+		p, err := sourcePart(s)
+		if err != nil {
+			return nil, err
+		}
+		return append(parts, p), nil
+	case "text":
+		return append(parts, ag.Part{Text: s.Data}), nil
+	case "content":
+		if !present(s.Content) {
+			return nil, invalid("source.content", "content document requires content")
+		}
+		children, err := blocks(s.Content)
+		if err != nil {
+			return nil, err
+		}
+		for _, child := range children {
+			if child.Type != "text" && child.Type != "image" {
+				return nil, unsupported("document content type " + child.Type)
+			}
+			p, err := mediaPart(child)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, p)
+		}
+		return parts, nil
+	}
+	return nil, unsupported("source.type")
+}
+
+// searchResultParts presents a search result as text. Citations to it are not
+// produced; a request for them is reported by warnBlockOptions.
+func searchResultParts(b Block) ([]ag.Part, error) {
+	var source string
+	if json.Unmarshal(b.Source, &source) != nil || source == "" {
+		return nil, invalid("source", "search_result requires a source string")
+	}
+	if !present(b.Content) {
+		return nil, invalid("content", "search_result requires content")
+	}
+	children, err := blocks(b.Content)
+	if err != nil {
+		return nil, err
+	}
+	texts := make([]string, 0, len(children))
+	for _, child := range children {
+		if child.Type != "text" {
+			return nil, unsupported("search_result content type " + child.Type)
+		}
+		texts = append(texts, child.Text)
+	}
+	header := "Search result"
+	if b.Title != "" {
+		header += ": " + b.Title
+	}
+	return []ag.Part{{Text: header + "\nSource: " + source + "\n\n" + strings.Join(texts, "\n\n")}}, nil
+}
+
+func sourcePart(s Source) (ag.Part, error) {
+	switch s.Type {
+	case "base64":
+		return inline(s.MediaType, s.Data)
+	case "url":
+		return uriPart(s.URL, s.MediaType)
+	}
+	return ag.Part{}, unsupported("source.type")
 }
 
 func mediaPart(b Block) (ag.Part, error) {
@@ -108,28 +228,15 @@ func mediaPart(b Block) (ag.Part, error) {
 			name = b.Name
 		}
 		return ag.Part{Text: "Tool " + name + " is now available."}, nil
-	case "image", "document":
-		if b.Source == nil {
-			return ag.Part{}, invalid("source", "media source is required")
+	case "image":
+		s, err := b.mediaSource()
+		if err != nil {
+			return ag.Part{}, err
 		}
-		s := b.Source
-		switch s.Type {
-		case "base64":
-			return inline(s.MediaType, s.Data)
-		case "url":
-			return uriPart(s.URL, s.MediaType)
-		case "text":
-			if b.Type == "document" {
-				return ag.Part{Text: s.Data}, nil
-			}
-		}
-		return ag.Part{}, unsupported("source.type")
+		return sourcePart(s)
 	case "input_image":
 		if b.FileID != "" {
 			return ag.Part{}, unsupported("file_id")
-		}
-		if b.Detail != "" && b.Detail != "auto" {
-			return ag.Part{}, unsupported("image detail other than auto")
 		}
 		return uriPart(b.ImageURL, "")
 	case "input_file":

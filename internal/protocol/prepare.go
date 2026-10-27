@@ -12,15 +12,15 @@ var thinkingLevels = map[string]string{"minimal": "low", "low": "low", "medium":
 func knownEffort(effort string) bool { _, ok := thinkingLevels[effort]; return ok }
 
 // applyEffort records a reasoning effort unless an explicit budget or a
-// disabled state was requested.
+// disabled state was requested. Whether thoughts are shown is unchanged.
 func applyEffort(in *RequestIntent, value string) {
 	switch {
 	case value == "none":
-		in.Thinking = ThinkingIntent{Mode: "disabled"}
+		in.Thinking.Mode = "disabled"
 	case !knownEffort(value):
 		in.warn("ignored reasoning effort %q", value)
 	case in.Thinking.Mode != "budget" && in.Thinking.Mode != "disabled":
-		in.Thinking = ThinkingIntent{Mode: "effort", Effort: value}
+		in.Thinking.Mode, in.Thinking.Effort = "effort", value
 	}
 }
 
@@ -77,13 +77,13 @@ func (in *RequestIntent) applyThinking(info ag.ModelInfo) {
 		g.Thinking = &ag.Thinking{Budget: &budget}
 		in.warn("Gemini cannot disable thinking; using the minimum thinking budget")
 	case "effort":
-		g.Thinking = &ag.Thinking{Level: thinkingLevels[t.Effort], Include: true}
+		g.Thinking = &ag.Thinking{Level: thinkingLevels[t.Effort], Include: t.Show}
 	case "budget":
 		budget := max(t.Budget, info.MinThinkingBudget)
-		g.Thinking = &ag.Thinking{Budget: &budget, Include: true}
+		g.Thinking = &ag.Thinking{Budget: &budget, Include: t.Show}
 	case "adaptive":
 		dynamic := -1
-		g.Thinking = &ag.Thinking{Budget: &dynamic, Include: true}
+		g.Thinking = &ag.Thinking{Budget: &dynamic, Include: t.Show}
 	}
 }
 

@@ -68,13 +68,13 @@ func TestClaudeCodeRequestShapeIsAccepted(t *testing.T) {
 	if in.Tools["mcp__srv.example__do"].Name == "" {
 		t.Fatal("a name Gemini accepts must be sent unchanged")
 	}
-	if th := in.Request.Generation.Thinking; th == nil || th.Level != "high" {
-		t.Fatalf("effort not applied: %+v", th)
+	if th := in.Request.Generation.Thinking; th == nil || th.Level != "high" || !th.Include {
+		t.Fatalf("effort not applied to adaptive thinking: %+v", th)
 	}
-	for _, field := range []string{"some_future_field", "context_management", "cache_control", "disable_parallel_tool_use"} {
-		if !strings.Contains(strings.Join(in.Warnings, "\n"), field) {
-			t.Fatalf("missing warning for %s: %v", field, in.Warnings)
-		}
+	// Claude Code's caching hints and keep-all thinking edit are no-ops. The
+	// parallel-call limit is reported only if a response breaks it.
+	if len(in.Warnings) != 1 || !strings.Contains(in.Warnings[0], "some_future_field") || !in.SingleCall {
+		t.Fatalf("warnings = %v, single call = %v", in.Warnings, in.SingleCall)
 	}
 }
 

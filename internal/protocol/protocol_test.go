@@ -196,8 +196,15 @@ func TestGeminiThinkingConfig(t *testing.T) {
 		}
 		return in.Request.Generation.Thinking, in.Warnings
 	}
-	if th, _ := thinking(`{"model":"gemini-test","input":"x","reasoning":{"effort":"xhigh"}}`); th.Level != "high" || th.Budget != nil || !th.Include {
-		t.Fatalf("effort: %+v", th)
+	// Reasoning text is returned only when a summary is requested.
+	if th, _ := thinking(`{"model":"gemini-test","input":"x","reasoning":{"effort":"xhigh"}}`); th.Level != "high" || th.Budget != nil || th.Include {
+		t.Fatalf("effort without summary: %+v", th)
+	}
+	if th, _ := thinking(`{"model":"gemini-test","input":"x","reasoning":{"effort":"xhigh","summary":"auto"}}`); th.Level != "high" || !th.Include {
+		t.Fatalf("effort with summary: %+v", th)
+	}
+	if th, warnings := thinking(`{"model":"gemini-test","input":"x","reasoning":{"effort":"low","summary":"none"}}`); th.Level != "low" || th.Include || len(warnings) != 0 {
+		t.Fatalf("summary none: %+v %v", th, warnings)
 	}
 	// A forced tool choice keeps thinking on.
 	if th, _ := thinking(`{"model":"gemini-test","input":"x","tool_choice":"required","reasoning":{"effort":"minimal"},"tools":[{"type":"function","name":"f"}]}`); th.Level != "low" {
@@ -214,7 +221,12 @@ func TestGeminiThinkingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b := in.Request.Generation.Thinking.Budget; b == nil || *b != 128 {
+	if b := in.Request.Generation.Thinking.Budget; b == nil || *b != 128 || !in.Request.Generation.Thinking.Include {
 		t.Fatalf("budget below the model minimum: %+v", in.Request.Generation.Thinking)
+	}
+	// Messages shows thinking only when thinking is enabled, not for effort alone.
+	in, err = d.Messages(context.Background(), []byte(`{"model":"gemini-test","max_tokens":100,"output_config":{"effort":"low"},"messages":[{"role":"user","content":"x"}]}`), false)
+	if err != nil || in.Request.Generation.Thinking.Level != "low" || in.Request.Generation.Thinking.Include {
+		t.Fatalf("effort without thinking: %v %+v", err, in.Request.Generation.Thinking)
 	}
 }

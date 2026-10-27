@@ -71,13 +71,17 @@ curl -N http://127.0.0.1:8080/v1/messages \
 
 ## 支持范围
 
+Codex 和 Claude Code 的日常工作流承诺可用，由真实账号验证覆盖。
+
 - Responses 和 Messages 的流式、非流式生成及 token 计数。
 - 函数工具、并行工具回合；Responses 命名空间和自由文本工具。
 - 思考内容、签名回放、Responses 历史续聊和上下文压缩。
 - 图片、PDF、音视频文件输入。
 - 独立 Images API 的图片生成与编辑，支持文件上传和 Base64 返回。
 
-项目仅面向单账号，不提供原生网页搜索、Chat Completions、Files 上传或完整的 OpenAI/Anthropic 平台服务。严格 JSON Schema、精确停止序列元数据等能力受上游限制。Images 的调用方式和参数范围见 [API 与兼容边界](docs/api.md)。
+服务不实现 Responses / Messages 的全集。每项能力按对客户端的承诺分为保证、尽力和拒绝三档：尽力项会写明哪条标准承诺不成立，并在日志中告警；会让客户端误判的请求直接返回 400。完整分档和 Images 的参数范围见 [API 与兼容边界](docs/api.md)。
+
+项目仅面向单账号，不提供原生网页搜索等托管工具，也不提供 Chat Completions、Files、Batch 等平台服务。
 
 ## 更多文档
 

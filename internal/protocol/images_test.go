@@ -36,11 +36,9 @@ func TestImagesDecodeAndValidateCapabilities(t *testing.T) {
 			"size": {"size": "1536x1024"}, "url output": {"response_format": "url"},
 			"output format": {"output_format": "webp"}, "compression": {"output_compression": 50},
 			"compression range": {"output_format": "jpeg", "output_compression": 101},
-			"quality":           {"quality": "high"}, "background": {"background": "transparent"},
-			"moderation": {"moderation": "low"}, "stream": {"stream": true},
-			"previews": {"partial_images": 1}, "fidelity": {"input_fidelity": "high"},
-			"mask":  {"mask": map[string]string{"image_url": "https://example.com/mask.png"}},
-			"style": {"style": "vivid"},
+			"background":        {"background": "transparent"}, "opaque": {"background": "opaque"},
+			"stream": {"stream": true}, "previews": {"partial_images": 1},
+			"mask": {"mask": map[string]string{"image_url": "https://example.com/mask.png"}},
 		} {
 			t.Run(name, func(t *testing.T) {
 				body := map[string]any{}
@@ -58,8 +56,16 @@ func TestImagesDecodeAndValidateCapabilities(t *testing.T) {
 			})
 		}
 		in, err := (Decoder{}).Images(raw(base), edit)
-		if err != nil || in.Count != 1 || in.OutputFormat != "png" || in.Request.Contents[0].Parts[0].Text != base["prompt"] {
+		if err != nil || in.Count != 1 || in.OutputFormat != "png" || in.Request.Contents[0].Parts[0].Text != base["prompt"] || len(in.Warnings) != 0 {
 			t.Fatalf("default request: %v %+v", err, in)
+		}
+		// Quality and policy hints still yield a valid image; they are reported.
+		hinted := map[string]any{"quality": "high", "moderation": "low", "input_fidelity": "high", "style": "vivid"}
+		for key, value := range base {
+			hinted[key] = value
+		}
+		if hint, err := (Decoder{}).Images(raw(hinted), edit); err != nil || len(hint.Warnings) != 4 {
+			t.Fatalf("hints: %v %v", err, hint.Warnings)
 		}
 		catalog := ag.Catalog{Models: map[string]json.RawMessage{"gemini-canvas": raw(map[string]any{}), "gemini-test": raw(map[string]any{})}, ImageModels: []string{"gemini-canvas"}}
 		if err := in.ValidateModel(catalog); err != nil {

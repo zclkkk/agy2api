@@ -37,11 +37,12 @@ type MessageRequest struct {
 	Metadata          json.RawMessage `json:"metadata,omitempty"`
 	MCPServers        json.RawMessage `json:"mcp_servers,omitempty"`
 	ContextManagement json.RawMessage `json:"context_management,omitempty"`
-	ServiceTier       json.RawMessage `json:"service_tier,omitempty"`
-	Container         json.RawMessage `json:"container,omitempty"`
-	InferenceGeo      json.RawMessage `json:"inference_geo,omitempty"`
-	CacheControl      json.RawMessage `json:"cache_control,omitempty"`
 }
+
+// Accepted without effect, which the standard allows: caching and service
+// routing are never guaranteed, and a container only serves code execution,
+// whose tools are rejected.
+var quietMessageFields = map[string]bool{"cache_control": true, "service_tier": true, "inference_geo": true, "container": true}
 
 type MessageTool struct {
 	Type         string          `json:"type,omitempty"`
@@ -50,12 +51,11 @@ type MessageTool struct {
 	InputSchema  json.RawMessage `json:"input_schema,omitempty"`
 	DeferLoading bool            `json:"defer_loading,omitempty"`
 	Strict       bool            `json:"strict,omitempty"`
-	CacheControl json.RawMessage `json:"cache_control,omitempty"`
 }
 
 func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 	var r MessageRequest
-	ignored, err := decodeRequest(data, &r, nil)
+	ignored, err := decodeRequest(data, &r, quietMessageFields)
 	if err != nil {
 		return RequestIntent{}, err
 	}
@@ -63,11 +63,12 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 	if len(ignored) > 0 {
 		in.warn("ignored request fields: %s", strings.Join(ignored, ", "))
 	}
-	in.warnIgnoredOption("context_management", r.ContextManagement, "{}", `{"edits":[]}`)
-	in.warnIgnoredOption("service_tier", r.ServiceTier, `"auto"`)
-	in.warnIgnoredOption("container", r.Container)
-	in.warnIgnoredOption("inference_geo", r.InferenceGeo, `"global"`)
-	in.warnIgnoredOption("cache_control", r.CacheControl)
+	if present(r.ContextManagement) && !contextEditsNoop(r.ContextManagement) {
+		in.warn("context_management is ignored; context editing is not implemented")
+	}
+	if len(r.Stop) > 0 {
+		in.warn("stop_sequences truncate output, but the matched sequence is not reported")
+	}
 	in.ClientSession = claudeCodeSession(r.Metadata)
 	if !countOnly && r.MaxTokens == nil {
 		return in, invalid("max_tokens", "max_tokens is required")
@@ -145,11 +146,11 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 				collectToolReferences(b.Content, referenced)
 				appendContent(&in.Request, role, []ag.Part{p})
 			default:
-				p, err := mediaPart(b)
+				parts, err := blockParts(b)
 				if err != nil {
 					return in, err
 				}
-				appendContent(&in.Request, role, []ag.Part{p})
+				appendContent(&in.Request, role, parts)
 			}
 		}
 	}
@@ -157,7 +158,6 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 		if t.Strict {
 			in.warn("tools.strict is not enforced; tool schemas are translated to the upstream subset")
 		}
-		in.warnIgnoredOption("cache_control", t.CacheControl)
 		if t.Type != "" && t.Type != "custom" {
 			return in, unsupported("tool type " + t.Type)
 		}
@@ -188,9 +188,8 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 		if err := json.Unmarshal(r.ToolChoice, &choice); err != nil {
 			return in, invalid("tool_choice", "tool_choice must be an object")
 		}
-		if choice.DisableParallel {
-			in.warn("tool_choice.disable_parallel_tool_use=true is not enforced; multiple tool calls remain possible")
-		}
+		// Reported by the renderer only if several calls are actually returned.
+		in.SingleCall = choice.DisableParallel
 		if err := setChoice(&in, choice.Type, choice.Name); err != nil {
 			return in, err
 		}
@@ -202,12 +201,12 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 		switch t.Type {
 		case "enabled":
 			if t.Budget != nil && *t.Budget > 0 {
-				in.Thinking = ThinkingIntent{Mode: "budget", Budget: *t.Budget}
+				in.Thinking = ThinkingIntent{Mode: "budget", Budget: *t.Budget, Show: true}
 			} else {
-				in.Thinking = ThinkingIntent{Mode: "adaptive"}
+				in.Thinking = ThinkingIntent{Mode: "adaptive", Show: true}
 			}
 		case "adaptive":
-			in.Thinking = ThinkingIntent{Mode: "adaptive"}
+			in.Thinking = ThinkingIntent{Mode: "adaptive", Show: true}
 		case "disabled":
 			in.Thinking = ThinkingIntent{Mode: "disabled"}
 		default:
@@ -228,6 +227,27 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 		}
 	}
 	return in, validateIntent(&in)
+}
+
+// contextEditsNoop reports whether context_management requests no edits, or
+// only clear_thinking edits that keep all thinking, as Claude Code sends.
+func contextEditsNoop(value json.RawMessage) bool {
+	var c struct {
+		Edits []struct {
+			Type string          `json:"type"`
+			Keep json.RawMessage `json:"keep"`
+		} `json:"edits"`
+	}
+	if json.Unmarshal(value, &c) != nil {
+		return false
+	}
+	for _, edit := range c.Edits {
+		var keep string
+		if !strings.HasPrefix(edit.Type, "clear_thinking_") || json.Unmarshal(edit.Keep, &keep) != nil || keep != "all" {
+			return false
+		}
+	}
+	return true
 }
 
 func collectToolReferences(content json.RawMessage, names map[string]bool) {

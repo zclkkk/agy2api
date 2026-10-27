@@ -2,8 +2,44 @@ package protocol
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
+
+func TestDocumentMetadataContentSourcesAndSearchResults(t *testing.T) {
+	in, err := (Decoder{}).Messages([]byte(`{
+		"model":"gemini-test","max_tokens":100,
+		"messages":[
+			{"role":"user","content":[
+				{"type":"document","title":"Spec","context":"Draft from March","source":{"type":"content","content":[{"type":"text","text":"Part one"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YWJj"}}]}},
+				{"type":"search_result","source":"https://example.com/a","title":"Result A","content":[{"type":"text","text":"First"},{"type":"text","text":"Second"}]}]},
+			{"role":"assistant","content":[{"type":"tool_use","id":"call1","name":"search","input":{}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"call1","content":[{"type":"search_result","source":"https://example.com/b","title":"Result B","content":[{"type":"text","text":"Found"}]}]}]}
+		]}`), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := in.Request.Contents[0].Parts
+	if len(parts) != 4 || parts[0].Text != "Document title: Spec\nDocument context: Draft from March" || parts[1].Text != "Part one" ||
+		parts[2].InlineData == nil || parts[3].Text != "Search result: Result A\nSource: https://example.com/a\n\nFirst\n\nSecond" {
+		t.Fatalf("parts = %s", raw(parts))
+	}
+	result := in.Request.Contents[2].Parts[0].FunctionResponse
+	if result == nil || !strings.Contains(string(result.Response), `Search result: Result B\nSource: https://example.com/b\n\nFound`) {
+		t.Fatalf("tool search result = %s", raw(result))
+	}
+	for name, block := range map[string]string{
+		"search result without source": `{"type":"search_result","title":"t","content":[{"type":"text","text":"x"}]}`,
+		"search result with an image":  `{"type":"search_result","source":"s","title":"t","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YWJj"}}]}`,
+		"content document with a file": `{"type":"document","source":{"type":"content","content":[{"type":"document","source":{"type":"text","data":"x"}}]}}`,
+		"file source":                  `{"type":"document","source":{"type":"file","file_id":"file_1"}}`,
+	} {
+		body := `{"model":"gemini-test","max_tokens":10,"messages":[{"role":"user","content":[` + block + `]}]}`
+		if _, err := (Decoder{}).Messages([]byte(body), false); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}
 
 func TestMessagesTextDocumentsUseSourceData(t *testing.T) {
 	in, err := (Decoder{}).Messages([]byte(`{

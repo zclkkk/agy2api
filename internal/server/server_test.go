@@ -43,6 +43,24 @@ func TestStoredResponseRoutesRejectUnsupportedFormats(t *testing.T) {
 	}
 }
 
+// A stored response is JSON; a client asking for an event stream is rejected
+// rather than handed JSON it would fail to parse.
+func TestStreamingRetrievalIsRejected(t *testing.T) {
+	store, err := state.Open(t.TempDir(), time.Hour, 10, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	handler := New(config.Default(), nil, store, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
+	for query, want := range map[string]int{"?stream=true": 400, "?starting_after=3": 400, "?stream=false": 404} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://localhost/v1/responses/missing"+query, nil))
+		if response.Code != want {
+			t.Fatalf("%s: status %d, want %d", query, response.Code, want)
+		}
+	}
+}
+
 func (fixedToken) AccessToken(context.Context) (string, error) { return "test-token", nil }
 func (fixedToken) ProjectID() string                           { return "test-project" }
 
