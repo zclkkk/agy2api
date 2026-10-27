@@ -5,6 +5,26 @@ import (
 	"testing"
 )
 
+func TestMessagesTextDocumentsUseSourceData(t *testing.T) {
+	in, err := (Decoder{}).Messages([]byte(`{
+		"model":"gemini-test","max_tokens":100,
+		"messages":[
+			{"role":"user","content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"Document body\n第二行"}},{"type":"text","text":"Summarize it."}]},
+			{"role":"assistant","content":[{"type":"tool_use","id":"call1","name":"read","input":{}}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"call1","content":[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"Tool document"}}]}]}
+		]}`), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := in.Request.Contents[0].Parts[0].Text; got != "Document body\n第二行" {
+		t.Fatalf("document body = %q", got)
+	}
+	result := in.Request.Contents[2].Parts[0].FunctionResponse
+	if result == nil || string(result.Response) != `{"is_error":false,"output":"Tool document"}` {
+		t.Fatalf("tool document was lost: %+v", result)
+	}
+}
+
 func TestImageInputAndClientToolImagesRemainSupported(t *testing.T) {
 	d := testPipeline{State: testStore(t)}
 	for _, format := range []Format{Responses, Messages} {

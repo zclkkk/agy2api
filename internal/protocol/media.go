@@ -16,7 +16,6 @@ type Source struct {
 	MediaType string `json:"media_type,omitempty"`
 	Data      string `json:"data,omitempty"`
 	URL       string `json:"url,omitempty"`
-	Text      string `json:"text,omitempty"`
 }
 type Block struct {
 	Type        string          `json:"type"`
@@ -98,7 +97,7 @@ func mediaPart(b Block) (ag.Part, error) {
 			return uriPart(s.URL, s.MediaType)
 		case "text":
 			if b.Type == "document" {
-				return ag.Part{Text: s.Text}, nil
+				return ag.Part{Text: s.Data}, nil
 			}
 		}
 		return ag.Part{}, unsupported("source.type")
