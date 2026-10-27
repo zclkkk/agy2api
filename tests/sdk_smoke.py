@@ -296,9 +296,12 @@ def check():
                         type(result).model_validate(result.model_dump())
                         assert result.output_text == "Hello from agy2api"
                         assert client.responses.retrieve(result.id).id == result.id
-                        assert (
-                            len(client.responses.input_items.list(result.id).data) == 1
-                        )
+                        input_items = client.responses.input_items.list(result.id).data
+                        assert len(input_items) == 1
+                        type(input_items[0]).model_validate(input_items[0].model_dump())
+                        assert input_items[0].id
+                        assert input_items[0].content[0].type == "input_text"
+                        assert input_items[0].content[0].text == "hello"
                         followup = client.responses.create(
                             model="gemini-test",
                             previous_response_id=result.id,

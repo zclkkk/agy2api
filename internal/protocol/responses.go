@@ -116,7 +116,6 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 	if len(items) == 0 {
 		return in, invalid("input", "input must not be empty")
 	}
-	in.OriginalItems = append(in.OriginalItems, items...)
 	for _, item := range items {
 		var v ResponseItem
 		if err := json.Unmarshal(item, &v); err != nil {
@@ -175,9 +174,15 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 		case "compaction_trigger":
 			// Codex asks for the history to be compacted (remote_compaction v2).
 			in.Compact = "trigger"
+			continue // A control item is not part of the public input history.
 		default:
 			return in, unsupported("input item " + v.Type)
 		}
+		normalized, err := responseInputItem(item, v)
+		if err != nil {
+			return in, err
+		}
+		in.OriginalItems = append(in.OriginalItems, normalized)
 	}
 	if err := declareResponseTools(&in, r.Tools, ""); err != nil {
 		return in, err
