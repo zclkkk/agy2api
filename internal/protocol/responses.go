@@ -44,13 +44,16 @@ type ResponsesRequest struct {
 	PromptCacheKey    string          `json:"prompt_cache_key,omitempty"`
 	ContextManagement json.RawMessage `json:"context_management,omitempty"`
 	TopLogprobs       json.RawMessage `json:"top_logprobs,omitempty"`
+	StreamOptions     *struct {
+		IncludeObfuscation *bool `json:"include_obfuscation,omitempty"`
+	} `json:"stream_options,omitempty"`
 }
 
 // Accepted without effect, which the standard allows: client identifiers,
-// cache retention and service tiers carry no output guarantee, obfuscation is
-// optional, and max_tool_calls only limits built-in tools, which are rejected.
+// cache retention and service tiers carry no output guarantee, and
+// max_tool_calls only limits built-in tools, which are rejected.
 var quietResponseFields = map[string]bool{"client_metadata": true, "user": true, "safety_identifier": true,
-	"prompt_cache_retention": true, "service_tier": true, "stream_options": true, "max_tool_calls": true}
+	"prompt_cache_retention": true, "service_tier": true, "max_tool_calls": true}
 
 // Include values that only concern hosted tools or input echoes this adapter
 // never returns. reasoning.encrypted_content is always included.
@@ -106,7 +109,9 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 	case present(r.Prompt):
 		return in, unsupported("prompt")
 	}
-	// Reported by the renderer only if several calls are actually returned.
+	// Stream obfuscation is on unless the client turns it off.
+	in.Obfuscate = r.StreamOptions == nil || r.StreamOptions.IncludeObfuscation == nil || *r.StreamOptions.IncludeObfuscation
+	// Reported by the renderer when the upstream produces several calls.
 	in.SingleCall = r.Parallel != nil && !*r.Parallel
 	if r.Truncation != "" && r.Truncation != "disabled" {
 		in.warn("truncation is ignored; automatic input truncation is not implemented")

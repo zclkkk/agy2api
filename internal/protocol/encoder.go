@@ -1,7 +1,10 @@
 package protocol
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"strings"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
 )
@@ -36,6 +39,29 @@ func (r *wireState) event(name string, fields map[string]any) error {
 	if r.input.Format == Responses {
 		fields["sequence_number"] = r.sequence
 		r.sequence++
+		if r.input.Obfuscate && strings.HasSuffix(name, ".delta") {
+			fields["obfuscation"] = obfuscation(fields)
+		}
 	}
 	return r.emit(name, fields)
+}
+
+// obfuscationBlock is the size, in bytes, that an obfuscated event's JSON
+// encoding is padded to a multiple of.
+const obfuscationBlock = 64
+
+// obfuscation returns random characters that pad the event's JSON encoding,
+// as json.Marshal produces it for the stream, to the next multiple of
+// obfuscationBlock. The whole encoded event is measured, so sizes reveal
+// neither token lengths nor escaped characters. Base64url characters need no
+// escaping, so each one adds exactly one byte.
+func obfuscation(fields map[string]any) string {
+	fields["obfuscation"] = ""
+	size := obfuscationBlock
+	if encoded, err := json.Marshal(fields); err == nil {
+		size -= len(encoded) % obfuscationBlock
+	}
+	b := make([]byte, size)
+	_, _ = rand.Read(b) // never fails
+	return base64.RawURLEncoding.EncodeToString(b)[:size]
 }

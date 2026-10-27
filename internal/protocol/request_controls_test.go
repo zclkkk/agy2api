@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -95,7 +96,9 @@ func TestGuaranteedControlsStayQuiet(t *testing.T) {
 	}
 }
 
-// A disabled parallel-call limit is reported only when a response breaks it.
+// A disabled parallel-call limit is reported when the upstream produces a
+// second call, before the turn finishes, so a stream that fails later still
+// reports it.
 func TestParallelCallLimitIsReportedWhenBroken(t *testing.T) {
 	call := func(name string) ag.Part {
 		return ag.Part{FunctionCall: &ag.Call{Name: name, Args: []byte(`{}`)}}
@@ -112,14 +115,17 @@ func TestParallelCallLimitIsReportedWhenBroken(t *testing.T) {
 			in := prepareControls(t, tc.format, tc.body)
 			r := NewRenderer(in, s, nil)
 			parts := []ag.Part{call("a"), call("b")}[:calls]
-			if err := r.Add(context.Background(), ag.Chunk{Parts: parts, Finish: "STOP"}); err != nil {
-				t.Fatal(err)
-			}
-			if err := r.Finish(context.Background()); err != nil {
+			if err := r.Add(context.Background(), ag.Chunk{Parts: parts}); err != nil {
 				t.Fatal(err)
 			}
 			if got := strings.Contains(strings.Join(r.Warnings, "\n"), "is not enforced"); got != want {
 				t.Fatalf("%s with %d calls: warnings %v", tc.format, calls, r.Warnings)
+			}
+			if err := r.Add(context.Background(), ag.Chunk{Finish: "STOP"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Finish(context.Background()); err != nil {
+				t.Fatal(err)
 			}
 			result := string(r.Result)
 			if tc.format == Responses && !strings.Contains(result, `"parallel_tool_calls":false`) {
@@ -129,6 +135,67 @@ func TestParallelCallLimitIsReportedWhenBroken(t *testing.T) {
 				t.Fatalf("usage lacks cache_creation_input_tokens: %s", result)
 			}
 		}
+	}
+}
+
+// Responses stream obfuscation is on by default: each delta event carries
+// random padding that rounds its size up to a block. include_obfuscation=false
+// turns it off; Messages has no such field.
+func TestStreamObfuscation(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		format     Format
+		want       bool
+	}{
+		{"default", `{"model":"gemini-test","input":"hi","tools":[{"type":"function","name":"f"}]}`, Responses, true},
+		{"enabled", `{"model":"gemini-test","input":"hi","stream_options":{"include_obfuscation":true},"tools":[{"type":"function","name":"f"}]}`, Responses, true},
+		{"disabled", `{"model":"gemini-test","input":"hi","stream_options":{"include_obfuscation":false},"tools":[{"type":"function","name":"f"}]}`, Responses, false},
+		{"messages", `{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"f"}]}`, Messages, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := prepareControls(t, tc.format, tc.body)
+			var sizes []int // encoded sizes of the obfuscated delta events
+			emit := func(name string, fields map[string]any) error {
+				obfuscation, has := fields["obfuscation"].(string)
+				if !strings.HasSuffix(name, ".delta") || !tc.want {
+					if has {
+						t.Errorf("%s carries obfuscation", name)
+					}
+					return nil
+				}
+				// The stream sends json.Marshal output; escaping must not show in its size.
+				encoded, err := json.Marshal(fields)
+				if err != nil || obfuscation == "" || len(encoded)%obfuscationBlock != 0 {
+					t.Errorf("%s: %d encoded bytes: %s", name, len(encoded), encoded)
+				}
+				sizes = append(sizes, len(encoded))
+				return nil
+			}
+			r := NewRenderer(in, testStore(t), emit)
+			parts := []ag.Part{{Text: "planning", Thought: true},
+				// Short deltas that differ only in how JSON escapes them.
+				{Text: "a"}, {Text: `"`}, {Text: "<"}, {Text: strings.Repeat(`"`, 16)},
+				{Text: strings.Repeat("x", obfuscationBlock) + "line\nbreak  & \\ 一"},
+				{FunctionCall: &ag.Call{Name: "f", Args: []byte(`{"q":"\"<&>\""}`)}}}
+			if err := r.Add(context.Background(), ag.Chunk{Parts: parts, Finish: "STOP"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Finish(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.want {
+				return
+			}
+			if len(sizes) != 7 {
+				t.Fatalf("obfuscated %d delta events, want 7", len(sizes))
+			}
+			// Escaped characters count like any other bytes: deltas whose encodings
+			// fit the same block have equal sizes. Larger ones, like the 16 quotes,
+			// fall into a larger block, as longer tokens do.
+			if s := sizes[1:4]; s[0] != s[1] || s[0] != s[2] {
+				t.Fatalf("escaped characters change event sizes: %v", s)
+			}
+		})
 	}
 }
 

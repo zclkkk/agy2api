@@ -176,6 +176,15 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 					itemPrefix = "ctc_"
 				}
 				r.active = &outputBlock{Kind: kind, ID: ag.ID(itemPrefix), CallID: call.ID, Name: call.Name, Public: public, Args: call.Args}
+				r.toolCalls++
+				// Recorded as the call starts, so a stream that fails later still reports it.
+				if r.input.SingleCall && r.toolCalls == 2 {
+					control := "parallel_tool_calls=false"
+					if r.input.Format == Messages {
+						control = "disable_parallel_tool_use"
+					}
+					r.warn("%s is not enforced; the upstream produced several tool calls", control)
+				}
 				if err := r.encoder.open(&r.wireState, r.active); err != nil {
 					return err
 				}
@@ -230,9 +239,6 @@ func (r *Renderer) closeBlock(ctx context.Context) error {
 	if err := r.encoder.close(&r.wireState, b); err != nil {
 		return err
 	}
-	if b.Kind == "tool" {
-		r.toolCalls++
-	}
 	r.native = append(r.native, b.Parts...)
 	r.active = nil
 	return nil
@@ -273,13 +279,6 @@ func (r *Renderer) Finish(ctx context.Context) error {
 	}
 	if len(r.items) == 0 && status == "completed" {
 		r.warn("upstream completed without content")
-	}
-	if r.input.SingleCall && r.toolCalls > 1 {
-		control := "parallel_tool_calls=false"
-		if r.input.Format == Messages {
-			control = "disable_parallel_tool_use"
-		}
-		r.warn("%s is not enforced; %d tool calls were returned", control, r.toolCalls)
 	}
 	if stop == "end_turn" && r.toolCalls > 0 {
 		stop = "tool_use"

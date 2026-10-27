@@ -48,7 +48,7 @@ Codex 和 Claude Code 的日常工作流承诺可用，由真实账号验证覆�
 - 本服务返回的工具调用 ID、调用参数、思考块和 `encrypted_content` 原样回传后，可继续多轮对话。客户端省略历史调用的 namespace 时，按匹配的记录或唯一声明补齐；确实存在工具身份冲突时返回 400。
 - 结束状态：正常结束、达到输出上限、工具调用、安全拦截（Messages 为 `refusal`，Responses 为 `incomplete` 的 `content_filter`）。
 - usage 的输入、缓存命中、输出和推理 token。Gemini 使用隐式缓存，Messages 的 `cache_creation_input_tokens` 恒为 0。
-- 接受但不产生可观察效果的参数：缓存提示（`cache_control`、`prompt_cache_retention`），服务等级与区域（`service_tier`、`inference_geo`），客户端标识（`user`、`safety_identifier`、`client_metadata`），`stream_options.include_obfuscation`（输出不混淆），只限制内置工具的 `max_tool_calls`，只配合代码执行的 `container`，与托管工具相关的 `include` 项，以及 `keep` 为 `all` 的 `clear_thinking` 上下文编辑。
+- 接受但不产生可观察效果的参数：缓存提示（`cache_control`、`prompt_cache_retention`），服务等级与区域（`service_tier`、`inference_geo`），客户端标识（`user`、`safety_identifier`、`client_metadata`），只限制内置工具的 `max_tool_calls`，只配合代码执行的 `container`，与托管工具相关的 `include` 项，以及 `keep` 为 `all` 的 `clear_thinking` 上下文编辑。
 
 Responses：
 
@@ -56,6 +56,7 @@ Responses：
 - `namespace` 工具组、`allowed_tools`；`text.format` 的 `text` 和 `json_object`。
 - 请求 `reasoning.summary` 时返回思考摘要；未请求或为 `none` 时不返回思考文本。reasoning 项始终携带 `encrypted_content`。
 - `prompt_cache_key` 用作上游会话标识；`metadata`、`parallel_tool_calls` 等请求参数在响应中回显。
+- 流式混淆默认开启：每个 delta 事件带有随机字符的 `obfuscation` 字段，把整个事件 JSON 的字节数补齐到 64 的倍数，事件大小不再暴露 token 长度或需要转义的字符。`stream_options.include_obfuscation: false` 时关闭。
 - 上下文压缩：`/v1/responses/compact` 和 `compaction_trigger`。
 
 Messages：
@@ -75,7 +76,7 @@ Messages：
 | 关闭思考：`thinking` 的 `disabled`、`reasoning.effort: "none"` | Gemini 无法关闭思考，改用模型允许的最低预算。没有思考块或思考 token 为零，不代表模型没有思考 | 每次 |
 | `reasoning.summary` 的 `concise` / `detailed` | 不区分详略，返回上游可用的思考文本 | 每次 |
 | `stop_sequences` | 能截断输出，但不报告命中的序列；`stop_reason` 不会是 `stop_sequence` | 每次 |
-| `parallel_tool_calls: false`、`disable_parallel_tool_use: true` | 不强制只返回一个工具调用 | 实际返回多个调用时 |
+| `parallel_tool_calls: false`、`disable_parallel_tool_use: true` | 不强制只返回一个工具调用 | 上游产生第二个调用时，流随后中断也会记录 |
 | 以 assistant 结尾的请求（预填充） | 补一条 “Continue.” 用户消息，不保证从断点逐字续写 | 每次 |
 | 图片 `detail` | 使用模型的默认分辨率 | 非 `auto` 时 |
 | document、`search_result` 的 `citations.enabled` | 不生成引用 | 开启时 |

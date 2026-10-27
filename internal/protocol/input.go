@@ -52,6 +52,7 @@ type RequestIntent struct {
 	Thinking      ThinkingIntent
 	HideThinking  bool                // Messages thinking.display=omitted
 	SingleCall    bool                // parallel tool calls disabled; reported, not enforced
+	Obfuscate     bool                // Responses stream obfuscation, on by default
 	Tools         map[string]ToolName // native function name -> client identity
 	ClientSession string              // session ID found in the request body
 	Compact       string              // "trigger" (compaction_trigger item) or "endpoint" (/v1/responses/compact)

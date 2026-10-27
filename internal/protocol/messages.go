@@ -188,7 +188,7 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 		if err := json.Unmarshal(r.ToolChoice, &choice); err != nil {
 			return in, invalid("tool_choice", "tool_choice must be an object")
 		}
-		// Reported by the renderer only if several calls are actually returned.
+		// Reported by the renderer when the upstream produces several calls.
 		in.SingleCall = choice.DisableParallel
 		if err := setChoice(&in, choice.Type, choice.Name); err != nil {
 			return in, err
