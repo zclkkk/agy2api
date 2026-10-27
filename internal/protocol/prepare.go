@@ -29,7 +29,7 @@ func applyEffort(in *RequestIntent, value string) {
 func (in *requestPlan) plan(catalog ag.Catalog) error {
 	info, ok := catalog.Info(in.Model)
 	if !ok {
-		return invalid("model", "model is not available; agy2api serves the Gemini models listed by /v1/models")
+		return invalid("model", "model is not available; agy2api only serves Gemini models available to this account")
 	}
 	if info.Image {
 		return invalid("model", "image generation models are not supported by the Responses or Messages endpoints")

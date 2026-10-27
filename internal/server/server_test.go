@@ -56,7 +56,7 @@ func setup(t *testing.T, generate http.HandlerFunc) (*httptest.Server, *atomic.I
 		switch r.URL.Path {
 		case "/v1internal:fetchAvailableModels":
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"models":{"gemini-test":{"displayName":"Gemini Test","apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"}},"webSearchModelIds":["gemini-test"]}`)
+			io.WriteString(w, `{"models":{"gemini-test":{"displayName":"Gemini Test","apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"}},"agentModelSorts":[{"groups":[{"modelIds":["gemini-test","claude-test"]}]}],"webSearchModelIds":["gemini-test"]}`)
 		case "/v1internal:countTokens":
 			w.Header().Set("Content-Type", "application/json")
 			io.WriteString(w, `{"totalTokens":17}`)

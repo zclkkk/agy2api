@@ -213,7 +213,9 @@ func TestModelCatalogKeepsOnlyGemini(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"models":{"chat_internal":{"apiProvider":"API_PROVIDER_INTERNAL"},"gemini-test":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},
-			"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"},"gpt-oss-test":{"apiProvider":"API_PROVIDER_OPENAI_VERTEX"},"unlabeled":{}}}`)
+			"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"},"gpt-oss-test":{"apiProvider":"API_PROVIDER_OPENAI_VERTEX"},"unlabeled":{}},
+			"agentModelSorts":[{"groups":[{"modelIds":["claude-test","gemini-test","gpt-oss-test","chat_internal","unlabeled"]}]}],
+			"imageGenerationModelIds":["unlabeled","missing","claude-test"]}`)
 	}))
 	defer up.Close()
 	c := Client{HTTP: up.Client(), BaseURL: up.URL, Auth: testToken{}}
@@ -223,6 +225,9 @@ func TestModelCatalogKeepsOnlyGemini(t *testing.T) {
 	}
 	if _, ok := catalog.Models["gemini-test"]; !ok || len(catalog.Models) != 1 {
 		t.Fatalf("only Gemini models may be served: %v", catalog.Models)
+	}
+	if ids := catalog.ListedModelIDs(); len(ids) != 1 || ids[0] != "gemini-test" {
+		t.Fatalf("only available Gemini candidates may be listed: %v", ids)
 	}
 }
 

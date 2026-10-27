@@ -177,9 +177,39 @@ type Chunk struct {
 	Grounding *Grounding
 }
 type Catalog struct {
-	Models       map[string]json.RawMessage `json:"models"`
-	SearchModels []string                   `json:"webSearchModelIds"`
-	ImageModels  []string                   `json:"imageGenerationModelIds"`
+	Models          map[string]json.RawMessage `json:"models"`
+	SearchModels    []string                   `json:"webSearchModelIds"`
+	ImageModels     []string                   `json:"imageGenerationModelIds"`
+	AgentModelSorts []struct {
+		Groups []struct {
+			ModelIDs []string `json:"modelIds"`
+		} `json:"groups"`
+	} `json:"agentModelSorts"`
+}
+
+// ListedModelIDs follows the upstream agent selector, then appends image models.
+// Models remains the full Gemini catalog for explicit lookups and requests.
+func (c Catalog) ListedModelIDs() []string {
+	ids := make([]string, 0)
+	seen := make(map[string]bool)
+	add := func(id string) {
+		if _, ok := c.Models[id]; !ok || seen[id] {
+			return
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	for _, order := range c.AgentModelSorts {
+		for _, group := range order.Groups {
+			for _, id := range group.ModelIDs {
+				add(id)
+			}
+		}
+	}
+	for _, id := range c.ImageModels {
+		add(id)
+	}
+	return ids
 }
 
 // ModelInfo is the subset of catalog metadata used to shape requests.

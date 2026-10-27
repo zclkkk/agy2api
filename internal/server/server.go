@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -427,11 +426,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	ids := make([]string, 0, len(catalog.Models))
-	for id := range catalog.Models {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := catalog.ListedModelIDs()
 	data := make([]any, 0, len(ids))
 	for _, id := range ids {
 		data = append(data, modelObject(id, catalog.Models[id], anthropic(r)))

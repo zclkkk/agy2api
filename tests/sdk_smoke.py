@@ -43,7 +43,10 @@ class Upstream(BaseHTTPRequestHandler):
             self.wfile.write(
                 b'{"models":{"gemini-test":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},'
                 b'"gemini-canvas":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},'
+                b'"gemini-unlisted":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},'
+                b'"tab_preview":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},'
                 b'"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"}},'
+                b'"agentModelSorts":[{"groups":[{"modelIds":["claude-test","gemini-test"]}]}],'
                 b'"imageGenerationModelIds":["gemini-canvas"]}'
             )
             return
@@ -206,10 +209,28 @@ def check():
                     with openai.OpenAI(
                         api_key="fixture-key", base_url=base + "/v1", max_retries=0
                     ) as client:
-                        assert [m.id for m in client.models.list().data] == [
-                            "gemini-canvas",
+                        listed = [m.id for m in client.models.list().data]
+                        assert listed == [
                             "gemini-test",
+                            "gemini-canvas",
                         ]
+                        cli = subprocess.run(
+                            [str(binary), "models", "--config", str(config)],
+                            env=env,
+                            capture_output=True,
+                            text=True,
+                            timeout=15,
+                            check=True,
+                        )
+                        assert cli.stdout.splitlines() == listed
+                        assert (
+                            client.models.retrieve("gemini-unlisted").id
+                            == "gemini-unlisted"
+                        )
+                        unlisted = client.responses.create(
+                            model="gemini-unlisted", input="hello", store=False
+                        )
+                        assert unlisted.output_text == "Hello from agy2api"
                         generated = client.images.generate(
                             model="gemini-canvas",
                             prompt="draw",

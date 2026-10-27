@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sort"
 	"syscall"
 	"time"
 
@@ -106,12 +105,7 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		ids := make([]string, 0, len(catalog.Models))
-		for id := range catalog.Models {
-			ids = append(ids, id)
-		}
-		sort.Strings(ids)
-		for _, id := range ids {
+		for _, id := range catalog.ListedModelIDs() {
 			fmt.Println(id)
 		}
 		return nil

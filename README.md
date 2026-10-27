@@ -33,6 +33,8 @@ cp config.example.toml config.toml
 
 ## 模型选择
 
+`models` 命令和 `/v1/models` 按 Antigravity 模型选择器的顺序展示 Gemini 候选，并补充图片生成模型；返回的都是实际模型 ID。
+
 使用 Gemini 3.8 Flash 时，若账号模型列表中包含 **`gemini-3.8-flash-high`**，推荐选择这个入口，并通过请求参数显式设置思考等级。该入口支持 `low`、`medium`、`high`，模型名中的 `-high` 不会锁定思考深度。
 
 在生成请求中补充以下字段即可选择 `low`，也可以替换为 `medium` 或 `high`：
