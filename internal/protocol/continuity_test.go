@@ -1,17 +1,21 @@
 package protocol
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
+	"github.com/zclkkk/agy2api/internal/state"
 )
 
 func TestUnrestorableCompactionFailsRequest(t *testing.T) {
 	p := testPipeline{State: testStore(t)}
-	for _, token := range []string{"", "foreign", compactionPrefix + "!!", compactionPrefix + "e30"} {
+	for _, token := range []string{"", "foreign", "agy2.!!", "agy2.e30"} {
 		_, err := p.Responses(context.Background(), raw(map[string]any{
 			"model": "gemini-test",
 			"input": []any{
@@ -51,14 +55,65 @@ func TestEndWithUser(t *testing.T) {
 }
 
 func TestCompactionCapsule(t *testing.T) {
-	token := sealCompaction("the summary", "gemini-test")
-	if got, ok := openCompaction(token); !ok || got != "the summary" {
-		t.Fatalf("round trip = %q %v", got, ok)
+	dir := t.TempDir()
+	s, err := state.Open(dir, time.Hour, 100, 1<<20)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, bad := range []string{"", "gAAAA-openai", compactionPrefix + "!!", compactionPrefix + "e30"} {
-		if _, ok := openCompaction(bad); ok {
+	defer func() {
+		if s != nil {
+			s.Close()
+		}
+	}()
+	replay := replayStore{s}
+	token, err := replay.sealCompaction("the private summary", "gemini-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := replay.openCompaction(token); err != nil || got != "the private summary" {
+		t.Fatalf("round trip = %q %v", got, err)
+	}
+	sealed, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(token, "agy2."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(sealed, []byte("the private summary")) {
+		t.Fatal("compaction contains a plaintext summary")
+	}
+	sealed[len(sealed)-1] ^= 1
+	tampered := "agy2." + base64.RawURLEncoding.EncodeToString(sealed)
+	for _, bad := range []string{"", "gAAAA-openai", "agy2.!!", "agy2.e30", tampered} {
+		if _, err := replay.openCompaction(bad); err == nil {
 			t.Fatalf("%q must not open", bad)
 		}
+	}
+	foreign := replayStore{testStore(t)}
+	if _, err := foreign.openCompaction(token); err == nil {
+		t.Fatal("another instance decrypted the summary")
+	}
+	wrongScope, err := s.Seal("agy2api/replay/v2", compactionCapsule{Summary: "wrong scope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replay.openCompaction(wrongScope); err == nil {
+		t.Fatal("reasoning token accepted as compaction")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = state.Open(dir, time.Hour, 100, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := (testPipeline{State: s}).Responses(context.Background(), raw(map[string]any{
+		"model": "gemini-other",
+		"input": []any{map[string]string{"type": "compaction", "encrypted_content": token}, map[string]string{"role": "user", "content": "continue"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(in.Request.Contents[0].Parts[0].Text, "the private summary") {
+		t.Fatal("summary was not restored after restart")
 	}
 }
 

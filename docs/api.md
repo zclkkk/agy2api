@@ -97,7 +97,7 @@ Responses 默认 `store: true`，可通过 `previous_response_id` 续聊。新�
 
 `/v1/responses/compact` 返回包含摘要的 `response.compaction` 对象，不保存响应记录。客户端也可以在普通 Responses 输入中发送 `compaction_trigger`，获得可用于后续请求的压缩项。
 
-压缩项中的 `encrypted_content` 携带编码后的摘要，不用于加密存储。无效或无法恢复的压缩项返回 400；服务无法展开其他服务商签发的压缩项。
+压缩项中的 `encrypted_content` 使用实例密钥加密摘要并验证完整性，不需要保存每个压缩项的服务端记录。恢复时需要保留该实例的数据目录。无效、被修改或来自其他实例及服务商的压缩项返回 400。
 
 ## 其他边界
 

@@ -176,7 +176,7 @@ func TestCompactionTriggerReturnsACompactionItem(t *testing.T) {
 	if strings.Join(types, ",") != "response.created,response.in_progress,response.output_item.added,response.output_item.done,response.completed" {
 		t.Fatalf("events = %v", types)
 	}
-	if item["type"] != "compaction" || !strings.HasPrefix(item["encrypted_content"].(string), "agy2api.compaction.v1.") {
+	if item["type"] != "compaction" || !strings.HasPrefix(item["encrypted_content"].(string), "agy2.") {
 		t.Fatalf("item = %v", item)
 	}
 	// The next request carries the compaction item in place of the history.

@@ -1,20 +1,15 @@
 package protocol
 
 import (
-	"encoding/base64"
-	"encoding/json"
-	"strings"
+	"errors"
 	"time"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
 )
 
-// Compaction replaces a conversation's history with a summary the model
-// writes. The summary travels in the compaction item's encrypted_content, as
-// OpenAI's opaque compaction items do. It is encoded rather than encrypted:
-// it holds only the client's own conversation, and keeping it free of local
-// state lets a compacted conversation continue after the state store is lost.
-const compactionPrefix = "agy2api.compaction.v1."
+// Compaction is carried by the client in an authenticated, encrypted capsule.
+// Only the instance key is needed to restore it; no per-capsule record is stored.
+const compactionScope = "agy2api/compaction/v1"
 
 const compactionPrompt = `The conversation so far is being compacted. Write a summary that will replace all of the messages above. Work will continue from this summary alone, without access to the earlier messages, so it must be complete and specific.
 
@@ -32,25 +27,25 @@ type compactionCapsule struct {
 	Created int64  `json:"created"`
 }
 
-func sealCompaction(summary, model string) string {
-	data, _ := json.Marshal(compactionCapsule{Summary: summary, Model: model, Created: time.Now().Unix()})
-	return compactionPrefix + base64.RawURLEncoding.EncodeToString(data)
+func (s replayStore) sealCompaction(summary, model string) (string, error) {
+	return s.State.Seal(compactionScope, compactionCapsule{Summary: summary, Model: model, Created: time.Now().Unix()})
 }
 
-func openCompaction(token string) (string, bool) {
-	encoded, ok := strings.CutPrefix(token, compactionPrefix)
-	if !ok {
-		return "", false
-	}
-	data, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
-		return "", false
-	}
+func (s replayStore) openCompaction(token string) (string, error) {
 	var c compactionCapsule
-	if json.Unmarshal(data, &c) != nil || c.Summary == "" {
-		return "", false
+	if err := s.State.Unseal(compactionScope, token, &c); err != nil {
+		return "", err
 	}
-	return c.Summary, true
+	if c.Summary == "" {
+		return "", errors.New("compaction summary is empty")
+	}
+	return c.Summary, nil
+}
+
+func (in *RequestIntent) deferCompaction(token string) {
+	appendContent(&in.Request, "user", []ag.Part{{}})
+	i := len(in.Request.Contents) - 1
+	in.references = append(in.references, replayReference{Content: i, Part: len(in.Request.Contents[i].Parts) - 1, Token: token, Compaction: true})
 }
 
 // summaryPart is the user-turn text that stands in for compacted history.

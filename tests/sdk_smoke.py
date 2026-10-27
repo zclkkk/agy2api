@@ -322,6 +322,51 @@ def check():
                             "Hello from agy2api",
                             "again",
                         ]
+                        compacted = client.responses.compact(
+                            model="gemini-test",
+                            input=[
+                                {
+                                    "role": "user",
+                                    "content": "Remember this conversation.",
+                                }
+                            ],
+                        )
+                        type(compacted).model_validate(compacted.model_dump())
+                        capsule = compacted.output[0].encrypted_content
+                        assert capsule.startswith("agy2.")
+                        resumed = client.responses.create(
+                            model="gemini-test",
+                            input=[
+                                *compacted.output,
+                                {
+                                    "role": "user",
+                                    "content": "Continue after compacting.",
+                                },
+                            ],
+                            store=False,
+                        )
+                        assert resumed.output_text == "Hello from agy2api"
+                        tampered = (
+                            capsule[:5]
+                            + ("A" if capsule[5] != "A" else "B")
+                            + capsule[6:]
+                        )
+                        try:
+                            client.responses.create(
+                                model="gemini-test",
+                                input=[
+                                    {
+                                        "type": "compaction",
+                                        "encrypted_content": tampered,
+                                    },
+                                    {"role": "user", "content": "continue"},
+                                ],
+                                store=False,
+                            )
+                        except openai.BadRequestError as error:
+                            assert error.param == "input"
+                        else:
+                            raise AssertionError("modified compaction was accepted")
                         with client.responses.stream(
                             model="gemini-test", input="hello", store=False
                         ) as stream:

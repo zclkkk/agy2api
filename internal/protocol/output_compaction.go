@@ -12,7 +12,11 @@ func (r *Renderer) finishCompaction(ctx context.Context) error {
 	if summary == "" {
 		return &ag.HTTPError{Status: 502, Message: "Antigravity returned an empty compaction summary; retry the request"}
 	}
-	item := map[string]any{"id": ag.ID("cmp_"), "type": "compaction", "encrypted_content": sealCompaction(summary, r.input.Model)}
+	sealed, err := (replayStore{r.state}).sealCompaction(summary, r.input.Model)
+	if err != nil {
+		return err
+	}
+	item := map[string]any{"id": ag.ID("cmp_"), "type": "compaction", "encrypted_content": sealed}
 	if r.input.Compact == "endpoint" {
 		r.Result = raw(map[string]any{"id": r.id, "object": "response.compaction", "created_at": r.created, "output": []any{item}, "usage": r.responseUsage()})
 		return nil

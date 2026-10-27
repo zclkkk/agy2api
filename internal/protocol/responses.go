@@ -164,11 +164,7 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 		case "reasoning":
 			in.deferReplay(v.Encrypted, "")
 		case "compaction", "compaction_summary":
-			summary, ok := openCompaction(v.Encrypted)
-			if !ok {
-				return in, invalid("input", "compaction item cannot be restored; provide a valid compaction item or the original history")
-			}
-			appendContent(&in.Request, "user", []ag.Part{summaryPart(summary)})
+			in.deferCompaction(v.Encrypted)
 		case "compaction_trigger":
 			// Codex asks for the history to be compacted (remote_compaction v2).
 			in.Compact = "trigger"

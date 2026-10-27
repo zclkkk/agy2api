@@ -59,6 +59,7 @@ func (s replayStore) open(model, token string) (Replay, error) {
 type replayReference struct {
 	Content, Part  int
 	Token, Visible string
+	Compaction     bool
 }
 
 func (in *RequestIntent) deferReplay(token, visible string) {
@@ -175,6 +176,14 @@ func (s replayStore) restore(ctx context.Context, in *requestPlan) error {
 		var parts []ag.Part
 		for j, p := range c.Parts {
 			if ref, ok := refs[[2]int{i, j}]; ok {
+				if ref.Compaction {
+					summary, err := s.openCompaction(ref.Token)
+					if err != nil {
+						return invalid("input", "compaction item cannot be restored; provide a valid compaction item or the original history")
+					}
+					parts = append(parts, summaryPart(summary))
+					continue
+				}
 				replay, err := s.open(in.Model, ref.Token)
 				if err != nil {
 					in.warn("dropped a reasoning item: %v", err)
