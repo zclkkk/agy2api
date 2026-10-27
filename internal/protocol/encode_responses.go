@@ -176,6 +176,6 @@ func (responsesEncoder) finish(r *wireState, status, _ string, result json.RawMe
 }
 func (responsesEncoder) fail(r *wireState, message string) error {
 	response := r.response("failed", nil)
-	response["error"] = map[string]any{"code": "upstream_error", "message": message}
+	response["error"] = map[string]any{"code": "server_error", "message": message}
 	return r.event("response.failed", map[string]any{"response": response})
 }

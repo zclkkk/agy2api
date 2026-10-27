@@ -258,6 +258,31 @@ func TestFailuresDoNotProduceSuccessfulTerminalEvents(t *testing.T) {
 			if !bytes.Contains(body, []byte("response.failed")) && !bytes.Contains(body, []byte("event: error")) {
 				t.Fatal(string(body))
 			}
+			if format == "responses" {
+				var code string
+				if err := ag.DecodeSSE(bytes.NewReader(body), func(data []byte) error {
+					var event struct {
+						Type     string `json:"type"`
+						Response struct {
+							Error struct {
+								Code string `json:"code"`
+							} `json:"error"`
+						} `json:"response"`
+					}
+					if err := json.Unmarshal(data, &event); err != nil {
+						return err
+					}
+					if event.Type == "response.failed" {
+						code = event.Response.Error.Code
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if code != "server_error" {
+					t.Fatalf("failure error code = %q", code)
+				}
+			}
 		})
 	}
 }
