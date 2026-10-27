@@ -1597,7 +1597,7 @@ class Live:
         for line in self.log:
             if "Antigravity version check" in line:
                 entry = json.loads(line)
-                assert entry["user_agent"].startswith("antigravity/"), entry
+                assert entry["user_agent"].startswith("antigravity/hub/"), entry
                 return {
                     "user_agent": entry["user_agent"],
                     "latest": entry.get("latest"),

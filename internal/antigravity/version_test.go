@@ -19,14 +19,14 @@ func TestUserAgentFollowsManifest(t *testing.T) {
 	}))
 	defer up.Close()
 	for _, tc := range []struct{ version, want string }{
-		{"2.30.1", "antigravity/2.30.1"},
-		{"3.0.0", "antigravity/3.0.0"},
-		{"1.0.0", "antigravity/" + FallbackVersion},
+		{"2.30.1", "antigravity/hub/2.30.1"},
+		{"3.0.0", "antigravity/hub/3.0.0"},
+		{"1.0.0", "antigravity/hub/" + FallbackVersion},
 	} {
 		body = "version: " + tc.version + "\n"
 		agent := NewUserAgent()
 		agent.manifest = up.URL
-		if got := agent.String(); got != "antigravity/"+FallbackVersion {
+		if got := agent.String(); got != "antigravity/hub/"+FallbackVersion {
 			t.Fatalf("before refresh = %q", got)
 		}
 		if _, err := agent.Refresh(context.Background(), up.Client()); err != nil {
@@ -57,7 +57,7 @@ func TestUserAgentKeepsVersionWhenManifestFails(t *testing.T) {
 	if _, err := agent.Refresh(context.Background(), up.Client()); err == nil {
 		t.Fatal("expected an error from a failing manifest")
 	}
-	if got := agent.String(); got != "antigravity/2.40.0" {
+	if got := agent.String(); got != "antigravity/hub/2.40.0" {
 		t.Fatalf("version after a failed refresh = %q", got)
 	}
 }

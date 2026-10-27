@@ -17,6 +17,67 @@ type testToken struct{}
 func (testToken) AccessToken(context.Context) (string, error) { return "test-token", nil }
 func (testToken) ProjectID() string                           { return "test-project" }
 
+func TestHubIdentityForModelDiscoveryAndGeneration(t *testing.T) {
+	for _, refreshed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("refreshed=%v", refreshed), func(t *testing.T) {
+			wantAgent := "antigravity/hub/" + FallbackVersion
+			if refreshed {
+				wantAgent = "antigravity/hub/2.30.1"
+			}
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/manifest" {
+					fmt.Fprintln(w, "version: 2.30.1")
+					return
+				}
+				if got := r.Header.Get("User-Agent"); got != wantAgent {
+					t.Errorf("%s User-Agent = %q, want %q", r.URL.Path, got, wantAgent)
+					http.Error(w, "unsupported client", http.StatusBadRequest)
+					return
+				}
+				switch r.URL.Path {
+				case "/v1internal:fetchAvailableModels":
+					fmt.Fprint(w, `{"models":{"gemini-4-argon-high":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"}}}`)
+				case "/v1internal:streamGenerateContent":
+					w.Header().Set("Content-Type", "text/event-stream")
+					fmt.Fprint(w, "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}]}}\n\n")
+				default:
+					t.Errorf("unexpected path: %s", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer up.Close()
+			client := Client{HTTP: up.Client(), BaseURL: up.URL, Auth: testToken{}}
+			if refreshed {
+				agent := NewUserAgent()
+				agent.manifest = up.URL + "/manifest"
+				if _, err := agent.Refresh(context.Background(), up.Client()); err != nil {
+					t.Fatal(err)
+				}
+				client.UserAgent = agent.String
+			}
+			catalog, err := client.Models(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := catalog.Models["gemini-4-argon-high"]; !ok {
+				t.Fatal("Hub model missing from catalog")
+			}
+			var answer string
+			if err := client.Generate(context.Background(), "gemini-4-argon-high", Request{}, KindAgent, func(chunk Chunk) error {
+				for _, part := range chunk.Parts {
+					answer += part.Text
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if answer != "ok" {
+				t.Fatalf("answer = %q", answer)
+			}
+		})
+	}
+}
+
 func TestDecodeSSEFragmentationAndLimits(t *testing.T) {
 	text := strings.Repeat("x", 100000)
 	input := ": heartbeat\r\nevent: chunk\r\ndata: {\"text\":\r\ndata: \"" + text + "\"}\r\n\r\ndata: [DONE]"

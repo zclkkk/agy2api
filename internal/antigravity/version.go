@@ -18,6 +18,7 @@ const (
 	// FallbackVersion is reported until the release manifest has been read.
 	// Antigravity serves its newest models only to recent client versions.
 	FallbackVersion = "2.24.0"
+	userAgentPrefix = "antigravity/hub/"
 	versionRefresh  = 6 * time.Hour
 )
 
@@ -26,8 +27,9 @@ var manifestURL = "https://antigravity-hub-auto-updater-974169037036.us-central1
 
 var semver = regexp.MustCompile(`^\d{1,4}\.\d{1,4}\.\d{1,6}$`)
 
-// UserAgent reports "antigravity/<version>" and keeps the version current
+// UserAgent reports "antigravity/hub/<version>" and keeps the version current
 // with the official release manifest, never below the built-in fallback.
+// The Hub identity is required for newer models such as Gemini 4 Argon.
 type UserAgent struct {
 	mu       sync.RWMutex
 	latest   string
@@ -40,7 +42,7 @@ func NewUserAgent() *UserAgent { return &UserAgent{} }
 func (u *UserAgent) String() string {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
-	return "antigravity/" + newerVersion(FallbackVersion, u.latest)
+	return userAgentPrefix + newerVersion(FallbackVersion, u.latest)
 }
 
 // Refresh reads the latest version from the release manifest. On failure the

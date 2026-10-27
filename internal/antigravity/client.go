@@ -102,7 +102,7 @@ func (c *Client) postToken(ctx context.Context, method string, payload any, toke
 	}
 	r.Header.Set("Authorization", "Bearer "+token)
 	r.Header.Set("Content-Type", "application/json")
-	agent := "antigravity/" + FallbackVersion
+	agent := userAgentPrefix + FallbackVersion
 	if c.UserAgent != nil {
 		agent = c.UserAgent()
 	}
