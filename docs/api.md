@@ -91,6 +91,8 @@ Images 请求不保存会话或生成图片。再次编辑时重新提交图片�
 
 Responses 默认 `store: true`，可通过 `previous_response_id` 续聊。新请求的顶层 `instructions` 独立生效；历史 `input` 中的 system/developer 消息会保留。
 
+`GET /v1/responses/{id}/input_items` 返回带稳定 ID 的规范化输入项，支持 `limit`（1–100，默认 20）、`order`（`asc` / `desc`，默认 `desc`）和 `after` 游标。分页元数据包含 `first_id`、`last_id` 和 `has_more`。
+
 `store: false` 不保存该响应的会话历史，也不能用其 ID 续聊；工具回合所需的短期签名索引仍会保存。Messages 的文本签名同样依赖本地状态。有效期和容量由[配置](configuration.md)控制。
 
 `/v1/responses/compact` 返回包含摘要的 `response.compaction` 对象，不保存响应记录。客户端也可以在普通 Responses 输入中发送 `compaction_trigger`，获得可用于后续请求的压缩项。

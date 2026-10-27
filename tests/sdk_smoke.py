@@ -296,7 +296,9 @@ def check():
                         type(result).model_validate(result.model_dump())
                         assert result.output_text == "Hello from agy2api"
                         assert client.responses.retrieve(result.id).id == result.id
-                        input_items = client.responses.input_items.list(result.id).data
+                        input_page = client.responses.input_items.list(result.id)
+                        type(input_page).model_validate(input_page.model_dump())
+                        input_items = input_page.data
                         assert len(input_items) == 1
                         type(input_items[0]).model_validate(input_items[0].model_dump())
                         assert input_items[0].id
@@ -308,6 +310,18 @@ def check():
                             input="again",
                         )
                         assert followup.output_text == "Hello from agy2api"
+                        history = list(
+                            client.responses.input_items.list(
+                                followup.id, limit=1, order="asc"
+                            )
+                        )
+                        assert len(history) == 3
+                        assert history[0].id == input_items[0].id
+                        assert [item.content[0].text for item in history] == [
+                            "hello",
+                            "Hello from agy2api",
+                            "again",
+                        ]
                         with client.responses.stream(
                             model="gemini-test", input="hello", store=False
                         ) as stream:

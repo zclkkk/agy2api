@@ -497,7 +497,12 @@ func (s *Server) inputItems(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, 200, map[string]any{"object": "list", "data": record.Items, "has_more": false, "first_id": nil, "last_id": nil})
+	page, err := inputItemsPage(record.Items, r.URL.Query())
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, 200, page)
 }
 
 func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
