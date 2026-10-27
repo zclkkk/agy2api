@@ -71,8 +71,10 @@ func TestClaudeCodeRequestShapeIsAccepted(t *testing.T) {
 	if th := in.Request.Generation.Thinking; th == nil || th.Level != "high" {
 		t.Fatalf("effort not applied: %+v", th)
 	}
-	if len(in.Warnings) != 1 || !strings.Contains(in.Warnings[0], "some_future_field") {
-		t.Fatalf("only the unknown field should be reported: %v", in.Warnings)
+	for _, field := range []string{"some_future_field", "context_management", "cache_control", "disable_parallel_tool_use"} {
+		if !strings.Contains(strings.Join(in.Warnings, "\n"), field) {
+			t.Fatalf("missing warning for %s: %v", field, in.Warnings)
+		}
 	}
 }
 

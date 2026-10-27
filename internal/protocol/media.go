@@ -18,32 +18,32 @@ type Source struct {
 	URL       string `json:"url,omitempty"`
 }
 type Block struct {
-	Type        string          `json:"type"`
-	Text        string          `json:"text,omitempty"`
-	Thinking    string          `json:"thinking,omitempty"`
-	Signature   string          `json:"signature,omitempty"`
-	ID          string          `json:"id,omitempty"`
-	Name        string          `json:"name,omitempty"`
-	Input       json.RawMessage `json:"input,omitempty"`
-	ToolUseID   string          `json:"tool_use_id,omitempty"`
-	Content     json.RawMessage `json:"content,omitempty"`
-	IsError     bool            `json:"is_error,omitempty"`
-	Source      *Source         `json:"source,omitempty"`
-	ImageURL    string          `json:"image_url,omitempty"`
-	Detail      string          `json:"detail,omitempty"`
-	FileData    string          `json:"file_data,omitempty"`
-	FileURL     string          `json:"file_url,omitempty"`
-	Filename    string          `json:"filename,omitempty"`
-	FileID      string          `json:"file_id,omitempty"`
-	Annotations json.RawMessage `json:"annotations,omitempty"`
-	Logprobs    json.RawMessage `json:"logprobs,omitempty"`
-	Citations   json.RawMessage `json:"citations,omitempty"`
-	Refusal     string          `json:"refusal,omitempty"`
-	ToolName    string          `json:"tool_name,omitempty"`
+	Type         string          `json:"type"`
+	Text         string          `json:"text,omitempty"`
+	Thinking     string          `json:"thinking,omitempty"`
+	Signature    string          `json:"signature,omitempty"`
+	ID           string          `json:"id,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	Input        json.RawMessage `json:"input,omitempty"`
+	ToolUseID    string          `json:"tool_use_id,omitempty"`
+	Content      json.RawMessage `json:"content,omitempty"`
+	IsError      bool            `json:"is_error,omitempty"`
+	Source       *Source         `json:"source,omitempty"`
+	ImageURL     string          `json:"image_url,omitempty"`
+	Detail       string          `json:"detail,omitempty"`
+	FileData     string          `json:"file_data,omitempty"`
+	FileURL      string          `json:"file_url,omitempty"`
+	Filename     string          `json:"filename,omitempty"`
+	FileID       string          `json:"file_id,omitempty"`
+	Annotations  json.RawMessage `json:"annotations,omitempty"`
+	Logprobs     json.RawMessage `json:"logprobs,omitempty"`
+	Citations    json.RawMessage `json:"citations,omitempty"`
+	Refusal      string          `json:"refusal,omitempty"`
+	ToolName     string          `json:"tool_name,omitempty"`
+	CacheControl json.RawMessage `json:"cache_control,omitempty"`
 }
 
-// blocks decodes string or block-array content. Unknown block fields such as
-// cache_control are hints without effect on the output, so they are ignored.
+// blocks decodes string or block-array content.
 func blocks(content json.RawMessage) ([]Block, error) {
 	var text string
 	if json.Unmarshal(content, &text) == nil {
@@ -54,6 +54,34 @@ func blocks(content json.RawMessage) ([]Block, error) {
 		return nil, invalid("content", "content must be a string or an array of content blocks")
 	}
 	return out, nil
+}
+
+func (in *RequestIntent) warnContentOptions(content json.RawMessage) {
+	items, err := blocks(content)
+	if err != nil {
+		return
+	} // The normal content decoder reports malformed input.
+	for _, b := range items {
+		in.warnBlockOptions(b)
+		if b.Type == "tool_result" {
+			children, _ := blocks(b.Content)
+			for _, child := range children {
+				in.warnBlockOptions(child)
+			}
+		}
+	}
+}
+
+func (in *RequestIntent) warnBlockOptions(b Block) {
+	in.warnIgnoredOption("cache_control", b.CacheControl)
+	if b.Type == "document" {
+		var citations struct {
+			Enabled bool `json:"enabled"`
+		}
+		if json.Unmarshal(b.Citations, &citations) == nil && citations.Enabled {
+			in.warn("document citations.enabled is ignored; structured document citations are not implemented")
+		}
+	}
 }
 
 func mediaParts(content json.RawMessage) ([]ag.Part, error) {

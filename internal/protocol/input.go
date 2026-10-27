@@ -71,6 +71,23 @@ func (in *RequestIntent) warn(format string, args ...any) {
 	in.Warnings = append(in.Warnings, message)
 }
 
+// warnIgnoredOption reports an unsupported control without logging its value.
+// Explicit no-op values are quiet, just like an omitted option.
+func (in *RequestIntent) warnIgnoredOption(name string, value json.RawMessage, noops ...string) {
+	if !present(value) {
+		return
+	}
+	encoded, err := canonical(value)
+	if err == nil {
+		for _, noop := range noops {
+			if string(encoded) == noop {
+				return
+			}
+		}
+	}
+	in.warn("%s is ignored; this control is not implemented", name)
+}
+
 // Decoder only parses the public wire protocols; Planner owns replay and state.
 type Decoder struct{}
 

@@ -25,7 +25,8 @@ type ResponsesRequest struct {
 		Summary string `json:"summary,omitempty"`
 	} `json:"reasoning,omitempty"`
 	Text *struct {
-		Format *struct {
+		Verbosity string `json:"verbosity,omitempty"`
+		Format    *struct {
 			Type        string          `json:"type"`
 			Name        string          `json:"name,omitempty"`
 			Schema      json.RawMessage `json:"schema,omitempty"`
@@ -40,18 +41,23 @@ type ResponsesRequest struct {
 	Conversation json.RawMessage `json:"conversation,omitempty"`
 	Prompt       json.RawMessage `json:"prompt,omitempty"`
 	// Codex sets prompt_cache_key to its session ID.
-	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	PromptCacheKey       string          `json:"prompt_cache_key,omitempty"`
+	ContextManagement    json.RawMessage `json:"context_management,omitempty"`
+	PromptCacheRetention json.RawMessage `json:"prompt_cache_retention,omitempty"`
+	ServiceTier          json.RawMessage `json:"service_tier,omitempty"`
+	StreamOptions        json.RawMessage `json:"stream_options,omitempty"`
+	TopLogprobs          json.RawMessage `json:"top_logprobs,omitempty"`
 }
 
-// Fields with no effect on what the model generates.
-var quietResponseFields = map[string]bool{"prompt_cache_retention": true, "client_metadata": true,
-	"user": true, "safety_identifier": true, "service_tier": true, "stream_options": true, "top_logprobs": true}
+// Client metadata has no corresponding provider control.
+var quietResponseFields = map[string]bool{"client_metadata": true, "user": true, "safety_identifier": true}
 
 type ResponseTool struct {
 	Type        string          `json:"type"`
 	Name        string          `json:"name,omitempty"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      bool            `json:"strict,omitempty"`
 	Format      *struct {
 		Type       string `json:"type"`
 		Syntax     string `json:"syntax,omitempty"`
@@ -85,6 +91,11 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 	if len(ignored) > 0 {
 		in.warn("ignored request fields: %s", strings.Join(ignored, ", "))
 	}
+	in.warnIgnoredOption("context_management", r.ContextManagement, "[]", "{}")
+	in.warnIgnoredOption("prompt_cache_retention", r.PromptCacheRetention)
+	in.warnIgnoredOption("service_tier", r.ServiceTier, `"auto"`, `"default"`)
+	in.warnIgnoredOption("stream_options", r.StreamOptions, `{"include_obfuscation":false}`)
+	in.warnIgnoredOption("top_logprobs", r.TopLogprobs, "0")
 	switch {
 	case r.Background:
 		return in, unsupported("background")
@@ -94,7 +105,10 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 		return in, unsupported("prompt")
 	}
 	if r.Parallel != nil && !*r.Parallel {
-		in.warn("parallel_tool_calls=false is best effort")
+		in.warn("parallel_tool_calls=false is not enforced; multiple tool calls remain possible")
+	}
+	if r.Truncation != "" && r.Truncation != "disabled" {
+		in.warn("truncation is ignored; automatic input truncation is not implemented")
 	}
 	for _, v := range r.Include {
 		if v != "reasoning.encrypted_content" {
@@ -123,6 +137,7 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 		}
 		switch v.Type {
 		case "", "message":
+			in.warnContentOptions(v.Content)
 			parts, err := mediaParts(v.Content)
 			if err != nil {
 				return in, err
@@ -156,6 +171,7 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 			}
 			in.appendHistoryCall(v.CallID, ToolName{Name: v.Name, Namespace: v.Namespace, Custom: v.Type == "custom_tool_call"}, args)
 		case "function_call_output", "custom_tool_call_output":
+			in.warnContentOptions(v.Output)
 			p, err := toolResult(v.CallID, "", v.Output, false)
 			if err != nil {
 				return in, err
@@ -187,6 +203,9 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 		}
 	}
 	if r.Reasoning != nil {
+		if r.Reasoning.Summary != "" && r.Reasoning.Summary != "auto" {
+			in.warn("reasoning.summary level is not enforced; upstream reasoning summaries are returned as available")
+		}
 		if r.Reasoning.Effort != "" {
 			applyEffort(&in, r.Reasoning.Effort)
 		}
@@ -194,8 +213,14 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 			in.Thinking = ThinkingIntent{Mode: "adaptive"}
 		}
 	}
+	if r.Text != nil && r.Text.Verbosity != "" {
+		in.warn("text.verbosity is ignored; verbosity control is not implemented")
+	}
 	if r.Text != nil && r.Text.Format != nil {
 		f := r.Text.Format
+		if f.Strict {
+			in.warn("text.format.strict is not enforced; JSON Schema is translated to the upstream subset")
+		}
 		switch f.Type {
 		case "text":
 		case "json_object":
@@ -219,6 +244,9 @@ func declareResponseTools(in *RequestIntent, tools []ResponseTool, namespace str
 	for _, t := range tools {
 		switch t.Type {
 		case "function":
+			if t.Strict {
+				in.warn("tools.strict is not enforced; tool schemas are translated to the upstream subset")
+			}
 			if t.Name == "" {
 				return invalid("tools.name", "tool name is required")
 			}
@@ -236,6 +264,9 @@ func declareResponseTools(in *RequestIntent, tools []ResponseTool, namespace str
 				return invalid("tools.name", "tool name is required")
 			}
 			desc := "Raw text input for the tool."
+			if t.Format != nil && t.Format.Type == "grammar" {
+				in.warn("tools.format.grammar is guidance only; grammar validation is not implemented")
+			}
 			if t.Format != nil && t.Format.Type == "grammar" && t.Format.Definition != "" {
 				desc = "Raw text input that must follow this " + t.Format.Syntax + " grammar:\n" + t.Format.Definition
 			}

@@ -34,13 +34,14 @@ type MessageRequest struct {
 			Schema json.RawMessage `json:"schema"`
 		} `json:"format,omitempty"`
 	} `json:"output_config,omitempty"`
-	Metadata   json.RawMessage `json:"metadata,omitempty"`
-	MCPServers json.RawMessage `json:"mcp_servers,omitempty"`
+	Metadata          json.RawMessage `json:"metadata,omitempty"`
+	MCPServers        json.RawMessage `json:"mcp_servers,omitempty"`
+	ContextManagement json.RawMessage `json:"context_management,omitempty"`
+	ServiceTier       json.RawMessage `json:"service_tier,omitempty"`
+	Container         json.RawMessage `json:"container,omitempty"`
+	InferenceGeo      json.RawMessage `json:"inference_geo,omitempty"`
+	CacheControl      json.RawMessage `json:"cache_control,omitempty"`
 }
-
-// Fields with no effect on what the model generates. They are ignored without
-// a log line; other unknown fields are ignored and logged.
-var quietMessageFields = map[string]bool{"context_management": true, "service_tier": true, "container": true, "inference_geo": true}
 
 type MessageTool struct {
 	Type         string          `json:"type,omitempty"`
@@ -48,6 +49,8 @@ type MessageTool struct {
 	Description  string          `json:"description,omitempty"`
 	InputSchema  json.RawMessage `json:"input_schema,omitempty"`
 	DeferLoading bool            `json:"defer_loading,omitempty"`
+	Strict       bool            `json:"strict,omitempty"`
+	CacheControl json.RawMessage `json:"cache_control,omitempty"`
 }
 
 // Assistant blocks produced by Anthropic server tools. They carry no state this
@@ -58,7 +61,7 @@ var serverToolBlocks = map[string]bool{"web_fetch_tool_result": true,
 
 func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 	var r MessageRequest
-	ignored, err := decodeRequest(data, &r, quietMessageFields)
+	ignored, err := decodeRequest(data, &r, nil)
 	if err != nil {
 		return RequestIntent{}, err
 	}
@@ -66,6 +69,11 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 	if len(ignored) > 0 {
 		in.warn("ignored request fields: %s", strings.Join(ignored, ", "))
 	}
+	in.warnIgnoredOption("context_management", r.ContextManagement, "{}", `{"edits":[]}`)
+	in.warnIgnoredOption("service_tier", r.ServiceTier, `"auto"`)
+	in.warnIgnoredOption("container", r.Container)
+	in.warnIgnoredOption("inference_geo", r.InferenceGeo, `"global"`)
+	in.warnIgnoredOption("cache_control", r.CacheControl)
 	in.ClientSession = claudeCodeSession(r.Metadata)
 	if !countOnly && r.MaxTokens == nil {
 		return in, invalid("max_tokens", "max_tokens is required")
@@ -74,6 +82,7 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 		return in, unsupported("mcp_servers")
 	}
 	if present(r.System) {
+		in.warnContentOptions(r.System)
 		parts, err := mediaParts(r.System)
 		if err != nil {
 			return in, err
@@ -88,6 +97,7 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 	in.Instructions = joinSystem(in.Request.System)
 	referenced := map[string]bool{}
 	for _, message := range r.Messages {
+		in.warnContentOptions(message.Content)
 		role := message.Role
 		switch role {
 		case "assistant":
@@ -152,6 +162,10 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 		}
 	}
 	for _, t := range r.Tools {
+		if t.Strict {
+			in.warn("tools.strict is not enforced; tool schemas are translated to the upstream subset")
+		}
+		in.warnIgnoredOption("cache_control", t.CacheControl)
 		if t.Type != "" && t.Type != "custom" {
 			return in, unsupported("tool type " + t.Type)
 		}
@@ -175,11 +189,15 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 	}
 	if present(r.ToolChoice) {
 		var choice struct {
-			Type string `json:"type"`
-			Name string `json:"name,omitempty"`
+			Type            string `json:"type"`
+			Name            string `json:"name,omitempty"`
+			DisableParallel bool   `json:"disable_parallel_tool_use,omitempty"`
 		}
 		if err := json.Unmarshal(r.ToolChoice, &choice); err != nil {
 			return in, invalid("tool_choice", "tool_choice must be an object")
+		}
+		if choice.DisableParallel {
+			in.warn("tool_choice.disable_parallel_tool_use=true is not enforced; multiple tool calls remain possible")
 		}
 		if err := setChoice(&in, choice.Type, choice.Name); err != nil {
 			return in, err
@@ -212,6 +230,7 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 			if f.Type != "json_schema" || !present(f.Schema) {
 				return in, invalid("output_config.format", "expected json_schema with schema")
 			}
+			in.warn("output_config.format uses the upstream JSON Schema subset; full schema validation is not implemented")
 			in.Request.Generation.MIMEType = "application/json"
 			in.Request.Generation.Schema = f.Schema
 		}

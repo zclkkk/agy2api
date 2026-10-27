@@ -215,8 +215,7 @@ func toolResult(id, name string, content json.RawMessage, isError bool) (ag.Part
 	return ag.Part{FunctionResponse: &ag.Result{ID: id, Name: name, Response: raw(map[string]any{"output": strings.Join(texts, "\n"), "is_error": isError}), Parts: media}}, nil
 }
 
-// setChoice maps a tool choice. Parallel-call limits have no Antigravity
-// equivalent and are accepted as best effort.
+// setChoice maps a tool choice. Parallel-call limits are not enforced by this adapter.
 func setChoice(in *RequestIntent, choice, name string) error {
 	switch choice {
 	case "auto", "none":

@@ -34,7 +34,7 @@ Responses / Messages 生成请求支持 `stream: true`，以 SSE 返回事件。
 
 不支持的工具类型或工具选择返回 400；普通函数名不会因为与托管工具重名而被拒绝。客户端应关闭服务不支持的托管工具。
 
-`tool_choice` 支持自动、禁止、强制及指定工具；Responses 的 `allowed_tools` 保留允许调用的子集。选择未声明的工具会报错。`parallel_tool_calls=false` 和 `disable_parallel_tool_use` 只能尽力满足。
+`tool_choice` 支持自动、禁止、强制及指定工具；Responses 的 `allowed_tools` 保留允许调用的子集。选择未声明的工具会报错。`parallel_tool_calls=false` 和 `disable_parallel_tool_use=true` 目前不强制执行，仍可能返回多个工具调用，并在日志中明确告警。
 
 后续请求应原样携带返回的工具 ID、调用参数、思考块和 `encrypted_content`。客户端省略历史调用的 namespace 时，服务会尝试根据匹配的记录或唯一声明补齐。记录缺失或历史被修改时，不复用不匹配的签名；确实存在工具身份冲突时返回 400。
 
@@ -44,7 +44,7 @@ Responses / Messages 生成请求支持 `stream: true`，以 SSE 返回事件。
 
 Gemini 无法保证彻底关闭思考；请求关闭时使用模型允许的最低预算。没有可见 thinking 块或思考 token 计数为零，不代表模型没有思考。
 
-支持 JSON 输出和 JSON Schema 转换，但不保证 `strict` 语义。工具和响应 schema 会转换成上游支持的子集。
+支持 JSON 输出和 JSON Schema 转换，但不保证 `strict` 语义。工具和响应 schema 会转换成上游支持的子集。自定义工具的 grammar 仅作为文字指导，不进行语法校验；这些约束请求仍被接受，并记录能力告警。
 
 ## 媒体
 
@@ -93,6 +93,8 @@ Responses 默认 `store: true`，可通过 `previous_response_id` 续聊。新�
 
 `GET /v1/responses/{id}/input_items` 返回带稳定 ID 的规范化输入项，支持 `limit`（1–100，默认 20）、`order`（`asc` / `desc`，默认 `desc`）和 `after` 游标。分页元数据包含 `first_id`、`last_id` 和 `has_more`。
 
+`GET /v1/responses/{id}` 只返回保存的 JSON；`stream` 和 `starting_after` 不提供事件重放，传入时会记录告警。
+
 `store: false` 不保存该响应的会话历史，也不能用其 ID 续聊；工具回合所需的短期签名索引仍会保存。Messages 的文本签名同样依赖本地状态。有效期和容量由[配置](configuration.md)控制。
 
 `/v1/responses/compact` 返回包含摘要的 `response.compaction` 对象，不保存响应记录。客户端也可以在普通 Responses 输入中发送 `compaction_trigger`，获得可用于后续请求的压缩项。
@@ -105,4 +107,5 @@ Responses 默认 `store: true`，可通过 `previous_response_id` 续聊。新�
 - 停止序列可截断文本，但上游未必报告命中的序列；此时 Messages 不能还原精确的 `stop_reason` 和 `stop_sequence`。
 - 以 assistant 结尾的普通对话会补上继续请求，以满足上游要求。
 - 未识别的扩展字段通常会忽略；不支持的内容类型、附件引用或工具类型会明确报错。转换和降级信息写入日志的 `warnings`。
+- 自动上下文管理与截断、文档引用、缓存控制、指定服务等级及区域、logprobs 和流式混淆等控制尚未实现。有效设置会记录忽略或降级告警；已知不产生额外行为的空配置和默认值不告警。不会因这些控制而新增请求拒绝。
 - 模型可用性、容量和额度由账号及上游决定。限流响应会保留上游提供的 `Retry-After`。
