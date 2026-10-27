@@ -6,6 +6,25 @@ import (
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
 )
 
+// Input item IDs are pagination cursors, so they must be unique across both
+// current input and any stored input/output prepended to the conversation.
+func validateResponseInputItemIDs(items []json.RawMessage) error {
+	seen := make(map[string]bool, len(items))
+	for _, data := range items {
+		var item struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(data, &item); err != nil {
+			return invalid("input", "invalid input item: "+err.Error())
+		}
+		if seen[item.ID] {
+			return invalid("input", "duplicate input item ID; IDs must be unique across the conversation history")
+		}
+		seen[item.ID] = true
+	}
+	return nil
+}
+
 // responseInputItem gives accepted input the public shape returned by input_items.
 // Preserve caller-supplied IDs and extension fields; generated IDs are stored
 // with the response so retrieval and previous_response_id reuse the same items.

@@ -99,6 +99,11 @@ func (p Planner) Prepare(ctx context.Context, intent RequestIntent, catalog ag.C
 			return finish(), err
 		}
 	}
+	if in.Format == Responses {
+		if err := validateResponseInputItemIDs(in.OriginalItems); err != nil {
+			return finish(), err
+		}
+	}
 	if err := (replayStore{p.State}).resolveHistoryTools(ctx, &in); err != nil {
 		return finish(), err
 	}

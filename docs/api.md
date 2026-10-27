@@ -93,6 +93,8 @@ Responses 默认 `store: true`，可通过 `previous_response_id` 续聊。新�
 
 `GET /v1/responses/{id}/input_items` 返回带稳定 ID 的规范化输入项，支持 `limit`（1–100，默认 20）、`order`（`asc` / `desc`，默认 `desc`）和 `after` 游标。分页元数据包含 `first_id`、`last_id` 和 `has_more`。
 
+输入项 ID 必须在完整历史中唯一；同次输入中重复，或与 `previous_response_id` 引入的历史输入、输出 ID 重复时，返回 400。
+
 `GET /v1/responses/{id}` 只返回保存的 JSON；`stream` 和 `starting_after` 不提供事件重放，传入时会记录告警。
 
 `store: false` 不保存该响应的会话历史，也不能用其 ID 续聊；工具回合所需的短期签名索引仍会保存。Messages 的文本签名同样依赖本地状态。有效期和容量由[配置](configuration.md)控制。

@@ -3,6 +3,8 @@ package protocol
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
@@ -88,5 +90,72 @@ func TestResponseInputItemIDsSurviveContinuation(t *testing.T) {
 	_ = json.Unmarshal(r.Result, &response)
 	if len(next.OriginalItems) != 3 || string(next.OriginalItems[1]) != string(response.Output[0]) {
 		t.Fatal("prior output identity changed")
+	}
+}
+
+func TestResponseInputItemIDsRejectDuplicates(t *testing.T) {
+	intent, err := (Decoder{}).Responses([]byte(`{"model":"gemini-test","store":false,"input":[
+		{"id":"msg_duplicate","role":"user","content":"first"},
+		{"id":"msg_duplicate","role":"user","content":"second"},
+		{"id":"msg_last","role":"user","content":"last"}
+	]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	planner := Planner{State: testStore(t)}
+	for name, operation := range map[string]Operation{"generate": Generate, "count": CountTokens, "compact": CompactResponse} {
+		t.Run(name, func(t *testing.T) {
+			_, err := planner.Prepare(context.Background(), intent, testCatalog, operation, nil)
+			var validation *Error
+			if !errors.As(err, &validation) || validation.Param != "input" || !strings.Contains(validation.Message, "duplicate") {
+				t.Fatalf("duplicate input item IDs were not rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestResponseInputItemIDsRejectHistoryCollisions(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	in, err := (testPipeline{State: s}).Responses(ctx, []byte(`{"model":"gemini-test","input":[{"id":"msg_client","role":"user","content":"first"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewRenderer(in, s, nil)
+	if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "answer"}}, Finish: "STOP"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Finish(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Output []ResponseItem `json:"output"`
+	}
+	if err := json.Unmarshal(r.Result, &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Output) != 1 {
+		t.Fatalf("output = %s", r.Result)
+	}
+	planner := Planner{State: s}
+	for name, id := range map[string]string{"stored input": "msg_client", "stored output": response.Output[0].ID} {
+		t.Run(name, func(t *testing.T) {
+			intent, err := (Decoder{}).Responses(raw(map[string]any{
+				"model": "gemini-test", "previous_response_id": r.id,
+				"input": []any{map[string]string{"id": id, "role": "user", "content": "next"}},
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, operation := range map[string]Operation{"generate": Generate, "count": CountTokens, "compact": CompactResponse} {
+				t.Run(name, func(t *testing.T) {
+					_, err := planner.Prepare(ctx, intent, testCatalog, operation, nil)
+					var validation *Error
+					if !errors.As(err, &validation) || validation.Param != "input" || !strings.Contains(validation.Message, "duplicate") {
+						t.Fatalf("historical input item ID collision was not rejected: %v", err)
+					}
+				})
+			}
+		})
 	}
 }
