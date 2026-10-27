@@ -142,27 +142,9 @@ type ModalityTokens struct {
 	Modality string `json:"modality"`
 	Count    int    `json:"tokenCount"`
 }
-type Grounding struct {
-	Queries []string `json:"webSearchQueries,omitempty"`
-	Chunks  []struct {
-		Web *struct {
-			URI   string `json:"uri"`
-			Title string `json:"title"`
-		} `json:"web,omitempty"`
-	} `json:"groundingChunks"`
-	Supports []struct {
-		Segment struct {
-			Start int    `json:"startIndex"`
-			End   int    `json:"endIndex"`
-			Text  string `json:"text"`
-		} `json:"segment"`
-		Indices []int `json:"groundingChunkIndices"`
-	} `json:"groundingSupports"`
-}
 type Candidate struct {
-	Content   Content    `json:"content"`
-	Finish    string     `json:"finishReason,omitempty"`
-	Grounding *Grounding `json:"groundingMetadata,omitempty"`
+	Content Content `json:"content"`
+	Finish  string  `json:"finishReason,omitempty"`
 }
 type Response struct {
 	Candidates     []Candidate     `json:"candidates"`
@@ -171,14 +153,12 @@ type Response struct {
 	Error          json.RawMessage `json:"error,omitempty"`
 }
 type Chunk struct {
-	Parts     []Part
-	Usage     *Usage
-	Finish    string
-	Grounding *Grounding
+	Parts  []Part
+	Usage  *Usage
+	Finish string
 }
 type Catalog struct {
 	Models          map[string]json.RawMessage `json:"models"`
-	SearchModels    []string                   `json:"webSearchModelIds"`
 	ImageModels     []string                   `json:"imageGenerationModelIds"`
 	AgentModelSorts []struct {
 		Groups []struct {
@@ -215,7 +195,6 @@ func (c Catalog) ListedModelIDs() []string {
 // ModelInfo is the subset of catalog metadata used to shape requests.
 type ModelInfo struct {
 	MinThinkingBudget int  `json:"minThinkingBudget"`
-	Search            bool `json:"-"`
 	Image             bool `json:"-"`
 }
 
@@ -226,7 +205,6 @@ func (c Catalog) Info(id string) (ModelInfo, bool) {
 	}
 	var info ModelInfo
 	_ = json.Unmarshal(raw, &info)
-	info.Search = slices.Contains(c.SearchModels, id)
 	info.Image = slices.Contains(c.ImageModels, id) || (len(c.ImageModels) == 0 && strings.Contains(id, "image"))
 	return info, true
 }
@@ -236,7 +214,6 @@ const GeminiProvider = "API_PROVIDER_GOOGLE_GEMINI"
 
 // Request types understood by streamGenerateContent.
 const (
-	KindAgent  = "agent"
-	KindSearch = "web_search"
-	KindImage  = "image_gen"
+	KindAgent = "agent"
+	KindImage = "image_gen"
 )
