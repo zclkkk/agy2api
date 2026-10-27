@@ -1,12 +1,29 @@
 package protocol
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"testing"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
 )
+
+func TestUnrestorableCompactionFailsRequest(t *testing.T) {
+	p := testPipeline{State: testStore(t)}
+	for _, token := range []string{"", "foreign", compactionPrefix + "!!", compactionPrefix + "e30"} {
+		_, err := p.Responses(context.Background(), raw(map[string]any{
+			"model": "gemini-test",
+			"input": []any{
+				map[string]string{"type": "compaction", "encrypted_content": token},
+				map[string]string{"role": "user", "content": "Continue using the earlier context."},
+			},
+		}))
+		if err == nil || !strings.Contains(err.Error(), "compaction") {
+			t.Fatalf("unrestorable compaction was discarded: %v", err)
+		}
+	}
+}
 
 func TestEndWithUser(t *testing.T) {
 	user := ag.Content{Role: "user", Parts: []ag.Part{{Text: "hi"}}}

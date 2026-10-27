@@ -214,7 +214,7 @@ func TestCompactEndpoint(t *testing.T) {
 	}
 	// A compaction item from another provider cannot be expanded.
 	res, out = send(t, s, "/v1/responses", `{"model":"gemini-test","input":[{"type":"compaction","encrypted_content":"gAAAA-openai"},{"role":"user","content":"next"}]}`, nil)
-	if res.StatusCode != 200 || len(rec.last(t).Contents) != 1 {
+	if res.StatusCode != 400 || !strings.Contains(out, "compaction item cannot be restored") {
 		t.Fatalf("foreign compaction: %d %s", res.StatusCode, out)
 	}
 }

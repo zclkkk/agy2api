@@ -166,9 +166,7 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 		case "compaction", "compaction_summary":
 			summary, ok := openCompaction(v.Encrypted)
 			if !ok {
-				// Like a foreign reasoning item, its content cannot be restored.
-				in.warn("dropped a compaction item not issued by agy2api; the history it replaced is unavailable")
-				continue
+				return in, invalid("input", "compaction item cannot be restored; provide a valid compaction item or the original history")
 			}
 			appendContent(&in.Request, "user", []ag.Part{summaryPart(summary)})
 		case "compaction_trigger":
