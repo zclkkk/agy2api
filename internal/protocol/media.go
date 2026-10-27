@@ -35,10 +35,7 @@ type Block struct {
 	FileURL      string          `json:"file_url,omitempty"`
 	Filename     string          `json:"filename,omitempty"`
 	FileID       string          `json:"file_id,omitempty"`
-	Annotations  json.RawMessage `json:"annotations,omitempty"`
-	Logprobs     json.RawMessage `json:"logprobs,omitempty"`
 	Citations    json.RawMessage `json:"citations,omitempty"`
-	Refusal      string          `json:"refusal,omitempty"`
 	ToolName     string          `json:"tool_name,omitempty"`
 	CacheControl json.RawMessage `json:"cache_control,omitempty"`
 }
@@ -104,8 +101,6 @@ func mediaPart(b Block) (ag.Part, error) {
 	switch b.Type {
 	case "text", "input_text", "output_text":
 		return ag.Part{Text: b.Text}, nil
-	case "refusal":
-		return ag.Part{Text: b.Refusal}, nil
 	case "tool_reference":
 		// Claude Code's tool search result; the referenced tool is declared.
 		name := b.ToolName

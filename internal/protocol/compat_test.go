@@ -196,6 +196,33 @@ func TestToolIdentityRoundTripsThroughOutput(t *testing.T) {
 	}
 }
 
+// History that only another provider produces is not converted.
+func TestOtherProviderHistoryIsUnsupported(t *testing.T) {
+	unsupported := func(err error) bool {
+		var e *Error
+		return errors.As(err, &e) && strings.HasPrefix(e.Message, "unsupported")
+	}
+	for _, block := range []string{
+		`{"type":"server_tool_use","id":"srvtoolu_1","name":"web_fetch","input":{}}`,
+		`{"type":"web_fetch_tool_result","tool_use_id":"srvtoolu_1","content":{}}`,
+		`{"type":"redacted_thinking","data":"opaque"}`,
+	} {
+		body := `{"model":"gemini-test","max_tokens":10,"messages":[{"role":"user","content":"q"},{"role":"assistant","content":[` + block + `]},{"role":"user","content":"more"}]}`
+		if _, err := (Decoder{}).Messages([]byte(body), false); !unsupported(err) {
+			t.Errorf("%s: %v", block, err)
+		}
+	}
+	for _, item := range []string{
+		`{"role":"assistant","content":[{"type":"refusal","refusal":"no"}]}`,
+		`{"type":"compaction_summary","encrypted_content":"agy2.x"}`,
+	} {
+		body := `{"model":"gemini-test","input":[` + item + `,{"role":"user","content":"next"}]}`
+		if _, err := (Decoder{}).Responses([]byte(body)); !unsupported(err) {
+			t.Errorf("%s: %v", item, err)
+		}
+	}
+}
+
 func TestMissingReplayStateDegrades(t *testing.T) {
 	s := testStore(t)
 	d := testPipeline{State: s}
@@ -205,10 +232,10 @@ func TestMissingReplayStateDegrades(t *testing.T) {
 	body := raw(map[string]any{"model": "gemini-test", "max_tokens": 100, "messages": []any{
 		map[string]any{"role": "user", "content": "hi"},
 		map[string]any{"role": "assistant", "content": []any{
-			map[string]any{"type": "thinking", "thinking": "from elsewhere", "signature": "EqQBCkYIBRgCKkB"},
+			// Not sealed by this instance, e.g. after the data directory was replaced.
+			map[string]any{"type": "thinking", "thinking": "lost key", "signature": "agy2.EqQBCkYIBRgCKkB"},
 			map[string]any{"type": "thinking", "thinking": "x", "signature": foreign},
 			map[string]any{"type": "thinking", "thinking": "edited thought", "signature": own},
-			map[string]any{"type": "redacted_thinking", "data": "opaque"},
 			map[string]any{"type": "tool_use", "id": "toolu_agy_expired", "name": "lookup", "input": map[string]any{}},
 		}},
 		map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "toolu_agy_expired", "content": "ok"}}},

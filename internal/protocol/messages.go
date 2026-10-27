@@ -53,12 +53,6 @@ type MessageTool struct {
 	CacheControl json.RawMessage `json:"cache_control,omitempty"`
 }
 
-// Assistant blocks produced by Anthropic server tools. They carry no state this
-// bridge can replay, so they are dropped from history.
-var serverToolBlocks = map[string]bool{"web_fetch_tool_result": true,
-	"code_execution_tool_result": true, "bash_code_execution_tool_result": true, "text_editor_code_execution_tool_result": true,
-	"mcp_tool_use": true, "mcp_tool_result": true, "container_upload": true, "redacted_thinking": true}
-
 func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 	var r MessageRequest
 	ignored, err := decodeRequest(data, &r, nil)
@@ -131,8 +125,6 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 					return in, invalid("thinking", "thinking blocks must be in assistant messages")
 				}
 				in.deferReplay(b.Signature, b.Thinking)
-			case serverToolBlocks[b.Type]:
-				in.warn("dropped %s blocks from history", b.Type)
 			case b.Type == "tool_use":
 				if role != "model" || b.ID == "" || b.Name == "" {
 					return in, invalid("tool_use", "tool_use requires an assistant role, id and name")

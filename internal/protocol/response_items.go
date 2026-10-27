@@ -37,9 +37,6 @@ func responseInputItem(data json.RawMessage, item ResponseItem) (json.RawMessage
 	if kind == "" {
 		kind = "message"
 	}
-	if kind == "compaction_summary" {
-		kind = "compaction"
-	}
 	out["type"] = raw(kind)
 	prefix := "item_"
 	switch kind {

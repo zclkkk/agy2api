@@ -179,7 +179,7 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 			appendContent(&in.Request, "user", []ag.Part{p})
 		case "reasoning":
 			in.deferReplay(v.Encrypted, "")
-		case "compaction", "compaction_summary":
+		case "compaction":
 			in.deferCompaction(v.Encrypted)
 		case "compaction_trigger":
 			// Codex asks for the history to be compacted (remote_compaction v2).
