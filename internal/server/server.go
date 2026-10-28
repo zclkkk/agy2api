@@ -426,10 +426,13 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	ids := catalog.ListedModelIDs()
-	data := make([]any, 0, len(ids))
-	for _, id := range ids {
-		data = append(data, modelObject(id, catalog.Models[id], anthropic(r)))
+	ids := make([]string, 0)
+	data := make([]any, 0)
+	for _, id := range catalog.ListedModelIDs() {
+		if served(catalog, id, anthropic(r)) {
+			ids = append(ids, id)
+			data = append(data, modelObject(id, catalog.Models[id], anthropic(r)))
+		}
 	}
 	out := map[string]any{"data": data}
 	if anthropic(r) {
@@ -452,12 +455,18 @@ func (s *Server) model(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	v, ok := catalog.Models[id]
-	if !ok {
+	if !served(catalog, id, anthropic(r)) {
 		s.error(w, r, 404, "not_found_error", "model not found", "model")
 		return
 	}
-	writeJSON(w, 200, modelObject(id, v, anthropic(r)))
+	writeJSON(w, 200, modelObject(id, catalog.Models[id], anthropic(r)))
+}
+
+// served reports whether the requesting API format can use the model. Image
+// generation models only serve the OpenAI Images API.
+func served(catalog ag.Catalog, id string, anthropicFormat bool) bool {
+	info, ok := catalog.Info(id)
+	return ok && !(anthropicFormat && info.Image)
 }
 
 func (s *Server) stored(w http.ResponseWriter, r *http.Request) (protocol.StoredResponse, bool) {

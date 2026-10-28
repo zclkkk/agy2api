@@ -221,12 +221,14 @@ func (c *Client) Models(ctx context.Context) (Catalog, error) {
 		err = errors.New("Antigravity returned no model catalog")
 	}
 	// Only Gemini models are served. Third-party models (Claude, GPT-OSS) and
-	// internal entries would each need their own request rules.
+	// internal entries would each need their own request rules. Disabled
+	// entries fail upstream, so they are rejected locally until re-enabled.
 	for id, data := range catalog.Models {
 		var info struct {
 			Provider string `json:"apiProvider"`
+			Disabled bool   `json:"disabled"`
 		}
-		if json.Unmarshal(data, &info) != nil || info.Provider != GeminiProvider {
+		if json.Unmarshal(data, &info) != nil || info.Provider != GeminiProvider || info.Disabled {
 			delete(catalog.Models, id)
 		}
 	}

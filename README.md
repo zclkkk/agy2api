@@ -33,16 +33,7 @@ cp config.example.toml config.toml
 
 ## 模型选择
 
-`models` 命令和 `/v1/models` 按 Antigravity 模型选择器的顺序展示 Gemini 候选，并补充图片生成模型；返回的都是实际模型 ID。
-
-使用 Gemini 3.8 Flash 时，若账号模型列表中包含 **`gemini-3.8-flash-high`**，推荐选择这个入口，并通过请求参数显式设置思考等级。该入口支持 `low`、`medium`、`high`，模型名中的 `-high` 不会锁定思考深度。
-
-在生成请求中补充以下字段即可选择 `low`，也可以替换为 `medium` 或 `high`：
-
-- Responses：`"reasoning":{"effort":"low"}`。
-- Messages：`"thinking":{"type":"adaptive"},"output_config":{"effort":"low"}`。
-
-这一建议仅针对 Gemini 3.8 Flash。其他模型的后缀含义由上游决定，按账号返回的完整 ID 使用；实际可用模型和额度取决于账号。
+`models` 命令和 `/v1/models` 列出 Antigravity 自身使用的 Gemini 模型：模型选择器中的模型，上游指定给默认对话、命令和提交信息、搜索等任务的模型，最后是图片生成模型。返回的都是上游的实际模型 ID；`models` 命令还显示各模型的剩余额度和重置时间。列表规则见 [API 与兼容边界](docs/api.md#模型列表)。
 
 ## 调用
 

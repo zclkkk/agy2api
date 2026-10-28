@@ -105,10 +105,7 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		for _, id := range catalog.ListedModelIDs() {
-			fmt.Println(id)
-		}
-		return nil
+		return printModels(os.Stdout, catalog, time.Local)
 	}
 	store, err := state.Open(cfg.DataDir, time.Duration(cfg.StateTTLHours)*time.Hour, state.EntryLimit, cfg.MaxStateBytes)
 	if err != nil {

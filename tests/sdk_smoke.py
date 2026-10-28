@@ -222,7 +222,9 @@ def check():
                             timeout=15,
                             check=True,
                         )
-                        assert cli.stdout.splitlines() == listed
+                        header, *rows = cli.stdout.splitlines()
+                        assert header.split() == ["MODEL", "QUOTA", "RESETS"]
+                        assert [row.split()[0] for row in rows] == listed
                         assert (
                             client.models.retrieve("gemini-unlisted").id
                             == "gemini-unlisted"
@@ -432,6 +434,10 @@ def check():
                     with anthropic.Anthropic(
                         api_key="fixture-key", base_url=base, max_retries=0
                     ) as client:
+                        # Image generation models only serve the OpenAI Images API.
+                        assert [m.id for m in client.models.list().data] == [
+                            "gemini-test"
+                        ]
                         messages = [{"role": "user", "content": "hello"}]
                         result = client.messages.create(
                             model="gemini-test", max_tokens=1024, messages=messages

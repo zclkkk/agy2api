@@ -93,4 +93,6 @@ OpenAI SDK 的 `client.images.generate(...)` 和 `client.images.edit(...)` 可�
 
 ## 模型列表
 
-未在 `/v1/models` 中列出的 Gemini 模型，只要存在于账号的上游目录，仍可按完整 ID 调用。模型可用性、容量和额度由账号及上游决定；限流响应保留上游提供的 `Retry-After`。
+`/v1/models` 只列出 Antigravity 自身使用的模型。图片生成模型只用于 Images 接口，因此不出现在 Anthropic 格式（带 `anthropic-version` 请求头）的列表和查询中。
+
+账号上游目录中的其他 Gemini 模型虽未列出，仍可按完整 ID 查询和调用。上游标记为禁用的模型视为不存在，调用返回 400。模型可用性、容量和额度由账号及上游决定；限流响应保留上游提供的 `Retry-After`。

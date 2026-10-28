@@ -158,6 +158,7 @@ type Chunk struct {
 	Finish string
 }
 type Catalog struct {
+	// Models holds the enabled Gemini models; Client.Models drops the rest.
 	Models          map[string]json.RawMessage `json:"models"`
 	ImageModels     []string                   `json:"imageGenerationModelIds"`
 	AgentModelSorts []struct {
@@ -165,37 +166,56 @@ type Catalog struct {
 			ModelIDs []string `json:"modelIds"`
 		} `json:"groups"`
 	} `json:"agentModelSorts"`
+	// Models Antigravity assigns to editor roles.
+	DefaultModel        string   `json:"defaultAgentModelId"`
+	CommandModels       []string `json:"commandModelIds"`
+	CommitMessageModels []string `json:"commitMessageModelIds"`
+	QueryModels         []string `json:"mqueryModelIds"`
+	WebSearchModels     []string `json:"webSearchModelIds"`
 }
 
-// ListedModelIDs follows the upstream agent selector, then appends image models.
-// Models remains the full Gemini catalog for explicit lookups and requests.
+// ListedModelIDs lists the models Antigravity itself uses: the agent selector,
+// then the models it assigns to the default agent, commands and background
+// tasks, then image generation models. Models remains the full catalog for
+// explicit lookups and requests.
 func (c Catalog) ListedModelIDs() []string {
 	ids := make([]string, 0)
 	seen := make(map[string]bool)
-	add := func(id string) {
-		if _, ok := c.Models[id]; !ok || seen[id] {
-			return
-		}
-		seen[id] = true
-		ids = append(ids, id)
-	}
-	for _, order := range c.AgentModelSorts {
-		for _, group := range order.Groups {
-			for _, id := range group.ModelIDs {
-				add(id)
+	add := func(list ...string) {
+		for _, id := range list {
+			if _, ok := c.Models[id]; ok && !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
 			}
 		}
 	}
-	for _, id := range c.ImageModels {
-		add(id)
+	for _, order := range c.AgentModelSorts {
+		for _, group := range order.Groups {
+			add(group.ModelIDs...)
+		}
 	}
+	add(c.DefaultModel)
+	add(c.CommandModels...)
+	add(c.CommitMessageModels...)
+	add(c.QueryModels...)
+	add(c.WebSearchModels...)
+	add(c.ImageModels...)
 	return ids
 }
 
-// ModelInfo is the subset of catalog metadata used to shape requests.
+// ModelInfo is the subset of catalog metadata used to shape requests and to
+// report quota.
 type ModelInfo struct {
-	MinThinkingBudget int  `json:"minThinkingBudget"`
-	Image             bool `json:"-"`
+	MinThinkingBudget int    `json:"minThinkingBudget"`
+	Quota             *Quota `json:"quotaInfo"`
+	Image             bool   `json:"-"`
+}
+
+// Quota is the account's remaining share for a model. The upstream omits the
+// fraction once it reaches zero, so an absent fraction means exhausted.
+type Quota struct {
+	Remaining float64 `json:"remainingFraction"`
+	Reset     string  `json:"resetTime"`
 }
 
 func (c Catalog) Info(id string) (ModelInfo, bool) {
