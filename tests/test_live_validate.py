@@ -3,7 +3,6 @@
 import contextlib
 import io
 import threading
-import types
 import unittest
 from unittest.mock import patch
 
@@ -14,8 +13,10 @@ class FakeLive:
     run_case = live_validate.Live.run_case
     fail = False
 
+    models = ["gemini-a", "gemini-b"]
+    model = "gemini-a"
+
     def __init__(self, *_):
-        self.o = types.SimpleNamespace(models=types.SimpleNamespace(list=lambda: []))
         self.results = []
         self.lock = threading.Lock()
 

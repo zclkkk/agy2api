@@ -37,7 +37,20 @@ python tests/live_validate.py --config config.toml
 python tests/live_validate.py --config config.toml --account <账号 ID> --only tools/readable
 ```
 
+模型取自账号的模型列表：每个对话模型各跑一次基本请求，协议功能场景只用一个模型，默认是列表中的第一个，可用 `--model` 指定。不显示思考内容的模型会让思考相关场景记为 `partial`；需要完整覆盖时，指定一个会返回可见思考的模型。
+
 报告默认写入 `.cache/validation/live-report.json`，可通过 `--report` 指定其他位置。`fail` 会使脚本非零退出；上游阻挡和覆盖受限单独记录。
+
+每个行为只在能观察到它的最低一层测试一次：
+
+| 层 | 覆盖范围 |
+|---|---|
+| `internal/protocol` | 协议转换、工具身份、签名回放、存储链与压缩、请求控制 |
+| `internal/server` | HTTP 可见的行为：认证与账号路由、状态码与错误格式、SSE 帧与心跳、取消、并发、模型列表、Images 上传 |
+| `tests/sdk_smoke.py` | 官方 SDK 能解析每个接口的响应，以及程序的账号与命令装配 |
+| `tests/live_validate.py` | 只有真实上游才能证明的事实 |
+
+测试按当前行为命名和组织，不按修复过的问题命名；告警断言检查具体内容，不检查条数。
 
 测试报告、请求抓取、日志和一次性调试材料属于本地开发产物，放在被忽略的 `.cache/` 中，不提交到版本树，也不写入 README 或发布说明。可复用的测试代码保留在仓库。
 
