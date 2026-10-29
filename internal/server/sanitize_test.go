@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
@@ -49,7 +48,7 @@ func TestClientMarkerCleanupIsSharedByAllRequestPaths(t *testing.T) {
 			var logs bytes.Buffer
 			svc := newServer(t, cfg, slog.New(slog.NewJSONHandler(&logs, nil)), testAccount(t, "test", testKey, up))
 			s := startServer(t, svc, testKey)
-			for _, tc := range []struct {
+			cases := []struct {
 				path            string
 				stream, trigger bool
 			}{
@@ -58,7 +57,8 @@ func TestClientMarkerCleanupIsSharedByAllRequestPaths(t *testing.T) {
 				{"/v1/messages/count_tokens", false, false}, {"/v1/responses/input_tokens", false, false},
 				{"/v1/responses/compact", false, false},
 				{"/v1/responses", false, true}, {"/v1/responses", true, true},
-			} {
+			}
+			for _, tc := range cases {
 				body := map[string]any{"model": "gemini-test", "stream": tc.stream}
 				if strings.HasPrefix(tc.path, "/v1/messages") {
 					body["max_tokens"], body["system"] = 1024, system
@@ -71,7 +71,7 @@ func TestClientMarkerCleanupIsSharedByAllRequestPaths(t *testing.T) {
 					}
 					body["input"] = items
 				}
-				res, output := send(t, s, tc.path, mustJSON(body), nil)
+				res, output := send(t, s, tc.path, body, nil)
 				if res.StatusCode != 200 {
 					t.Fatalf("%s stream=%v: %d %s", tc.path, tc.stream, res.StatusCode, output)
 				}
@@ -90,7 +90,7 @@ func TestClientMarkerCleanupIsSharedByAllRequestPaths(t *testing.T) {
 				}
 			}
 			if enabled {
-				if strings.Count(logs.String(), "sanitize_client_markers: billing_header=1 claude_identity=1") != 9 {
+				if strings.Count(logs.String(), "sanitize_client_markers: billing_header=1 claude_identity=1") != len(cases) {
 					t.Fatalf("cleanup not logged once per request: %s", logs.String())
 				}
 			} else if strings.Contains(logs.String(), "sanitize_client_markers") {
@@ -116,95 +116,12 @@ func TestCleanupCoversNormalizedDeveloperAndSystemMessages(t *testing.T) {
 			messages[0] = map[string]string{"role": "developer", "content": marker + "\nKeep system rule."}
 			body["input"] = messages
 		}
-		res, out := send(t, s, path, mustJSON(body), nil)
+		res, out := send(t, s, path, body, nil)
 		if res.StatusCode != 200 {
 			t.Fatalf("%d %s", res.StatusCode, out)
 		}
 		if got := rec.last(t).System.Parts[0].Text; got != "Keep system rule." {
 			t.Fatal(got)
 		}
-	}
-}
-
-func TestMessagesTextSignatureIsRestoredWithoutTrailingThinking(t *testing.T) {
-	var calls atomic.Int32
-	_, s := newService(t, nil, staticModels, func(w http.ResponseWriter, r *http.Request) {
-		var envelope ag.Envelope
-		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-			t.Error(err)
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		if calls.Add(1) == 1 {
-			frame(w, chunk([]ag.Part{{Thought: true, Text: "Plan", Signature: "thought-signature"}, {Text: "FIRST_ANSWER", Signature: "text-signature"}}, "STOP", nil))
-			return
-		}
-		parts := envelope.Request.Contents[1].Parts
-		if len(parts) != 2 || parts[0].Signature != "thought-signature" || parts[1].Text != "FIRST_ANSWER" || parts[1].Signature != "text-signature" {
-			t.Errorf("native replay lost its signatures: %+v", parts)
-		}
-		frame(w, chunk([]ag.Part{{Text: "SECOND_ANSWER"}}, "STOP", nil))
-	})
-	headers := map[string]string{"Session-Id": "same-client-session"}
-	res, body := send(t, s, "/v1/messages", `{"model":"gemini-test","max_tokens":1024,"messages":[{"role":"user","content":"first"}]}`, headers)
-	if res.StatusCode != 200 {
-		t.Fatal(body)
-	}
-	var first struct {
-		Content []json.RawMessage `json:"content"`
-	}
-	if err := json.Unmarshal([]byte(body), &first); err != nil {
-		t.Fatal(err)
-	}
-	var last struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(first.Content[len(first.Content)-1], &last); err != nil {
-		t.Fatal(err)
-	}
-	if last.Type != "text" || last.Text != "FIRST_ANSWER" {
-		t.Fatalf("last block is not the final answer: %+v", last)
-	}
-	request := map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": []any{
-		map[string]string{"role": "user", "content": "first"}, map[string]any{"role": "assistant", "content": first.Content}, map[string]string{"role": "user", "content": "second"},
-	}}
-	res, body = send(t, s, "/v1/messages", mustJSON(request), headers)
-	if res.StatusCode != 200 || !strings.Contains(body, "SECOND_ANSWER") {
-		t.Fatalf("%d %s", res.StatusCode, body)
-	}
-}
-
-func TestTextSignaturesAreOnlyRestoredForMessages(t *testing.T) {
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1internal:fetchAvailableModels":
-			staticModels(w)
-			return
-		case "/v1internal:countTokens":
-			writeJSON(w, 200, map[string]int{"totalTokens": 7})
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		frame(w, chunk([]ag.Part{{Text: "ok"}}, "STOP", nil))
-	}))
-	defer up.Close()
-	var logs bytes.Buffer
-	svc := newServer(t, config.Default(), slog.New(slog.NewJSONHandler(&logs, nil)), testAccount(t, "test", testKey, up))
-	s := startServer(t, svc, testKey)
-	history := `[{"role":"user","content":"hi"},{"role":"assistant","content":"earlier answer"},{"role":"user","content":"more"}]`
-	if res, body := send(t, s, "/v1/responses", `{"model":"gemini-test","input":`+history+`}`, nil); res.StatusCode != 200 {
-		t.Fatal(body)
-	}
-	if res, body := send(t, s, "/v1/messages/count_tokens", `{"model":"gemini-test","messages":`+history+`}`, nil); res.StatusCode != 200 {
-		t.Fatal(body)
-	}
-	if strings.Contains(logs.String(), "text signature") {
-		t.Fatalf("Responses and token counts must not look up text signatures: %s", logs.String())
-	}
-	if res, body := send(t, s, "/v1/messages", `{"model":"gemini-test","max_tokens":100,"messages":`+history+`}`, nil); res.StatusCode != 200 {
-		t.Fatal(body)
-	}
-	if !strings.Contains(logs.String(), "no text signature record for 1") {
-		t.Fatalf("a Messages miss should be logged: %s", logs.String())
 	}
 }

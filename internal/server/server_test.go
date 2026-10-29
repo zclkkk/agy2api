@@ -1,16 +1,15 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,118 +19,25 @@ import (
 	"github.com/zclkkk/agy2api/internal/state"
 )
 
-type fixedToken struct{}
-
-func TestStoredResponseRoutesRejectUnsupportedFormats(t *testing.T) {
-	store, err := state.Open(t.TempDir(), time.Hour, 10, 1<<20)
-	if err != nil {
-		t.Fatal(err)
+// request builds a minimal generation request for either API.
+func request(format string, stream bool) map[string]any {
+	body := map[string]any{"model": "gemini-test", "stream": stream}
+	if format == "responses" {
+		body["input"] = "hello"
+	} else {
+		body["messages"] = []any{map[string]string{"role": "user", "content": "hello"}}
+		body["max_tokens"] = 1024
 	}
-	defer store.Close()
-	if err := store.Put(context.Background(), "response", "unsupported", map[string]any{
-		"version": 999, "response": map[string]string{"id": "unsupported"}, "items": []any{},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	handler := newServer(t, config.Default(), nil, &Account{ID: "test", Key: testKey, State: store}).Handler()
-	for _, path := range []string{"/v1/responses/unsupported", "/v1/responses/unsupported/input_items"} {
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, keyed(httptest.NewRequest(http.MethodGet, "http://localhost"+path, nil)))
-		if response.Code != http.StatusBadGateway {
-			t.Fatalf("%s returned unsupported state: status=%d", path, response.Code)
-		}
-	}
-}
-
-// A stored response is JSON; a client asking for an event stream is rejected
-// rather than handed JSON it would fail to parse.
-func TestStreamingRetrievalIsRejected(t *testing.T) {
-	store, err := state.Open(t.TempDir(), time.Hour, 10, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	handler := newServer(t, config.Default(), nil, &Account{ID: "test", Key: testKey, State: store}).Handler()
-	for query, want := range map[string]int{"?stream=true": 400, "?starting_after=3": 400, "?stream=false": 404} {
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, keyed(httptest.NewRequest(http.MethodGet, "http://localhost/v1/responses/missing"+query, nil)))
-		if response.Code != want {
-			t.Fatalf("%s: status %d, want %d", query, response.Code, want)
-		}
-	}
-}
-
-func (fixedToken) AccessToken(context.Context) (string, error) { return "test-token", nil }
-func (fixedToken) ProjectID() string                           { return "test-project" }
-
-func setup(t *testing.T, generate http.HandlerFunc) (*httptest.Server, *atomic.Int32) {
-	t.Helper()
-	calls := &atomic.Int32{}
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer test-token" {
-			t.Error("missing provider auth")
-		}
-		switch r.URL.Path {
-		case "/v1internal:fetchAvailableModels":
-			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"models":{"gemini-test":{"displayName":"Gemini Test","apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},"claude-test":{"apiProvider":"API_PROVIDER_ANTHROPIC_VERTEX"}},"agentModelSorts":[{"groups":[{"modelIds":["gemini-test","claude-test"]}]}],"webSearchModelIds":["gemini-test"]}`)
-		case "/v1internal:countTokens":
-			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"totalTokens":17}`)
-		case "/v1internal:streamGenerateContent":
-			calls.Add(1)
-			generate(w, r)
-		default:
-			t.Errorf("unexpected upstream path: %s", r.URL.Path)
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(up.Close)
-	svc := newServer(t, config.Default(), slog.New(slog.NewTextHandler(io.Discard, nil)), testAccount(t, "test", "local-key", up))
-	return startServer(t, svc, "local-key"), calls
-}
-
-// keyed authenticates a request built for a handler.
-func keyed(r *http.Request) *http.Request {
-	r.Header.Set("Authorization", "Bearer "+testKey)
-	return r
-}
-
-func post(t *testing.T, s *httptest.Server, path string, value any) (*http.Response, []byte) {
-	t.Helper()
-	data, _ := json.Marshal(value)
-	req, _ := http.NewRequest(http.MethodPost, s.URL+path, bytes.NewReader(data))
-	req.Header.Set("Authorization", "Bearer local-key")
-	req.Header.Set("Content-Type", "application/json")
-	res, err := s.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return res, body
-}
-func frame(w http.ResponseWriter, value any) {
-	data, _ := json.Marshal(value)
-	fmt.Fprintf(w, "data: %s\n\n", data)
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-func chunk(parts []ag.Part, finish string, usage *ag.Usage) any {
-	return map[string]any{"response": ag.Response{Candidates: []ag.Candidate{{Content: ag.Content{Role: "model", Parts: parts}, Finish: finish}}, Usage: usage}}
+	return body
 }
 
 func TestBothProtocolsStreamAndNonstream(t *testing.T) {
-	s, _ := setup(t, func(w http.ResponseWriter, r *http.Request) {
-		var request ag.Envelope
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+	_, s := newService(t, nil, staticModels, func(w http.ResponseWriter, r *http.Request) {
+		var envelope ag.Envelope
+		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
 			t.Error(err)
 		}
-		if request.Project != "test-project" || request.Request.Contents[0].Parts[0].Text != "hello" {
+		if envelope.Project != "test-project" || envelope.Request.Contents[0].Parts[0].Text != "hello" {
 			t.Error("bad request translation")
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -142,198 +48,165 @@ func TestBothProtocolsStreamAndNonstream(t *testing.T) {
 	for _, format := range []string{"responses", "messages"} {
 		for _, stream := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stream=%v", format, stream), func(t *testing.T) {
-				request := map[string]any{"model": "gemini-test", "stream": stream}
-				if format == "responses" {
-					request["input"] = "hello"
-				} else {
-					request["messages"] = []any{map[string]string{"role": "user", "content": "hello"}}
-					request["max_tokens"] = 1024
-				}
-				res, body := post(t, s, "/v1/"+format, request)
+				res, body := send(t, s, "/v1/"+format, request(format, stream), nil)
 				if res.StatusCode != 200 {
 					t.Fatalf("status=%d body=%s", res.StatusCode, body)
 				}
-				if stream {
-					if !strings.Contains(res.Header.Get("Content-Type"), "text/event-stream") {
-						t.Fatal(res.Header)
-					}
-					var events []map[string]any
-					if err := ag.DecodeSSE(bytes.NewReader(body), func(b []byte) error {
-						var e map[string]any
-						err := json.Unmarshal(b, &e)
-						events = append(events, e)
-						return err
-					}); err != nil {
-						t.Fatal(err)
-					}
-					terminal := "response.completed"
-					if format == "messages" {
-						terminal = "message_stop"
-					}
-					if events[len(events)-1]["type"] != terminal {
-						t.Fatalf("last event=%v", events[len(events)-1])
-					}
-					if format == "responses" {
-						for i, e := range events {
-							if e["sequence_number"] != float64(i) {
-								t.Fatal("sequence gap", e)
-							}
-						}
-					}
-					if strings.Count(string(body), "event: "+terminal+"\n") != 1 {
-						t.Fatal("duplicate terminal event")
-					}
-				} else {
+				if !stream {
 					var out map[string]any
-					if err := json.Unmarshal(body, &out); err != nil {
-						t.Fatal(err)
-					}
-					if !bytes.Contains(body, []byte("hello world")) {
-						t.Fatal(string(body))
+					if err := json.Unmarshal([]byte(body), &out); err != nil || !strings.Contains(body, "hello world") {
+						t.Fatal(body)
 					}
 					usage := out["usage"].(map[string]any)
+					// Messages reports cached input separately; Responses includes it.
 					wantInput := float64(10)
 					if format == "messages" {
 						wantInput = 7
 					}
 					if usage["input_tokens"] != wantInput || usage["output_tokens"] != float64(6) {
-						t.Fatalf("split usage lost: %v", usage)
+						t.Fatalf("usage split across chunks lost: %v", usage)
 					}
+					return
 				}
-			})
-		}
-	}
-}
-
-func TestMessagesToolRoundTrip(t *testing.T) {
-	var generation atomic.Int32
-	s, _ := setup(t, func(w http.ResponseWriter, r *http.Request) {
-		var request ag.Envelope
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Error(err)
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		if generation.Add(1) == 1 {
-			frame(w, chunk([]ag.Part{{Thought: true, Text: "plan", Signature: "think-sig"}, {FunctionCall: &ag.Call{ID: "upstream-1", Name: "lookup", Args: json.RawMessage(`{"title":"do not rewrite"}`)}, Signature: "tool-sig"}}, "STOP", &ag.Usage{Input: 8, Output: 4}))
-			return
-		}
-		parts := request.Request.Contents[1].Parts
-		if len(parts) != 2 || parts[0].Signature != "think-sig" || parts[1].Signature != "tool-sig" || !strings.HasPrefix(parts[1].FunctionCall.ID, "toolu_agy_") {
-			t.Errorf("bad replay: %+v", parts)
-		}
-		result := request.Request.Contents[2].Parts[0].FunctionResponse
-		if result == nil || result.ID != parts[1].FunctionCall.ID || result.Name != "lookup" {
-			t.Errorf("bad function result: %+v", result)
-		}
-		frame(w, chunk([]ag.Part{{Text: "finished"}}, "STOP", nil))
-	})
-	messages := []any{map[string]any{"role": "user", "content": "hello"}}
-	request := map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": messages, "tools": []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object", "properties": map[string]any{"title": map[string]string{"type": "string"}}}}}}
-	res, body := post(t, s, "/v1/messages", request)
-	if res.StatusCode != 200 {
-		t.Fatal(string(body))
-	}
-	var first struct {
-		Content []json.RawMessage `json:"content"`
-	}
-	_ = json.Unmarshal(body, &first)
-	var call struct {
-		ID string `json:"id"`
-	}
-	_ = json.Unmarshal(first.Content[1], &call)
-	messages = append(messages, map[string]any{"role": "assistant", "content": first.Content}, map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": call.ID, "content": "result"}}})
-	request["messages"] = messages
-	res, body = post(t, s, "/v1/messages", request)
-	if res.StatusCode != 200 || !bytes.Contains(body, []byte("finished")) {
-		t.Fatalf("%d %s", res.StatusCode, body)
-	}
-}
-
-func TestFailuresDoNotProduceSuccessfulTerminalEvents(t *testing.T) {
-	for _, format := range []string{"responses", "messages"} {
-		t.Run(format, func(t *testing.T) {
-			s, _ := setup(t, func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "text/event-stream")
-				frame(w, chunk([]ag.Part{{Text: "partial"}}, "", nil))
-				fmt.Fprint(w, `{"error":{"code":503}}`)
-			})
-			request := map[string]any{"model": "gemini-test", "stream": true}
-			if format == "responses" {
-				request["input"] = "hello"
-			} else {
-				request["max_tokens"] = 1024
-				request["messages"] = []any{map[string]string{"role": "user", "content": "hello"}}
-			}
-			_, body := post(t, s, "/v1/"+format, request)
-			if bytes.Contains(body, []byte("response.completed")) || bytes.Contains(body, []byte("message_stop")) {
-				t.Fatal(string(body))
-			}
-			if !bytes.Contains(body, []byte("response.failed")) && !bytes.Contains(body, []byte("event: error")) {
-				t.Fatal(string(body))
-			}
-			if format == "responses" {
-				var code string
-				if err := ag.DecodeSSE(bytes.NewReader(body), func(data []byte) error {
-					var event struct {
-						Type     string `json:"type"`
-						Response struct {
-							Error struct {
-								Code string `json:"code"`
-							} `json:"error"`
-						} `json:"response"`
-					}
-					if err := json.Unmarshal(data, &event); err != nil {
-						return err
-					}
-					if event.Type == "response.failed" {
-						code = event.Response.Error.Code
-					}
-					return nil
+				if !strings.Contains(res.Header.Get("Content-Type"), "text/event-stream") {
+					t.Fatal(res.Header)
+				}
+				var events []map[string]any
+				if err := ag.DecodeSSE(strings.NewReader(body), func(b []byte) error {
+					var e map[string]any
+					err := json.Unmarshal(b, &e)
+					events = append(events, e)
+					return err
 				}); err != nil {
 					t.Fatal(err)
 				}
-				if code != "server_error" {
-					t.Fatalf("failure error code = %q", code)
+				terminal := "response.completed"
+				if format == "messages" {
+					terminal = "message_stop"
 				}
-			}
-		})
+				if events[len(events)-1]["type"] != terminal || strings.Count(body, "event: "+terminal+"\n") != 1 {
+					t.Fatalf("terminal event: %v", events[len(events)-1])
+				}
+				if format == "responses" {
+					for i, e := range events {
+						if e["sequence_number"] != float64(i) {
+							t.Fatal("sequence gap", e)
+						}
+					}
+				}
+			})
+		}
 	}
 }
 
-func TestAuthenticationUnsupportedRequestsAndTokenCount(t *testing.T) {
-	s, calls := setup(t, func(w http.ResponseWriter, r *http.Request) { t.Error("generation should not run") })
-	res, err := http.Get(s.URL + "/v1/models") // without the key
-	if err != nil {
-		t.Fatal(err)
+// An upstream failure is an error response, or a failure event once a stream
+// has started; it never ends in a successful terminal event.
+func TestFailuresDoNotProduceSuccessfulTerminalEvents(t *testing.T) {
+	_, s := newService(t, nil, staticModels, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		frame(w, chunk([]ag.Part{{Text: "partial"}}, "", nil))
+		fmt.Fprint(w, `{"error":{"code":503}}`)
+	})
+	for _, format := range []string{"responses", "messages"} {
+		res, body := send(t, s, "/v1/"+format, request(format, false), nil)
+		if res.StatusCode != http.StatusBadGateway || !strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") {
+			t.Fatalf("%s: %d %s", format, res.StatusCode, body)
+		}
+		_, body = send(t, s, "/v1/"+format, request(format, true), nil)
+		if strings.Contains(body, "response.completed") || strings.Contains(body, "message_stop") {
+			t.Fatal(body)
+		}
+		if format == "messages" {
+			if !strings.Contains(body, "event: error") {
+				t.Fatal(body)
+			}
+			continue
+		}
+		var code string
+		if err := ag.DecodeSSE(strings.NewReader(body), func(data []byte) error {
+			var event struct {
+				Type     string `json:"type"`
+				Response struct {
+					Error struct {
+						Code string `json:"code"`
+					} `json:"error"`
+				} `json:"response"`
+			}
+			if err := json.Unmarshal(data, &event); err != nil {
+				return err
+			}
+			if event.Type == "response.failed" {
+				code = event.Response.Error.Code
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if code != "server_error" {
+			t.Fatalf("failure error code = %q", code)
+		}
 	}
-	res.Body.Close()
-	if res.StatusCode != 401 {
-		t.Fatal(res.StatusCode)
+}
+
+// Validation errors are JSON responses sent before any stream opens, and
+// nothing reaches the upstream. Which inputs are unsupported is covered by the
+// protocol tests; this checks that every endpoint rejects them up front.
+func TestUnsupportedRequestsFailBeforeStreaming(t *testing.T) {
+	_, s := newService(t, nil, func(w http.ResponseWriter) {
+		io.WriteString(w, `{"models":{"gemini-test":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},"gemini-canvas":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"}},"imageGenerationModelIds":["gemini-canvas"]}`)
+	}, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("unsupported request reached upstream generation")
+		http.Error(w, "unexpected generation", 500)
+	})
+	for _, group := range []struct {
+		paths []string
+		base  string
+		cases []string
+	}{
+		{[]string{"/v1/responses", "/v1/responses/input_tokens", "/v1/responses/compact"}, `{"model":"gemini-test","input":"hello","stream":true}`,
+			[]string{`"model":"gemini-canvas"`, `"tools":[{"type":"unsupported_tool"}]`}},
+		{[]string{"/v1/messages", "/v1/messages/count_tokens"}, `{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			[]string{`"model":"gemini-canvas"`, `"tools":[{"type":"unsupported_tool","name":"tool"}]`}},
+	} {
+		for _, path := range group.paths {
+			for _, fields := range group.cases {
+				var body, overrides map[string]any
+				if err := json.Unmarshal([]byte(group.base), &body); err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal([]byte("{"+fields+"}"), &overrides); err != nil {
+					t.Fatal(err)
+				}
+				for key, value := range overrides {
+					body[key] = value
+				}
+				res, out := send(t, s, path, body, nil)
+				if res.StatusCode != http.StatusBadRequest || !strings.HasPrefix(res.Header.Get("Content-Type"), "application/json") {
+					t.Fatalf("%s %s: %d %s", path, fields, res.StatusCode, out)
+				}
+			}
+		}
 	}
-	res, body := post(t, s, "/v1/responses", map[string]any{"model": "gemini-test", "input": "hello", "background": true})
-	if res.StatusCode != 400 {
-		t.Fatal(string(body))
+}
+
+func TestTokenCountAndUnknownRoutes(t *testing.T) {
+	_, s := newService(t, nil, staticModels, func(w http.ResponseWriter, r *http.Request) { t.Error("generation should not run") })
+	for path, body := range map[string]string{
+		"/v1/messages/count_tokens":  helloMessages,
+		"/v1/responses/input_tokens": `{"model":"gemini-test","input":"hello"}`,
+	} {
+		if res, out := send(t, s, path, body, nil); res.StatusCode != 200 || !strings.Contains(out, `"input_tokens":17`) {
+			t.Fatalf("%s: %d %s", path, res.StatusCode, out)
+		}
 	}
-	res, body = post(t, s, "/v1/responses", map[string]any{"model": "unknown", "input": "hello"})
-	if res.StatusCode != 400 {
-		t.Fatal(string(body))
-	}
-	res, body = post(t, s, "/v1/messages/count_tokens", map[string]any{"model": "gemini-test", "messages": []any{map[string]string{"role": "user", "content": "hello"}}})
-	if res.StatusCode != 200 || !bytes.Contains(body, []byte(`"input_tokens":17`)) {
-		t.Fatal(string(body))
-	}
-	res, body = post(t, s, "/v1/chat/completions", map[string]any{})
-	if res.StatusCode != 404 {
-		t.Fatal(string(body))
-	}
-	if calls.Load() != 0 {
-		t.Fatal("unexpected generation")
+	if res, out := send(t, s, "/v1/chat/completions", `{}`, nil); res.StatusCode != 404 {
+		t.Fatalf("%d %s", res.StatusCode, out)
 	}
 }
 
 func TestCancellationReachesUpstream(t *testing.T) {
 	started, stopped := make(chan struct{}), make(chan struct{})
-	s, _ := setup(t, func(w http.ResponseWriter, r *http.Request) {
+	_, s := newService(t, nil, staticModels, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		frame(w, chunk([]ag.Part{{Text: "started"}}, "", nil))
 		close(started)
@@ -343,7 +216,6 @@ func TestCancellationReachesUpstream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, s.URL+"/v1/responses", strings.NewReader(`{"model":"gemini-test","input":"hello","stream":true}`))
-	req.Header.Set("Authorization", "Bearer local-key")
 	res, err := s.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -358,33 +230,98 @@ func TestCancellationReachesUpstream(t *testing.T) {
 	}
 }
 
+func TestBurstsWaitForASlot(t *testing.T) {
+	release := make(chan struct{})
+	var calls atomic.Int32
+	_, s := newService(t, func(c *config.Config) { c.MaxConcurrentRequests = 1 }, staticModels, func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			<-release
+		}
+		answer("ok", "STOP")(w, r)
+	})
+	var wg sync.WaitGroup
+	statuses := make([]int, 2)
+	for i := range statuses {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, _ := send(t, s, "/v1/messages", helloMessages, nil)
+			statuses[i] = res.StatusCode
+		}()
+		time.Sleep(50 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	if statuses[0] != 200 || statuses[1] != 200 {
+		t.Fatalf("queued request was rejected: %v", statuses)
+	}
+}
+
+func TestCatalogFailureServesCachedCatalog(t *testing.T) {
+	var fail atomic.Bool
+	svc, s := newService(t, nil, func(w http.ResponseWriter) {
+		if fail.Load() {
+			w.WriteHeader(503)
+			return
+		}
+		staticModels(w)
+	}, answer("ok", "STOP"))
+	if res, body := send(t, s, "/v1/messages", helloMessages, nil); res.StatusCode != 200 {
+		t.Fatal(body)
+	}
+	fail.Store(true)
+	a := svc.accounts[0]
+	a.catalogMu.Lock()
+	a.catalogExpiry = time.Time{}
+	a.catalogMu.Unlock()
+	if res, body := send(t, s, "/v1/messages", helloMessages, nil); res.StatusCode != 200 {
+		t.Fatalf("cached catalog not used: %s", body)
+	}
+}
+
+func TestIdleStreamsReceiveHeartbeats(t *testing.T) {
+	svc, s := newService(t, nil, staticModels, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		frame(w, chunk([]ag.Part{{Text: "thinking about it"}}, "", nil))
+		time.Sleep(300 * time.Millisecond)
+		frame(w, chunk([]ag.Part{{Text: " done"}}, "STOP", nil))
+	})
+	svc.heartbeat = 60 * time.Millisecond
+	_, body := send(t, s, "/v1/messages", request("messages", true), nil)
+	if !strings.Contains(body, "event: ping") || !strings.HasSuffix(strings.TrimSpace(body), `data: {"type":"message_stop"}`) {
+		t.Fatalf("no heartbeat or broken stream: %s", body)
+	}
+	_, body = send(t, s, "/v1/responses", request("responses", true), nil)
+	if !strings.Contains(body, ": keep-alive") || !strings.Contains(body, "response.completed") {
+		t.Fatalf("no heartbeat for Responses: %s", body)
+	}
+}
+
+// A stored response is JSON; a client asking for an event stream is rejected
+// rather than handed JSON it would fail to parse.
+func TestStreamingRetrievalIsRejected(t *testing.T) {
+	store, err := state.Open(t.TempDir(), time.Hour, 10, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	handler := newServer(t, config.Default(), nil, &Account{ID: "test", Key: testKey, State: store}).Handler()
+	for query, want := range map[string]int{"?stream=true": 400, "?starting_after=3": 400, "?stream=false": 404} {
+		response := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "http://localhost/v1/responses/missing"+query, nil)
+		req.Header.Set("Authorization", "Bearer "+testKey)
+		handler.ServeHTTP(response, req)
+		if response.Code != want {
+			t.Fatalf("%s: status %d, want %d", query, response.Code, want)
+		}
+	}
+}
+
 func TestAttachmentPrivateAddressesRejected(t *testing.T) {
 	for _, host := range []string{"127.0.0.1", "10.0.0.1", "169.254.169.254", "100.64.0.1", "::1", "fc00::1"} {
 		if publicIP(net.ParseIP(host)) {
 			t.Errorf("accepted %s", host)
 		}
-	}
-}
-
-func TestOnlyGeminiModelsAreServed(t *testing.T) {
-	s, calls := setup(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		frame(w, chunk([]ag.Part{{Text: "answer"}}, "STOP", nil))
-	})
-	req, _ := http.NewRequest(http.MethodGet, s.URL+"/v1/models", nil)
-	req.Header.Set("Authorization", "Bearer local-key")
-	res, err := s.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	listing, _ := io.ReadAll(res.Body)
-	res.Body.Close()
-	if !bytes.Contains(listing, []byte("gemini-test")) || bytes.Contains(listing, []byte("claude-test")) {
-		t.Fatalf("listing: %s", listing)
-	}
-	before := calls.Load()
-	res, body := post(t, s, "/v1/responses", map[string]any{"model": "claude-test", "input": "hi"})
-	if res.StatusCode != 400 || !bytes.Contains(body, []byte("Gemini")) || calls.Load() != before {
-		t.Fatalf("%d %s", res.StatusCode, body)
 	}
 }

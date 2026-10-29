@@ -41,3 +41,19 @@ func TestFinishReasonsAndUnknownParts(t *testing.T) {
 		t.Fatalf("empty completion should succeed: %v %s", err, r.Result)
 	}
 }
+
+// Responses and Messages produce text, reasoning and tool calls; media output
+// fails the turn before any of its chunk is emitted.
+func TestMediaOutputIsAnError(t *testing.T) {
+	for _, part := range []ag.Part{{InlineData: &ag.Blob{MIMEType: "image/png", Data: "aGVsbG8="}}, {FileData: &ag.File{URI: "https://example.com/a.png"}}} {
+		var events []string
+		r := NewRenderer(PreparedRequest{Format: Responses, Model: "gemini-test", Stream: true}, testStore(t), func(name string, _ map[string]any) error {
+			events = append(events, name)
+			return nil
+		})
+		err := r.Add(context.Background(), ag.Chunk{Parts: []ag.Part{{Text: "caption"}, part}, Finish: "STOP"})
+		if err == nil || !strings.Contains(err.Error(), "media output") || len(events) != 0 {
+			t.Fatalf("media output: %v, events %v", err, events)
+		}
+	}
+}

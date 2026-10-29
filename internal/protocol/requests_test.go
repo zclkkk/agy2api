@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -226,43 +227,69 @@ func TestRequestsEndWithAUserTurn(t *testing.T) {
 			t.Errorf("%s: got %v want %v", name, got, tc.want)
 		}
 	}
+	// Both formats apply it to a prefilled assistant turn.
+	p := testPipeline{State: testStore(t)}
+	for _, in := range []PreparedRequest{
+		p.mustMessages(t, messages(user("List colors."), assistant("Red,"))),
+		p.mustResponses(t, `{"model":"gemini-test","input":[{"role":"user","content":"List colors."},{"role":"assistant","content":"Red,"}]}`),
+	} {
+		contents := in.Request.Contents
+		if len(contents) != 3 || contents[1].Parts[0].Text != "Red," || contents[2].Parts[0].Text != "Continue." || !warned(in.Warnings, "appended a user turn") {
+			t.Fatalf("%s: %s %v", in.Format, raw(contents), in.Warnings)
+		}
+	}
 }
 
-func TestSessionAssignment(t *testing.T) {
-	conversation := func(texts ...string) *RequestIntent {
-		in := &RequestIntent{}
-		for i, text := range texts {
-			role := "user"
-			if i%2 == 1 {
-				role = "model"
-			}
-			in.Request.Contents = append(in.Request.Contents, ag.Content{Role: role, Parts: []ag.Part{{Text: text}}})
+// One client session maps to one upstream session, whichever way the client
+// names it; without a name, a conversation is keyed by its first user message.
+func TestSessionIDsFollowTheClientSession(t *testing.T) {
+	s := testStore(t)
+	session := func(headers http.Header, body string, responses bool) string {
+		t.Helper()
+		p := testPipeline{State: s, headers: headers}
+		var in PreparedRequest
+		if responses {
+			in = p.mustResponses(t, body)
+		} else {
+			in = p.mustMessages(t, body)
 		}
-		return in
+		if !nativeSessionID.MatchString(in.Request.SessionID) {
+			t.Fatalf("session ID %q is not in the native format", in.Request.SessionID)
+		}
+		return in.Request.SessionID
 	}
-	first, followUp := conversation("a"), conversation("a", "ok", "more")
-	first.assignSession(http.Header{})
-	followUp.assignSession(http.Header{})
-	if first.Request.SessionID != followUp.Request.SessionID || !strings.HasPrefix(first.Request.SessionID, "-") {
-		t.Fatal("a conversation and its follow-up must share a session")
+	responses := func(text string) string { return `{"model":"gemini-test","input":"` + text + `"}` }
+	codex := http.Header{"Session-Id": {"01a173fc-cb86-72f0-a250-ce0969dcc4b5"}}
+	if session(codex, responses("one"), true) != session(codex, responses("two"), true) {
+		t.Fatal("one Codex session must map to one upstream session")
 	}
-	other := conversation("b")
-	other.assignSession(http.Header{})
-	if other.Request.SessionID == first.Request.SessionID {
-		t.Fatal("different conversations must not share a session")
+	key := `{"model":"gemini-test","prompt_cache_key":"thread-7","input":"`
+	if session(nil, key+`one"}`, true) != session(nil, key+`two"}`, true) {
+		t.Fatal("prompt_cache_key must identify the session")
 	}
-	client := conversation("b")
-	client.assignSession(http.Header{"Session-Id": {"codex"}})
-	if client.Request.SessionID == other.Request.SessionID {
-		t.Fatal("the client's session must win")
+	claude := func(text string) string {
+		return `{"model":"gemini-test","max_tokens":100,"metadata":{"user_id":"{\"device_id\":\"d\",\"session_id\":\"98a88910\"}"},"messages":[{"role":"user","content":"` + text + `"}]}`
+	}
+	viaMetadata := session(nil, claude("one"), false)
+	if viaMetadata != session(nil, claude("two"), false) || viaMetadata != session(http.Header{"X-Claude-Code-Session-Id": {"98a88910"}}, claude("three"), false) {
+		t.Fatal("Claude Code metadata and header must identify the same session")
 	}
 	if claudeCodeSession([]byte(`{"user_id":"user_ab_account_cd_session_ef12"}`)) != "ef12" {
 		t.Fatal("composite Claude Code user_id format")
 	}
-	a, b := conversation(), conversation()
+	first := session(nil, responses("same start"), true)
+	if first != session(nil, `{"model":"gemini-test","input":[{"role":"user","content":"same start"},{"role":"assistant","content":"ok"},{"role":"user","content":"more"}]}`, true) {
+		t.Fatal("follow-ups of one conversation must share a session")
+	}
+	if first == session(nil, responses("another start"), true) {
+		t.Fatal("different conversations must not share a session")
+	}
+	a, b := &RequestIntent{}, &RequestIntent{}
 	a.assignSession(http.Header{})
 	b.assignSession(http.Header{})
 	if a.Request.SessionID == b.Request.SessionID {
 		t.Fatal("requests without any hint get distinct random sessions")
 	}
 }
+
+var nativeSessionID = regexp.MustCompile(`^-\d{1,19}$`)

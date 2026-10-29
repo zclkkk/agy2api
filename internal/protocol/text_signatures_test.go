@@ -113,3 +113,25 @@ func TestMissingTextSignatureRecordsAreReported(t *testing.T) {
 		t.Fatalf("matching replay: %v %+v", got.Warnings, got.Request.Contents[1].Parts[0])
 	}
 }
+
+// Only Messages text carries signatures to restore; Responses requests and
+// token counts do not look them up.
+func TestTextSignaturesAreOnlyRestoredForMessages(t *testing.T) {
+	s := testStore(t)
+	p := testPipeline{State: s}
+	history := []any{user("hi"), assistant("earlier answer"), user("more")}
+	if in := p.mustResponses(t, map[string]any{"model": "gemini-test", "input": history}); warned(in.Warnings, "text signature") {
+		t.Fatalf("Responses looked up text signatures: %v", in.Warnings)
+	}
+	intent, err := (Decoder{}).Messages(raw(map[string]any{"model": "gemini-test", "messages": history}), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted, err := (Planner{State: s}).Prepare(context.Background(), intent, testCatalog, CountTokens, nil)
+	if err != nil || warned(counted.Warnings, "text signature") {
+		t.Fatalf("token count looked up text signatures: %v %v", err, counted.Warnings)
+	}
+	if in := p.mustMessages(t, messages(history...)); !warned(in.Warnings, "no text signature record for 1") {
+		t.Fatalf("a Messages miss should be reported: %v", in.Warnings)
+	}
+}
