@@ -1,7 +1,13 @@
-"""Optional SDK compatibility smoke test. Uses a local fake upstream, no account."""
+"""Checks that the official SDKs accept every response of the real binary.
+
+The CLI entry point runs against a fake upstream; no account is used. The Go
+tests cover behavior. This covers what they cannot: the SDKs' response models
+and error handling, and the binary's wiring of accounts and commands.
+"""
 
 import argparse
 import base64
+import contextlib
 import datetime
 import json
 import os
@@ -127,445 +133,346 @@ class Upstream(BaseHTTPRequestHandler):
         self.wfile.write(("data: " + json.dumps(body) + "\n\n").encode())
 
 
+REPLY = "Hello from agy2api"
+
+
+def validated(value):
+    """Round-trip an SDK object through its model to catch schema drift."""
+    type(value).model_validate(value.model_dump())
+    return value
+
+
+def expect(error_type, call, check=lambda error: True):
+    try:
+        call()
+    except error_type as error:
+        assert check(error), error
+        return
+    raise AssertionError(f"expected {error_type.__name__}")
+
+
+def build(root, upstream_url):
+    # Same CLI entry point and config loader as the release binary. Only test
+    # builds substitute service addresses; the shipped program has no runtime
+    # escape hatch for them.
+    binary = root / ("agy2api.exe" if os.name == "nt" else "agy2api")
+    flags = (
+        f"-X main.upstreamURL={upstream_url} "
+        "-X github.com/zclkkk/agy2api/internal/antigravity.manifestURL="
+        f"{upstream_url}/manifest"
+    )
+    subprocess.run(
+        [
+            "go",
+            "build",
+            "-trimpath",
+            "-ldflags",
+            flags,
+            "-o",
+            str(binary),
+            "./cmd/agy2api",
+        ],
+        cwd=pathlib.Path(__file__).resolve().parents[1],
+        check=True,
+    )
+    return binary
+
+
+def write_accounts(root, port):
+    """Two accounts on different projects; the fake upstream gives each its
+    own catalog. Returns the config path and the account ID of each key."""
+    data = root / "data"
+    data.mkdir(mode=0o700)
+    expiry = (
+        datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+    ).isoformat()
+    ids = {}
+    for user, key, project in (
+        ("101", "fixture-key", "fixture-project"),
+        ("102", "fixture-key-b", "fixture-project-b"),
+    ):
+        token = {
+            "access_token": "fixture-access",
+            "refresh_token": "fixture-refresh",
+            "token_type": "Bearer",
+            "expiry": expiry,
+        }
+        credentials = {"token": token, "project_id": project}
+        account = write_account(data, user, key, credentials, f"u{user}@example.com")
+        ids[key] = account.name
+    config = root / "config.toml"
+    write_config(config, {"listen": f"127.0.0.1:{port}", "data_dir": str(data)})
+    return config, ids
+
+
+@contextlib.contextmanager
+def serving(binary, config, env, base, log):
+    process = subprocess.Popen(
+        [str(binary), "serve", "--config", str(config)], env=env, stderr=log
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while True:
+            if process.poll() is not None:
+                log.seek(0)
+                raise RuntimeError(log.read())
+            try:
+                with urllib.request.urlopen(base + "/healthz", timeout=1):
+                    break
+            except urllib.error.URLError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.02)
+        yield
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+def check_accounts(base, cli, ids):
+    """Each key reaches its own account; the CLI lists keys and quota."""
+    catalogs = {
+        "fixture-key": ["gemini-test", "gemini-canvas"],
+        "fixture-key-b": ["gemini-b"],
+    }
+    for key, models in catalogs.items():
+        with openai.OpenAI(api_key=key, base_url=base + "/v1", max_retries=0) as client:
+            assert [m.id for m in validated(client.models.list()).data] == models
+    with openai.OpenAI(
+        api_key="unknown-key", base_url=base + "/v1", max_retries=0
+    ) as client:
+        expect(openai.AuthenticationError, client.models.list)
+    # Both accounts share a creation time, so they list by ID.
+    keys = sorted(ids, key=ids.get)
+    header, *rows = cli("accounts").splitlines()
+    assert header.split()[:2] == ["ID", "EMAIL"]
+    assert [(row.split()[0], row.split()[3]) for row in rows] == [
+        (ids[k], k) for k in keys
+    ]
+    for section, key in zip(cli("quota").strip().split("\n\n"), keys, strict=True):
+        title, header, *rows = section.splitlines()
+        assert title.split()[0] == ids[key]
+        assert header.split() == ["MODEL", "QUOTA", "RESETS"]
+        assert [row.split()[0] for row in rows] == catalogs[key]
+
+
+def check_responses(client):
+    assert validated(client.models.retrieve("gemini-unlisted")).id == "gemini-unlisted"
+    result = validated(client.responses.create(model="gemini-test", input="hello"))
+    assert result.output_text == REPLY
+    assert validated(client.responses.retrieve(result.id)).id == result.id
+    items = validated(client.responses.input_items.list(result.id)).data
+    assert [(item.content[0].type, item.content[0].text) for item in items] == [
+        ("input_text", "hello")
+    ]
+    followup = client.responses.create(
+        model="gemini-test", previous_response_id=result.id, input="again"
+    )
+    history = list(client.responses.input_items.list(followup.id, limit=1, order="asc"))
+    assert history[0].id == items[0].id
+    assert [item.content[0].text for item in history] == ["hello", REPLY, "again"]
+    compacted = validated(
+        client.responses.compact(
+            model="gemini-test",
+            input=[{"role": "user", "content": "Remember this conversation."}],
+        )
+    )
+    assert compacted.output[0].encrypted_content.startswith("agy2.")
+    resumed = client.responses.create(
+        model="gemini-test",
+        input=[*compacted.output, {"role": "user", "content": "Continue."}],
+        store=False,
+    )
+    assert resumed.output_text == REPLY
+    with client.responses.stream(
+        model="gemini-test", input="hello", store=False
+    ) as stream:
+        for _ in stream:
+            pass
+        assert validated(stream.get_final_response()).output_text == REPLY
+    tool = {
+        "type": "function",
+        "name": "lookup",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+        "strict": False,
+    }
+    with client.responses.stream(
+        model="gemini-test", input="lookup", tools=[tool]
+    ) as stream:
+        for _ in stream:
+            pass
+        called = validated(stream.get_final_response())
+    call = next(item for item in called.output if item.type == "function_call")
+    answered = client.responses.create(
+        model="gemini-test",
+        previous_response_id=called.id,
+        input=[
+            {"type": "function_call_output", "call_id": call.call_id, "output": "found"}
+        ],
+    )
+    assert answered.output_text == REPLY
+    client.responses.delete(called.id)  # the SDK returns no body for deletes
+    expect(openai.NotFoundError, lambda: client.responses.retrieve(called.id))
+    expect(
+        openai.BadRequestError,
+        lambda: client.responses.create(
+            model="gemini-test", input="hello", tools=[{"type": "web_search"}]
+        ),
+        lambda error: "unsupported" in str(error),
+    )
+
+
+def check_images(client):
+    generated = validated(
+        client.images.generate(model="gemini-canvas", prompt="draw", n=2)
+    )
+    assert len(generated.data) == 2 and generated.usage.total_tokens == 30
+    assert base64.b64decode(generated.data[0].b64_json) == png_fixture()
+    for images in [
+        ("input.png", png_fixture(), "image/png"),
+        [
+            ("one.png", png_fixture(), "image/png"),
+            ("two.png", png_fixture(), "image/png"),
+        ],
+    ]:
+        edited = validated(
+            client.images.edit(
+                model="gemini-canvas",
+                prompt="edit",
+                image=images,
+                output_format="jpeg",
+                output_compression=85,
+            )
+        )
+        assert edited.output_format == "jpeg"
+        assert base64.b64decode(edited.data[0].b64_json).startswith(b"\xff\xd8")
+    data_url = "data:image/png;base64," + base64.b64encode(png_fixture()).decode()
+    edited = validated(
+        client.post(
+            "/images/edits",
+            cast_to=openai.types.ImagesResponse,
+            body={
+                "model": "gemini-canvas",
+                "prompt": "edit",
+                "images": [{"image_url": data_url}],
+            },
+        )
+    )
+    assert base64.b64decode(edited.data[0].b64_json) == png_fixture()
+    expect(
+        openai.BadRequestError,
+        lambda: client.images.generate(model="gemini-test", prompt="draw"),
+        lambda error: error.param == "model",
+    )
+
+
+def check_messages(client):
+    # Image generation models only serve the OpenAI Images API.
+    assert [m.id for m in client.models.list().data] == ["gemini-test"]
+    messages = [{"role": "user", "content": "hello"}]
+    result = validated(
+        client.messages.create(model="gemini-test", max_tokens=1024, messages=messages)
+    )
+    assert result.content[0].text == REPLY
+    counted = client.messages.count_tokens(model="gemini-test", messages=messages)
+    assert validated(counted).input_tokens == 17
+    with client.messages.stream(
+        model="gemini-test", max_tokens=1024, messages=messages
+    ) as stream:
+        assert "".join(stream.text_stream) == REPLY
+        validated(stream.get_final_message())
+    tools = [
+        {
+            "name": "lookup",
+            "input_schema": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+            },
+        }
+    ]
+    with client.messages.stream(
+        model="gemini-test", max_tokens=1024, messages=messages, tools=tools
+    ) as stream:
+        for _ in stream:
+            pass
+        called = validated(stream.get_final_message())
+    assert called.stop_reason == "tool_use"
+    call = next(block for block in called.content if block.type == "tool_use")
+    messages += [
+        {
+            "role": "assistant",
+            "content": [b.model_dump(exclude_none=True) for b in called.content],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": call.id, "content": "found"}
+            ],
+        },
+    ]
+    answered = client.messages.create(
+        model="gemini-test", max_tokens=1024, messages=messages, tools=tools
+    )
+    assert answered.content[0].text == REPLY
+    expect(
+        anthropic.BadRequestError,
+        lambda: client.messages.create(
+            model="gemini-test",
+            max_tokens=1024,
+            messages=messages[:1],
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+        ),
+        lambda error: "unsupported" in str(error),
+    )
+
+
 def check():
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
     threading.Thread(target=upstream.serve_forever, daemon=True).start()
     try:
         with tempfile.TemporaryDirectory(prefix="agy2api-sdk-") as directory:
             root = pathlib.Path(directory)
-            binary = root / ("agy2api.exe" if os.name == "nt" else "agy2api")
-            upstream_url = f"http://127.0.0.1:{upstream.server_port}"
-            # Same CLI entry point and config loader as the release binary.
-            # Only test builds substitute service addresses, with no runtime
-            # environment or user-config escape hatch in the shipped program.
-            subprocess.run(
-                [
-                    "go",
-                    "build",
-                    "-trimpath",
-                    "-ldflags",
-                    f"-X main.upstreamURL={upstream_url} "
-                    f"-X github.com/zclkkk/agy2api/internal/antigravity.manifestURL={upstream_url}/manifest",
-                    "-o",
-                    str(binary),
-                    "./cmd/agy2api",
-                ],
-                cwd=pathlib.Path(__file__).resolve().parents[1],
-                check=True,
-            )
+            binary = build(root, f"http://127.0.0.1:{upstream.server_port}")
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
-            data = root / "data"
-            data.mkdir(mode=0o700)
-            expiry = (
-                datetime.datetime.now(datetime.timezone.utc)
-                + datetime.timedelta(hours=1)
-            ).isoformat()
-            accounts = {}
-            for user, key, project in (
-                ("101", "fixture-key", "fixture-project"),
-                ("102", "fixture-key-b", "fixture-project-b"),
-            ):
-                token = {
-                    "access_token": "fixture-access",
-                    "refresh_token": "fixture-refresh",
-                    "token_type": "Bearer",
-                    "expiry": expiry,
-                }
-                credentials = {"token": token, "project_id": project}
-                directory = write_account(
-                    data, user, key, credentials, f"user{user}@example.com"
-                )
-                accounts[key] = directory.name
-            config = root / "config.toml"
-            write_config(config, {"listen": f"127.0.0.1:{port}", "data_dir": str(data)})
+            config, ids = write_accounts(root, port)
             env = dict(os.environ)
             for name in ("AGY2API_LISTEN", "AGY2API_DATA_DIR", "AGY2API_PROXY_URL"):
                 env.pop(name, None)
-            with (root / "service.log").open("w+") as log:
-                process = subprocess.Popen(
-                    [str(binary), "serve", "--config", str(config)],
+
+            def cli(command):
+                return subprocess.run(
+                    [str(binary), command, "--config", str(config)],
                     env=env,
-                    stderr=log,
-                )
-                try:
-                    base = f"http://127.0.0.1:{port}"
-                    deadline = time.monotonic() + 10
-                    while True:
-                        if process.poll() is not None:
-                            log.seek(0)
-                            raise RuntimeError(log.read())
-                        try:
-                            with urllib.request.urlopen(base + "/healthz", timeout=1):
-                                break
-                        except urllib.error.URLError:
-                            if time.monotonic() > deadline:
-                                raise
-                            time.sleep(0.02)
-                    with openai.OpenAI(
-                        api_key="fixture-key", base_url=base + "/v1", max_retries=0
-                    ) as client:
-                        listed = [m.id for m in client.models.list().data]
-                        assert listed == [
-                            "gemini-test",
-                            "gemini-canvas",
-                        ]
-                        # Each key reaches its own account.
-                        with openai.OpenAI(
-                            api_key="fixture-key-b",
-                            base_url=base + "/v1",
-                            max_retries=0,
-                        ) as other:
-                            assert [m.id for m in other.models.list().data] == [
-                                "gemini-b"
-                            ]
-                        with openai.OpenAI(
-                            api_key="unknown-key", base_url=base + "/v1", max_retries=0
-                        ) as unknown:
-                            try:
-                                unknown.models.list()
-                            except openai.AuthenticationError:
-                                pass
-                            else:
-                                raise AssertionError("unknown key accepted")
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=True,
+                ).stdout
 
-                        def cli(command):
-                            return subprocess.run(
-                                [str(binary), command, "--config", str(config)],
-                                env=env,
-                                capture_output=True,
-                                text=True,
-                                timeout=15,
-                                check=True,
-                            ).stdout
-
-                        # Both accounts share a creation time, so they list by ID.
-                        keys = sorted(accounts, key=accounts.get)
-                        header, *rows = cli("accounts").splitlines()
-                        assert header.split()[:2] == ["ID", "EMAIL"]
-                        assert [(r.split()[0], r.split()[3]) for r in rows] == [
-                            (accounts[key], key) for key in keys
-                        ]
-                        sections = cli("quota").strip().split("\n\n")
-                        catalogs = {
-                            "fixture-key": listed,
-                            "fixture-key-b": ["gemini-b"],
-                        }
-                        for section, key in zip(sections, keys, strict=True):
-                            models = catalogs[key]
-                            title, header, *rows = section.splitlines()
-                            assert title.split()[0] == accounts[key]
-                            assert header.split() == ["MODEL", "QUOTA", "RESETS"]
-                            assert [row.split()[0] for row in rows] == models
-                        assert (
-                            client.models.retrieve("gemini-unlisted").id
-                            == "gemini-unlisted"
-                        )
-                        unlisted = client.responses.create(
-                            model="gemini-unlisted", input="hello", store=False
-                        )
-                        assert unlisted.output_text == "Hello from agy2api"
-                        generated = client.images.generate(
-                            model="gemini-canvas",
-                            prompt="draw",
-                            n=2,
-                        )
-                        type(generated).model_validate(generated.model_dump())
-                        assert (
-                            len(generated.data) == 2
-                            and generated.usage.total_tokens == 30
-                        )
-                        assert (
-                            base64.b64decode(generated.data[0].b64_json)
-                            == png_fixture()
-                        )
-                        for images in [
-                            ("input.png", png_fixture(), "image/png"),
-                            [
-                                ("one.png", png_fixture(), "image/png"),
-                                ("two.png", png_fixture(), "image/png"),
-                            ],
-                        ]:
-                            edited = client.images.edit(
-                                model="gemini-canvas",
-                                prompt="edit",
-                                image=images,
-                                output_format="jpeg",
-                                output_compression=85,
-                            )
-                            type(edited).model_validate(edited.model_dump())
-                            assert edited.output_format == "jpeg"
-                            assert base64.b64decode(edited.data[0].b64_json).startswith(
-                                b"\xff\xd8"
-                            )
-                        edited = client.post(
-                            "/images/edits",
-                            cast_to=openai.types.ImagesResponse,
-                            body={
-                                "model": "gemini-canvas",
-                                "prompt": "edit",
-                                "images": [
-                                    {
-                                        "image_url": "data:image/png;base64,"
-                                        + base64.b64encode(png_fixture()).decode()
-                                    }
-                                ],
-                            },
-                        )
-                        type(edited).model_validate(edited.model_dump())
-                        assert (
-                            base64.b64decode(edited.data[0].b64_json) == png_fixture()
-                        )
-                        try:
-                            client.images.generate(model="gemini-test", prompt="draw")
-                        except openai.BadRequestError as error:
-                            assert error.param == "model"
-                        else:
-                            raise AssertionError(
-                                "conversation model accepted for image generation"
-                            )
-                        result = client.responses.create(
-                            model="gemini-test", input="hello"
-                        )
-                        type(result).model_validate(result.model_dump())
-                        assert result.output_text == "Hello from agy2api"
-                        assert client.responses.retrieve(result.id).id == result.id
-                        input_page = client.responses.input_items.list(result.id)
-                        type(input_page).model_validate(input_page.model_dump())
-                        input_items = input_page.data
-                        assert len(input_items) == 1
-                        type(input_items[0]).model_validate(input_items[0].model_dump())
-                        assert input_items[0].id
-                        assert input_items[0].content[0].type == "input_text"
-                        assert input_items[0].content[0].text == "hello"
-                        followup = client.responses.create(
-                            model="gemini-test",
-                            previous_response_id=result.id,
-                            input="again",
-                        )
-                        assert followup.output_text == "Hello from agy2api"
-                        history = list(
-                            client.responses.input_items.list(
-                                followup.id, limit=1, order="asc"
-                            )
-                        )
-                        assert len(history) == 3
-                        assert history[0].id == input_items[0].id
-                        assert [item.content[0].text for item in history] == [
-                            "hello",
-                            "Hello from agy2api",
-                            "again",
-                        ]
-                        compacted = client.responses.compact(
-                            model="gemini-test",
-                            input=[
-                                {
-                                    "role": "user",
-                                    "content": "Remember this conversation.",
-                                }
-                            ],
-                        )
-                        type(compacted).model_validate(compacted.model_dump())
-                        capsule = compacted.output[0].encrypted_content
-                        assert capsule.startswith("agy2.")
-                        resumed = client.responses.create(
-                            model="gemini-test",
-                            input=[
-                                *compacted.output,
-                                {
-                                    "role": "user",
-                                    "content": "Continue after compacting.",
-                                },
-                            ],
-                            store=False,
-                        )
-                        assert resumed.output_text == "Hello from agy2api"
-                        tampered = (
-                            capsule[:5]
-                            + ("A" if capsule[5] != "A" else "B")
-                            + capsule[6:]
-                        )
-                        try:
-                            client.responses.create(
-                                model="gemini-test",
-                                input=[
-                                    {
-                                        "type": "compaction",
-                                        "encrypted_content": tampered,
-                                    },
-                                    {"role": "user", "content": "continue"},
-                                ],
-                                store=False,
-                            )
-                        except openai.BadRequestError as error:
-                            assert error.param == "input"
-                        else:
-                            raise AssertionError("modified compaction was accepted")
-                        with client.responses.stream(
-                            model="gemini-test", input="hello", store=False
-                        ) as stream:
-                            for _ in stream:
-                                pass
-                            assert (
-                                stream.get_final_response().output_text
-                                == "Hello from agy2api"
-                            )
-                        tool = {
-                            "type": "function",
-                            "name": "lookup",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {"city": {"type": "string"}},
-                            },
-                            "strict": False,
-                        }
-                        with client.responses.stream(
-                            model="gemini-test", input="lookup", tools=[tool]
-                        ) as stream:
-                            for _ in stream:
-                                pass
-                            result = stream.get_final_response()
-                        type(result).model_validate(result.model_dump())
-                        call = next(
-                            item
-                            for item in result.output
-                            if item.type == "function_call"
-                        )
-                        result2 = client.responses.create(
-                            model="gemini-test",
-                            previous_response_id=result.id,
-                            input=[
-                                {
-                                    "type": "function_call_output",
-                                    "call_id": call.call_id,
-                                    "output": "found",
-                                }
-                            ],
-                        )
-                        assert result2.output_text == "Hello from agy2api"
-                        client.responses.delete(result.id)
-                        try:
-                            client.responses.retrieve(result.id)
-                        except openai.NotFoundError:
-                            pass
-                        else:
-                            raise AssertionError("deleted response is still accessible")
-                        for tool_type in ("web_search", "image_generation"):
-                            try:
-                                client.responses.create(
-                                    model="gemini-test",
-                                    input="hello",
-                                    tools=[{"type": tool_type}],
-                                )
-                            except openai.BadRequestError as error:
-                                assert "unsupported" in str(error)
-                            else:
-                                raise AssertionError(
-                                    f"hosted tool accepted: {tool_type}"
-                                )
-                    with anthropic.Anthropic(
-                        api_key="fixture-key", base_url=base, max_retries=0
-                    ) as client:
-                        # Image generation models only serve the OpenAI Images API.
-                        assert [m.id for m in client.models.list().data] == [
-                            "gemini-test"
-                        ]
-                        messages = [{"role": "user", "content": "hello"}]
-                        result = client.messages.create(
-                            model="gemini-test", max_tokens=1024, messages=messages
-                        )
-                        type(result).model_validate(result.model_dump())
-                        assert result.content[0].text == "Hello from agy2api"
-                        try:
-                            client.messages.create(
-                                model="gemini-test",
-                                max_tokens=1024,
-                                messages=messages,
-                                tools=[
-                                    {
-                                        "type": "web_search_20250305",
-                                        "name": "web_search",
-                                    }
-                                ],
-                            )
-                        except anthropic.BadRequestError as error:
-                            assert "unsupported" in str(error)
-                        else:
-                            raise AssertionError("hosted search accepted")
-                        assert (
-                            client.messages.count_tokens(
-                                model="gemini-test", messages=messages
-                            ).input_tokens
-                            == 17
-                        )
-                        with client.messages.stream(
-                            model="gemini-test", max_tokens=1024, messages=messages
-                        ) as stream:
-                            assert "".join(stream.text_stream) == "Hello from agy2api"
-                            type(result).model_validate(
-                                stream.get_final_message().model_dump()
-                            )
-                        tools = [
-                            {
-                                "name": "lookup",
-                                "input_schema": {
-                                    "type": "object",
-                                    "properties": {"city": {"type": "string"}},
-                                },
-                            }
-                        ]
-                        with client.messages.stream(
-                            model="gemini-test",
-                            max_tokens=1024,
-                            messages=messages,
-                            tools=tools,
-                        ) as stream:
-                            for _ in stream:
-                                pass
-                            result = stream.get_final_message()
-                        assert result.stop_reason == "tool_use"
-                        call = next(
-                            block
-                            for block in result.content
-                            if block.type == "tool_use"
-                        )
-                        messages += [
-                            {
-                                "role": "assistant",
-                                "content": [
-                                    b.model_dump(exclude_none=True)
-                                    for b in result.content
-                                ],
-                            },
-                            {
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "tool_result",
-                                        "tool_use_id": call.id,
-                                        "content": "found",
-                                    }
-                                ],
-                            },
-                        ]
-                        result = client.messages.create(
-                            model="gemini-test",
-                            max_tokens=1024,
-                            messages=messages,
-                            tools=tools,
-                        )
-                        assert result.content[0].text == "Hello from agy2api"
-                    print(
-                        f"SDK checks passed: openai={openai.__version__}, anthropic={anthropic.__version__}"
-                    )
-                finally:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
+            base = f"http://127.0.0.1:{port}"
+            with (
+                (root / "service.log").open("w+") as log,
+                serving(binary, config, env, base, log),
+            ):
+                check_accounts(base, cli, ids)
+                with openai.OpenAI(
+                    api_key="fixture-key", base_url=base + "/v1", max_retries=0
+                ) as client:
+                    check_responses(client)
+                    check_images(client)
+                with anthropic.Anthropic(
+                    api_key="fixture-key", base_url=base, max_retries=0
+                ) as client:
+                    check_messages(client)
+            print(
+                f"SDK checks passed: openai={openai.__version__}, anthropic={anthropic.__version__}"
+            )
     finally:
         upstream.shutdown()
         upstream.server_close()
