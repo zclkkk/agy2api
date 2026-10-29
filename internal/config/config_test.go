@@ -9,7 +9,7 @@ import (
 
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"AGY2API_LISTEN", "AGY2API_DATA_DIR", "AGY2API_API_KEY", "AGY2API_PROXY_URL"} {
+	for _, name := range []string{"AGY2API_LISTEN", "AGY2API_DATA_DIR", "AGY2API_PROXY_URL"} {
 		t.Setenv(name, "")
 		if err := os.Unsetenv(name); err != nil {
 			t.Fatal(err)
@@ -37,7 +37,6 @@ func TestTOMLDefaultsAndOverrides(t *testing.T) {
 	body := `# All supported fields, with comments and readable integers.
 listen = "0.0.0.0:9000"
 data_dir = './private data'
-api_key = "fixture-key"
 proxy_url = "socks5h://127.0.0.1:1080"
 max_body_bytes = 67_108_864
 max_concurrent_requests = 2
@@ -45,10 +44,14 @@ state_ttl_hours = 24
 max_state_bytes = 134_217_728
 sanitize_client_markers = false
 `
-	want := Config{Listen: "0.0.0.0:9000", DataDir: "./private data", APIKey: "fixture-key", ProxyURL: "socks5h://127.0.0.1:1080", MaxBodyBytes: 64 << 20, MaxConcurrentRequests: 2, StateTTLHours: 24, MaxStateBytes: 128 << 20}
+	want := Config{Listen: "0.0.0.0:9000", DataDir: "./private data", ProxyURL: "socks5h://127.0.0.1:1080", MaxBodyBytes: 64 << 20, MaxConcurrentRequests: 2, StateTTLHours: 24, MaxStateBytes: 128 << 20}
 	got, err := Load(writeConfig(t, body))
 	if err != nil || got != want {
 		t.Fatalf("TOML overrides: %+v, %v", got, err)
+	}
+	// Every request needs an account's key, so any address may be served.
+	if got, err := Load(writeConfig(t, "listen = '0.0.0.0:8080'")); err != nil || got.Listen != "0.0.0.0:8080" {
+		t.Fatalf("public listen address: %v", err)
 	}
 	for _, enabled := range []bool{true, false} {
 		value := "true"
@@ -66,26 +69,23 @@ func TestEnvironmentOverridesTOMLIncludingEmptyValues(t *testing.T) {
 	clearConfigEnv(t)
 	path := writeConfig(t, `listen = "0.0.0.0:9000"
 data_dir = "./from-file"
-api_key = "file-key"
 proxy_url = "http://127.0.0.1:8081"
 max_concurrent_requests = 2
 `)
 	t.Setenv("AGY2API_LISTEN", "127.0.0.1:9001")
 	t.Setenv("AGY2API_DATA_DIR", "./from-env")
-	t.Setenv("AGY2API_API_KEY", "env-key")
 	t.Setenv("AGY2API_PROXY_URL", "socks5://127.0.0.1:1080")
 	got, err := Load(path)
-	if err != nil || got.Listen != "127.0.0.1:9001" || got.DataDir != "./from-env" || got.APIKey != "env-key" || got.ProxyURL != "socks5://127.0.0.1:1080" || got.MaxConcurrentRequests != 2 {
+	if err != nil || got.Listen != "127.0.0.1:9001" || got.DataDir != "./from-env" || got.ProxyURL != "socks5://127.0.0.1:1080" || got.MaxConcurrentRequests != 2 {
 		t.Fatalf("environment precedence: %+v, %v", got, err)
 	}
-	t.Setenv("AGY2API_API_KEY", "")
 	t.Setenv("AGY2API_PROXY_URL", "")
 	got, err = Load(path)
-	if err != nil || got.APIKey != "" || got.ProxyURL != "" {
+	if err != nil || got.ProxyURL != "" {
 		t.Fatalf("empty environment values did not override: %v", err)
 	}
-	t.Setenv("AGY2API_LISTEN", "0.0.0.0:9001")
-	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "api_key") {
+	t.Setenv("AGY2API_DATA_DIR", "")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "data_dir") {
 		t.Fatalf("effective configuration was not validated: %v", err)
 	}
 }
@@ -101,10 +101,10 @@ func TestInvalidConfigIsRejected(t *testing.T) {
 		{"json", `{"listen":"127.0.0.1:8000"}`, "decode config"},
 		{"duplicate", "listen = '127.0.0.1:8000'\nlisten = '127.0.0.1:8001'", "line 2"},
 		{"type", "max_concurrent_requests = '4'", "line 1"},
-		{"syntax", "api_key = \"unterminated", "line 1"},
+		{"syntax", "listen = \"unterminated", "line 1"},
 		{"trailing data", "max_concurrent_requests = 2\ninvalid!", "line 2"},
 		{"empty data dir", "data_dir = ''", "data_dir"},
-		{"public without key", "listen = '0.0.0.0:8080'", "api_key"},
+		{"removed api key", "api_key = 'key'", "api_key"},
 		{"bad port", "listen = '127.0.0.1:65536'", "port"},
 		{"small body", "max_body_bytes = 1023", "max_body_bytes"},
 		{"large body", "max_body_bytes = 268435457", "max_body_bytes"},
@@ -128,7 +128,7 @@ func TestInvalidConfigIsRejected(t *testing.T) {
 func TestConfigErrorsDoNotPrintSourceExcerpts(t *testing.T) {
 	clearConfigEnv(t)
 	for _, badLine := range []string{"unknown = 1", "max_concurrent_requests = 'wrong'"} {
-		_, err := Load(writeConfig(t, "api_key = 'fixture-secret-not-for-errors'\n"+badLine))
+		_, err := Load(writeConfig(t, "proxy_url = 'http://user:fixture-secret-not-for-errors@127.0.0.1:8080'\n"+badLine))
 		if err == nil || strings.Contains(err.Error(), "fixture-secret-not-for-errors") {
 			t.Fatalf("error exposed configuration source: %v", err)
 		}

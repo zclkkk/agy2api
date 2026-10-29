@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import anthropic
 import openai
 
-from config_helpers import write_config
+from config_helpers import write_account, write_config
 from media_fixtures import png_fixture
 
 
@@ -40,6 +40,13 @@ class Upstream(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
+            if payload["project"] == "fixture-project-b":
+                # The second account has a catalog of its own.
+                self.wfile.write(
+                    b'{"models":{"gemini-b":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"}},'
+                    b'"agentModelSorts":[{"groups":[{"modelIds":["gemini-b"]}]}]}'
+                )
+                return
             self.wfile.write(
                 b'{"models":{"gemini-test":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},'
                 b'"gemini-canvas":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},'
@@ -155,36 +162,26 @@ def check():
                 datetime.datetime.now(datetime.timezone.utc)
                 + datetime.timedelta(hours=1)
             ).isoformat()
-            (data / "credentials.json").write_text(
-                json.dumps(
-                    {
-                        "token": {
-                            "access_token": "fixture-access",
-                            "refresh_token": "fixture-refresh",
-                            "token_type": "Bearer",
-                            "expiry": expiry,
-                        },
-                        "project_id": "fixture-project",
-                    }
-                )
-            )
-            (data / "credentials.json").chmod(0o600)
-            config = root / "config.toml"
-            write_config(
-                config,
-                {
-                    "listen": f"127.0.0.1:{port}",
-                    "data_dir": str(data),
-                    "api_key": "fixture-key",
-                },
-            )
-            env = dict(os.environ)
-            for name in (
-                "AGY2API_LISTEN",
-                "AGY2API_DATA_DIR",
-                "AGY2API_API_KEY",
-                "AGY2API_PROXY_URL",
+            accounts = {}
+            for user, key, project in (
+                ("101", "fixture-key", "fixture-project"),
+                ("102", "fixture-key-b", "fixture-project-b"),
             ):
+                token = {
+                    "access_token": "fixture-access",
+                    "refresh_token": "fixture-refresh",
+                    "token_type": "Bearer",
+                    "expiry": expiry,
+                }
+                credentials = {"token": token, "project_id": project}
+                directory = write_account(
+                    data, user, key, credentials, f"user{user}@example.com"
+                )
+                accounts[key] = directory.name
+            config = root / "config.toml"
+            write_config(config, {"listen": f"127.0.0.1:{port}", "data_dir": str(data)})
+            env = dict(os.environ)
+            for name in ("AGY2API_LISTEN", "AGY2API_DATA_DIR", "AGY2API_PROXY_URL"):
                 env.pop(name, None)
             with (root / "service.log").open("w+") as log:
                 process = subprocess.Popen(
@@ -214,17 +211,53 @@ def check():
                             "gemini-test",
                             "gemini-canvas",
                         ]
-                        cli = subprocess.run(
-                            [str(binary), "models", "--config", str(config)],
-                            env=env,
-                            capture_output=True,
-                            text=True,
-                            timeout=15,
-                            check=True,
-                        )
-                        header, *rows = cli.stdout.splitlines()
-                        assert header.split() == ["MODEL", "QUOTA", "RESETS"]
-                        assert [row.split()[0] for row in rows] == listed
+                        # Each key reaches its own account.
+                        with openai.OpenAI(
+                            api_key="fixture-key-b",
+                            base_url=base + "/v1",
+                            max_retries=0,
+                        ) as other:
+                            assert [m.id for m in other.models.list().data] == [
+                                "gemini-b"
+                            ]
+                        with openai.OpenAI(
+                            api_key="unknown-key", base_url=base + "/v1", max_retries=0
+                        ) as unknown:
+                            try:
+                                unknown.models.list()
+                            except openai.AuthenticationError:
+                                pass
+                            else:
+                                raise AssertionError("unknown key accepted")
+
+                        def cli(command):
+                            return subprocess.run(
+                                [str(binary), command, "--config", str(config)],
+                                env=env,
+                                capture_output=True,
+                                text=True,
+                                timeout=15,
+                                check=True,
+                            ).stdout
+
+                        # Both accounts share a creation time, so they list by ID.
+                        keys = sorted(accounts, key=accounts.get)
+                        header, *rows = cli("accounts").splitlines()
+                        assert header.split()[:2] == ["ID", "EMAIL"]
+                        assert [(r.split()[0], r.split()[3]) for r in rows] == [
+                            (accounts[key], key) for key in keys
+                        ]
+                        sections = cli("quota").strip().split("\n\n")
+                        catalogs = {
+                            "fixture-key": listed,
+                            "fixture-key-b": ["gemini-b"],
+                        }
+                        for section, key in zip(sections, keys, strict=True):
+                            models = catalogs[key]
+                            title, header, *rows = section.splitlines()
+                            assert title.split()[0] == accounts[key]
+                            assert header.split() == ["MODEL", "QUOTA", "RESETS"]
+                            assert [row.split()[0] for row in rows] == models
                         assert (
                             client.models.retrieve("gemini-unlisted").id
                             == "gemini-unlisted"

@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/zclkkk/agy2api/internal/account"
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
 	"github.com/zclkkk/agy2api/internal/auth"
 	"github.com/zclkkk/agy2api/internal/config"
@@ -45,10 +46,19 @@ func login(parent context.Context, cfg config.Config, client *http.Client, agent
 	if err != nil {
 		return err
 	}
-	if err := auth.Save(cfg.CredentialsPath(), auth.Credentials{Token: *token, ProjectID: project}); err != nil {
+	user, err := auth.FetchUser(ctx, client, token.AccessToken)
+	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(output, "Login saved. Start agy2api serve with the same --config option.")
+	a, created, err := account.Login(cfg.DataDir, user, auth.Credentials{Token: *token, ProjectID: project})
+	if err != nil {
+		return err
+	}
+	if created {
+		_, err = fmt.Fprintf(output, "Logged in as %s.\nAccount: %s\nAPI key: %s\nRestart agy2api serve to use the account.\n", label(a), a.ID, a.APIKey)
+	} else {
+		_, err = fmt.Fprintf(output, "Renewed the credentials of %s (account %s); its API key is unchanged.\nRestart agy2api serve to use them.\n", label(a), a.ID)
+	}
 	return err
 }
 

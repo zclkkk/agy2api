@@ -159,13 +159,13 @@ func TestModelListingFollowsCatalogRefresh(t *testing.T) {
 	checkModelListing(t, s, selectorListing)
 	upstream.Store(`{"models":{"gemini-new":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"}},"agentModelSorts":[{"groups":[{"modelIds":["gemini-new"]}]}]}`)
 	checkModelListing(t, s, selectorListing)
-	svc.catalogMu.Lock()
-	svc.catalogExpiry = time.Time{}
-	svc.catalogMu.Unlock()
+	svc.accounts[0].catalogMu.Lock()
+	svc.accounts[0].catalogExpiry = time.Time{}
+	svc.accounts[0].catalogMu.Unlock()
 	checkModelListing(t, s, []string{"gemini-new"})
 	upstream.Store(`{"models":{"gemini-new":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"}}}`)
-	svc.catalogMu.Lock()
-	svc.catalogExpiry = time.Time{}
-	svc.catalogMu.Unlock()
+	svc.accounts[0].catalogMu.Lock()
+	svc.accounts[0].catalogExpiry = time.Time{}
+	svc.accounts[0].catalogMu.Unlock()
 	checkModelListing(t, s, nil)
 }

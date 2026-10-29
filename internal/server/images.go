@@ -26,7 +26,8 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 			s.writeError(w, r, err)
 			return
 		}
-		catalog, err := s.getCatalog(r.Context())
+		a := accountOf(r)
+		catalog, err := a.getCatalog(r.Context())
 		if err == nil {
 			err = in.ValidateModel(catalog)
 		}
@@ -34,10 +35,11 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 			s.writeError(w, r, err)
 			return
 		}
-		if !s.acquire(w, r) {
+		release, ok := s.acquire(w, r)
+		if !ok {
 			return
 		}
-		defer func() { <-s.slots }()
+		defer release()
 		if err := s.resolveMedia(r.Context(), &in.Request); err != nil {
 			s.writeError(w, r, err)
 			return
@@ -53,7 +55,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 				return
 			}
 			collector := protocol.NewImageCollector(in)
-			err := s.upstream.Generate(r.Context(), in.Model, in.Request, ag.KindImage, collector.Add)
+			err := a.Upstream.Generate(r.Context(), in.Model, in.Request, ag.KindImage, collector.Add)
 			if err != nil {
 				if r.Context().Err() == nil {
 					s.writeError(w, r, err)

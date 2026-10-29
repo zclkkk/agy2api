@@ -2,15 +2,15 @@
 listen = "127.0.0.1:8080"
 data_dir = "./data"
 
-# An empty key permits local clients only. Set a key for remote access.
-api_key = ""
+# Accounts are added with `agy2api login` and kept in data_dir. Every request
+# needs an account's API key; `agy2api accounts` lists them.
 
 # Optional overrides; omitted fields use the application's defaults.
 # proxy_url = "http://127.0.0.1:7890"
-# max_concurrent_requests = 4
+# max_concurrent_requests = 4  # per account
 # max_body_bytes = 33_554_432  # 32 MiB; also the remote attachment download budget
 # state_ttl_hours = 168      # 7 days
-# max_state_bytes = 1_073_741_824  # 1 GiB of stored record content
+# max_state_bytes = 1_073_741_824  # 1 GiB of stored record content per account
 
 # Disable only when investigating client system-marker compatibility.
 # sanitize_client_markers = true

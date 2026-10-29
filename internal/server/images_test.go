@@ -61,7 +61,7 @@ func TestImagesGenerateBatchWithoutConversationState(t *testing.T) {
 		imageAnswer(t, w)
 	})
 	// The Images API must not depend on replay state or store generated images.
-	if err := svc.state.Close(); err != nil {
+	if err := svc.accounts[0].State.Close(); err != nil {
 		t.Fatal(err)
 	}
 	res, body := send(t, s, "/v1/images/generations", `{"model":"gemini-canvas","prompt":"draw","n":2}`, nil)
@@ -258,10 +258,10 @@ func TestImagesCancellationReleasesGenerationSlot(t *testing.T) {
 	}
 	<-done
 	deadline := time.Now().Add(5 * time.Second)
-	for len(svc.slots) != 0 && time.Now().Before(deadline) {
+	for len(svc.accounts[0].slots) != 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if len(svc.slots) != 0 {
+	if len(svc.accounts[0].slots) != 0 {
 		t.Fatal("generation slot was leaked")
 	}
 }

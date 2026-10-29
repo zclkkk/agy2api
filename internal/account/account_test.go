@@ -30,8 +30,9 @@ func savedCreds(t *testing.T, a Account) (string, string) {
 }
 
 func TestIDs(t *testing.T) {
+	// tests/config_helpers.py derives IDs the same way and checks this value.
 	id := ID("104")
-	if id != ID("104") || id == ID("105") || !ValidID(id) {
+	if id != "7d63f052" || id == ID("105") || !ValidID(id) {
 		t.Fatalf("unstable or invalid ID %q", id)
 	}
 	for _, bad := range []string{"", "a3f9c2e", "a3f9c2e1a", "A3F9C2E1", "a3f9c2eg", "../a3f9c", ".a3f9c2e"} {

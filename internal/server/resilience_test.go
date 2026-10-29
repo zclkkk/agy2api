@@ -35,19 +35,64 @@ func newService(t *testing.T, configure func(*config.Config), models func(http.R
 	}))
 	t.Cleanup(up.Close)
 	cfg := config.Default()
-	cfg.DataDir = t.TempDir()
 	if configure != nil {
 		configure(&cfg)
 	}
-	store, err := state.Open(cfg.DataDir, time.Hour, 1000, 1<<30)
+	svc := newServer(t, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), testAccount(t, "test", testKey, up))
+	return svc, startServer(t, svc, testKey)
+}
+
+const testKey = "test-key"
+
+// testAccount is an account with its own state whose upstream is up. A nil
+// up gives an account that must not reach the upstream.
+func testAccount(t *testing.T, id, key string, up *httptest.Server) *Account {
+	t.Helper()
+	store, err := state.Open(t.TempDir(), time.Hour, 1000, 1<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	svc := New(cfg, &ag.Client{HTTP: up.Client(), BaseURL: up.URL, UserAgent: func() string { return "test" }, Auth: fixedToken{}}, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	a := &Account{ID: id, Key: key, State: store}
+	if up != nil {
+		a.Upstream = &ag.Client{HTTP: up.Client(), BaseURL: up.URL, UserAgent: func() string { return "test" }, Auth: fixedToken{}}
+	}
+	return a
+}
+
+func newServer(t *testing.T, cfg config.Config, logger *slog.Logger, accounts ...*Account) *Server {
+	t.Helper()
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	svc, err := New(cfg, accounts, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc
+}
+
+// startServer serves svc. Its client sends key unless a request carries one.
+func startServer(t *testing.T, svc *Server, key string) *httptest.Server {
+	t.Helper()
 	down := httptest.NewServer(svc.Handler())
 	t.Cleanup(down.Close)
-	return svc, down
+	client := down.Client()
+	client.Transport = keyTransport{client.Transport, key}
+	return down
+}
+
+type keyTransport struct {
+	base http.RoundTripper
+	key  string
+}
+
+func (k keyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Header.Get("Authorization") == "" && r.Header.Get("X-Api-Key") == "" {
+		r = r.Clone(r.Context())
+		r.Header.Set("Authorization", "Bearer "+k.key)
+	}
+	return k.base.RoundTrip(r)
 }
 
 func staticModels(w http.ResponseWriter) { io.WriteString(w, testModels) }
@@ -80,25 +125,6 @@ func send(t *testing.T, s *httptest.Server, path, body string, headers map[strin
 }
 
 const helloMessages = `{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"hi"}]}`
-
-func TestWithoutAPIKeyOnlyLocalClientsAreServed(t *testing.T) {
-	_, s := newService(t, nil, staticModels, answer("ok", "STOP"))
-	for name, tc := range map[string]struct {
-		headers map[string]string
-		want    int
-	}{
-		"local":              {nil, 200},
-		"localhost host":     {map[string]string{"Host": "localhost:8080"}, 200},
-		"local origin":       {map[string]string{"Origin": "http://localhost:3000"}, 200},
-		"cross-site browser": {map[string]string{"Origin": "https://evil.example"}, 403},
-		"dns rebinding":      {map[string]string{"Host": "evil.example:8080"}, 403},
-	} {
-		res, body := send(t, s, "/v1/messages", helloMessages, tc.headers)
-		if res.StatusCode != tc.want {
-			t.Errorf("%s: status=%d body=%s", name, res.StatusCode, body)
-		}
-	}
-}
 
 func TestBurstsWaitForASlot(t *testing.T) {
 	release := make(chan struct{})
@@ -141,9 +167,9 @@ func TestCatalogFailureServesCachedCatalog(t *testing.T) {
 		t.Fatal(body)
 	}
 	fail.Store(true)
-	svc.catalogMu.Lock()
-	svc.catalogExpiry = time.Time{}
-	svc.catalogMu.Unlock()
+	svc.accounts[0].catalogMu.Lock()
+	svc.accounts[0].catalogExpiry = time.Time{}
+	svc.accounts[0].catalogMu.Unlock()
 	if res, body := send(t, s, "/v1/messages", helloMessages, nil); res.StatusCode != 200 {
 		t.Fatalf("cached catalog not used: %s", body)
 	}

@@ -11,11 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
 	"github.com/zclkkk/agy2api/internal/config"
-	"github.com/zclkkk/agy2api/internal/state"
 )
 
 func TestClientMarkerCleanupIsSharedByAllRequestPaths(t *testing.T) {
@@ -47,17 +45,10 @@ func TestClientMarkerCleanupIsSharedByAllRequestPaths(t *testing.T) {
 			}))
 			defer up.Close()
 			cfg := config.Default()
-			cfg.DataDir = t.TempDir()
 			cfg.SanitizeClientMarkers = enabled
-			store, err := state.Open(cfg.DataDir, time.Hour, 100, 1<<30)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer store.Close()
 			var logs bytes.Buffer
-			svc := New(cfg, &ag.Client{HTTP: up.Client(), BaseURL: up.URL, Auth: fixedToken{}}, store, slog.New(slog.NewJSONHandler(&logs, nil)))
-			s := httptest.NewServer(svc.Handler())
-			defer s.Close()
+			svc := newServer(t, cfg, slog.New(slog.NewJSONHandler(&logs, nil)), testAccount(t, "test", testKey, up))
+			s := startServer(t, svc, testKey)
 			for _, tc := range []struct {
 				path            string
 				stream, trigger bool
@@ -197,17 +188,9 @@ func TestTextSignaturesAreOnlyRestoredForMessages(t *testing.T) {
 		frame(w, chunk([]ag.Part{{Text: "ok"}}, "STOP", nil))
 	}))
 	defer up.Close()
-	cfg := config.Default()
-	cfg.DataDir = t.TempDir()
-	store, err := state.Open(cfg.DataDir, time.Hour, 100, 1<<30)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
 	var logs bytes.Buffer
-	svc := New(cfg, &ag.Client{HTTP: up.Client(), BaseURL: up.URL, Auth: fixedToken{}}, store, slog.New(slog.NewJSONHandler(&logs, nil)))
-	s := httptest.NewServer(svc.Handler())
-	defer s.Close()
+	svc := newServer(t, config.Default(), slog.New(slog.NewJSONHandler(&logs, nil)), testAccount(t, "test", testKey, up))
+	s := startServer(t, svc, testKey)
 	history := `[{"role":"user","content":"hi"},{"role":"assistant","content":"earlier answer"},{"role":"user","content":"more"}]`
 	if res, body := send(t, s, "/v1/responses", `{"model":"gemini-test","input":`+history+`}`, nil); res.StatusCode != 200 {
 		t.Fatal(body)

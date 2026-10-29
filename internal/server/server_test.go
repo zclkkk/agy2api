@@ -33,10 +33,10 @@ func TestStoredResponseRoutesRejectUnsupportedFormats(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	handler := New(config.Default(), nil, store, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
+	handler := newServer(t, config.Default(), nil, &Account{ID: "test", Key: testKey, State: store}).Handler()
 	for _, path := range []string{"/v1/responses/unsupported", "/v1/responses/unsupported/input_items"} {
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://localhost"+path, nil))
+		handler.ServeHTTP(response, keyed(httptest.NewRequest(http.MethodGet, "http://localhost"+path, nil)))
 		if response.Code != http.StatusBadGateway {
 			t.Fatalf("%s returned unsupported state: status=%d", path, response.Code)
 		}
@@ -51,10 +51,10 @@ func TestStreamingRetrievalIsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	handler := New(config.Default(), nil, store, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler()
+	handler := newServer(t, config.Default(), nil, &Account{ID: "test", Key: testKey, State: store}).Handler()
 	for query, want := range map[string]int{"?stream=true": 400, "?starting_after=3": 400, "?stream=false": 404} {
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "http://localhost/v1/responses/missing"+query, nil))
+		handler.ServeHTTP(response, keyed(httptest.NewRequest(http.MethodGet, "http://localhost/v1/responses/missing"+query, nil)))
 		if response.Code != want {
 			t.Fatalf("%s: status %d, want %d", query, response.Code, want)
 		}
@@ -87,19 +87,14 @@ func setup(t *testing.T, generate http.HandlerFunc) (*httptest.Server, *atomic.I
 		}
 	}))
 	t.Cleanup(up.Close)
-	cfg := config.Default()
-	cfg.DataDir = t.TempDir()
-	cfg.APIKey = "local-key"
-	store, err := state.Open(cfg.DataDir, time.Hour, 1000, 1<<30)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { store.Close() })
-	client := &ag.Client{HTTP: up.Client(), BaseURL: up.URL, UserAgent: func() string { return "test" }, Auth: fixedToken{}}
-	svc := New(cfg, client, store, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	down := httptest.NewServer(svc.Handler())
-	t.Cleanup(down.Close)
-	return down, calls
+	svc := newServer(t, config.Default(), slog.New(slog.NewTextHandler(io.Discard, nil)), testAccount(t, "test", "local-key", up))
+	return startServer(t, svc, "local-key"), calls
+}
+
+// keyed authenticates a request built for a handler.
+func keyed(r *http.Request) *http.Request {
+	r.Header.Set("Authorization", "Bearer "+testKey)
+	return r
 }
 
 func post(t *testing.T, s *httptest.Server, path string, value any) (*http.Response, []byte) {
@@ -307,7 +302,7 @@ func TestFailuresDoNotProduceSuccessfulTerminalEvents(t *testing.T) {
 
 func TestAuthenticationUnsupportedRequestsAndTokenCount(t *testing.T) {
 	s, calls := setup(t, func(w http.ResponseWriter, r *http.Request) { t.Error("generation should not run") })
-	res, err := s.Client().Get(s.URL + "/v1/models")
+	res, err := http.Get(s.URL + "/v1/models") // without the key
 	if err != nil {
 		t.Fatal(err)
 	}

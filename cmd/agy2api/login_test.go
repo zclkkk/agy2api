@@ -5,8 +5,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/zclkkk/agy2api/internal/account"
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
 	"github.com/zclkkk/agy2api/internal/auth"
 	"github.com/zclkkk/agy2api/internal/config"
@@ -39,20 +40,33 @@ func loginURL(t *testing.T, output string) *url.URL {
 	return nil
 }
 
-func TestLoginCodeExchangeAndRefresh(t *testing.T) {
-	for _, failure := range []string{"", "exchange", "project", "refresh token"} {
-		t.Run("failure="+failure, func(t *testing.T) {
+// A login creates an account for a new Google account and renews the
+// credentials of a known one. A failure at any step changes nothing.
+func TestLoginCreatesAndRenewsAccounts(t *testing.T) {
+	for _, tc := range []struct {
+		failure  string
+		existing bool
+	}{
+		{"", false}, {"", true}, {"exchange", true}, {"project", true}, {"user", true}, {"refresh token", true}, {"user", false},
+	} {
+		t.Run(fmt.Sprintf("failure=%s,existing=%v", tc.failure, tc.existing), func(t *testing.T) {
 			cfg := config.Default()
 			cfg.DataDir = t.TempDir()
-			if err := auth.Save(cfg.CredentialsPath(), auth.Credentials{ProjectID: "old-project", Token: oauth2.Token{RefreshToken: "old-refresh"}}); err != nil {
-				t.Fatal(err)
-			}
-			before, err := os.ReadFile(cfg.CredentialsPath())
-			if err != nil {
-				t.Fatal(err)
+			var before account.Account
+			var beforeCreds []byte
+			if tc.existing {
+				var err error
+				before, _, err = account.Login(cfg.DataDir, auth.User{ID: "104", Email: "old@example.com"}, auth.Credentials{ProjectID: "fixture-project", Token: oauth2.Token{RefreshToken: "old-refresh"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if beforeCreds, err = os.ReadFile(before.CredentialsPath()); err != nil {
+					t.Fatal(err)
+				}
 			}
 			var output bytes.Buffer
-			exchanges, projects, refreshes := 0, 0, 0
+			exchanges, projects, users, refreshes := 0, 0, 0, 0
+			failure := tc.failure
 			client := &http.Client{Transport: loginTransport(func(r *http.Request) (*http.Response, error) {
 				status, body := 200, ""
 				switch r.URL.Host {
@@ -102,12 +116,21 @@ func TestLoginCodeExchangeAndRefresh(t *testing.T) {
 					if failure == "project" {
 						status, body = 403, `{"error":{"message":"denied fixture-access"}}`
 					}
+				case "www.googleapis.com":
+					users++
+					if r.URL.String() != auth.UserInfoURL || r.Header.Get("Authorization") != "Bearer fixture-access" {
+						t.Fatal("incorrect user lookup")
+					}
+					body = `{"id":"104","email":"alice@example.com","name":"Alice"}`
+					if failure == "user" {
+						status, body = 401, `{"error":"invalid_token"}`
+					}
 				default:
 					t.Fatal("unexpected network destination")
 				}
 				return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
 			})}
-			err = login(context.Background(), cfg, client, ag.NewUserAgent(), strings.NewReader("  4/fixture-code \r\n"), &output)
+			err := login(context.Background(), cfg, client, ag.NewUserAgent(), strings.NewReader("  4/fixture-code \r\n"), &output)
 			if (err != nil) != (failure != "") {
 				t.Fatalf("login error: %v", err)
 			}
@@ -120,32 +143,51 @@ func TestLoginCodeExchangeAndRefresh(t *testing.T) {
 					t.Fatal("login echoed a code or token")
 				}
 			}
-			after, readErr := os.ReadFile(cfg.CredentialsPath())
-			if readErr != nil {
-				t.Fatal(readErr)
+			accounts, listErr := account.List(cfg.DataDir)
+			if listErr != nil {
+				t.Fatal(listErr)
 			}
 			if failure != "" {
-				if !bytes.Equal(before, after) || strings.Contains(output.String(), "Login saved") {
-					t.Fatal("failed login replaced working credentials or claimed success")
+				if strings.Contains(output.String(), "Logged in") || strings.Contains(output.String(), "Renewed") {
+					t.Fatal("failed login claimed success")
+				}
+				if !tc.existing {
+					if len(accounts) != 0 {
+						t.Fatal("failed login created an account")
+					}
+					return
+				}
+				after, _ := os.ReadFile(before.CredentialsPath())
+				if len(accounts) != 1 || accounts[0].Info != before.Info || !bytes.Equal(after, beforeCreds) {
+					t.Fatal("failed login changed the account")
 				}
 				return
 			}
-			var saved auth.Credentials
-			if err := json.Unmarshal(after, &saved); err != nil {
-				t.Fatal(err)
+			if len(accounts) != 1 || accounts[0].ID != account.ID("104") || accounts[0].Email != "alice@example.com" || accounts[0].Name != "Alice" || exchanges != 1 || projects != 1 || users != 1 {
+				t.Fatalf("login stored %+v", accounts)
 			}
-			if saved.ProjectID != "fixture-project" || saved.Token.RefreshToken != "fixture-refresh" || exchanges != 1 || projects != 1 {
-				t.Fatal("successful login did not save complete credentials")
+			a := accounts[0]
+			if tc.existing {
+				if a.APIKey != before.APIKey || !strings.Contains(output.String(), "Renewed") || strings.Contains(output.String(), a.APIKey) {
+					t.Fatalf("renewal changed or printed the key: %s", output.String())
+				}
+			} else if !strings.Contains(output.String(), "Logged in as alice@example.com (Alice).") || !strings.Contains(output.String(), a.ID) || !strings.Contains(output.String(), a.APIKey) {
+				t.Fatalf("new account output: %s", output.String())
 			}
-			info, err := os.Stat(cfg.CredentialsPath())
-			if err != nil || info.Mode().Perm() != 0600 {
-				t.Fatal("credentials are not private")
-			}
-			manager, err := auth.Load(cfg.CredentialsPath(), client)
+			manager, err := auth.Load(a.CredentialsPath(), client)
 			if err != nil {
 				t.Fatal(err)
 			}
-			manager.Invalidate(saved.Token.AccessToken)
+			if manager.ProjectID() != "fixture-project" {
+				t.Fatal("login did not save the project")
+			}
+			// The saved access token is still valid; invalidating it forces the
+			// refresh token from this login to be used.
+			saved, _ := os.ReadFile(a.CredentialsPath())
+			if !strings.Contains(string(saved), "fixture-access") {
+				t.Fatal("login did not save the new token")
+			}
+			manager.Invalidate("fixture-access")
 			if token, err := manager.AccessToken(context.Background()); err != nil || token != "fixture-refreshed" || refreshes != 1 {
 				t.Fatalf("new credentials cannot refresh: %v", err)
 			}

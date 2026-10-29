@@ -4,15 +4,12 @@ package server
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -30,29 +27,76 @@ const (
 	heartbeatPeriod = 15 * time.Second
 )
 
-type Server struct {
-	cfg           config.Config
-	upstream      *ag.Client
-	state         *state.Store
+// Account is one hosted account. Requests authenticated with its key use its
+// upstream identity, state, concurrency slots and model catalog.
+type Account struct {
+	ID       string
+	Key      string
+	Upstream *ag.Client
+	State    *state.Store
+
 	logger        *slog.Logger
 	slots         chan struct{}
 	catalogMu     sync.Mutex
 	catalog       ag.Catalog
 	catalogExpiry time.Time
-	media         *http.Client
-	heartbeat     time.Duration
 }
 
-func New(cfg config.Config, upstream *ag.Client, store *state.Store, logger *slog.Logger) *Server {
+type Server struct {
+	cfg       config.Config
+	logger    *slog.Logger
+	accounts  []*Account
+	keys      map[[sha256.Size]byte]*Account
+	media     *http.Client
+	heartbeat time.Duration
+}
+
+// New serves the accounts. Each must have its own API key: a shared key would
+// route one account's clients to another.
+func New(cfg config.Config, accounts []*Account, logger *slog.Logger) (*Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{cfg: cfg, upstream: upstream, state: store, logger: logger, slots: make(chan struct{}, cfg.MaxConcurrentRequests), media: mediaClient(), heartbeat: heartbeatPeriod}
+	if len(accounts) == 0 {
+		return nil, errors.New("no accounts; run agy2api login first")
+	}
+	s := &Server{cfg: cfg, logger: logger, accounts: accounts, keys: make(map[[sha256.Size]byte]*Account), media: mediaClient(), heartbeat: heartbeatPeriod}
+	for _, a := range accounts {
+		if a.Key == "" {
+			return nil, fmt.Errorf("account %s has no API key", a.ID)
+		}
+		sum := sha256.Sum256([]byte(a.Key))
+		if other, ok := s.keys[sum]; ok {
+			return nil, fmt.Errorf("accounts %s and %s have the same API key; log one of them out", other.ID, a.ID)
+		}
+		s.keys[sum] = a
+		a.logger = logger.With("account", a.ID)
+		a.slots = make(chan struct{}, cfg.MaxConcurrentRequests)
+	}
+	return s, nil
 }
+
+// authenticate returns the account whose key the request carries.
+func (s *Server) authenticate(r *http.Request) *Account {
+	key := r.Header.Get("X-Api-Key")
+	if key == "" {
+		key = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	if key == "" {
+		return nil
+	}
+	return s.keys[sha256.Sum256([]byte(key))]
+}
+
+type accountKey struct{}
+
+// accountOf returns the account an authenticated request belongs to.
+func accountOf(r *http.Request) *Account { return r.Context().Value(accountKey{}).(*Account) }
 
 // requestLog collects per-request details for the completion log line.
 type requestLog struct {
 	mu       sync.Mutex
+	account  string
 	model    string
 	warnings []string
 }
@@ -114,30 +158,23 @@ func (s *Server) Handler() http.Handler {
 		w.Header().Set("X-Request-Id", id)
 		w.Header().Set("Request-Id", id)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		info := &requestLog{}
+		ctx := context.WithValue(r.Context(), logKey{}, info)
 		if r.URL.Path != "/healthz" {
-			if s.cfg.APIKey == "" {
-				// Without a key only this machine may call the service. Browsers
-				// send Origin on cross-site requests and DNS rebinding changes Host.
-				if !localRequest(r) {
-					s.error(w, r, 403, "permission_error", "only local clients may use this service without an api_key", "")
-					return
-				}
-			} else {
-				key := r.Header.Get("X-Api-Key")
-				if key == "" {
-					key = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-				}
-				a, b := sha256.Sum256([]byte(key)), sha256.Sum256([]byte(s.cfg.APIKey))
-				if subtle.ConstantTimeCompare(a[:], b[:]) != 1 {
-					s.error(w, r, 401, "authentication_error", "invalid API key", "")
-					return
-				}
+			a := s.authenticate(r)
+			if a == nil {
+				s.error(w, r, 401, "authentication_error", "invalid API key", "")
+				return
 			}
+			info.account = a.ID
+			ctx = context.WithValue(ctx, accountKey{}, a)
 		}
 		started := time.Now()
-		info := &requestLog{}
-		mux.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), logKey{}, info)))
+		mux.ServeHTTP(w, r.WithContext(ctx))
 		attrs := []any{"request_id", id, "method", r.Method, "path", r.URL.Path, "status", w.status, "duration_ms", time.Since(started).Milliseconds()}
+		if info.account != "" {
+			attrs = append(attrs, "account", info.account)
+		}
 		if info.model != "" {
 			attrs = append(attrs, "model", info.model)
 		}
@@ -146,32 +183,6 @@ func (s *Server) Handler() http.Handler {
 		}
 		s.logger.Info("request completed", attrs...)
 	})
-}
-
-func localRequest(r *http.Request) bool {
-	host, _, err := net.SplitHostPort(r.Host)
-	if err != nil {
-		host = r.Host
-	}
-	if !loopbackHost(host) {
-		return false
-	}
-	if origin := r.Header.Get("Origin"); origin != "" {
-		u, err := url.Parse(origin)
-		if err != nil || !loopbackHost(u.Hostname()) {
-			return false
-		}
-	}
-	return true
-}
-
-func loopbackHost(host string) bool {
-	host = strings.TrimSuffix(strings.Trim(host, "[]"), ".")
-	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
@@ -183,24 +194,27 @@ func (s *Server) readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool)
 	return data, true
 }
 
-// acquire waits for a generation slot instead of rejecting bursts outright.
-func (s *Server) acquire(w http.ResponseWriter, r *http.Request) bool {
+// acquire waits for one of the account's generation slots instead of
+// rejecting bursts outright. The caller runs release when done.
+func (s *Server) acquire(w http.ResponseWriter, r *http.Request) (release func(), ok bool) {
+	slots := accountOf(r).slots
+	release = func() { <-slots }
 	select {
-	case s.slots <- struct{}{}:
-		return true
+	case slots <- struct{}{}:
+		return release, true
 	default:
 	}
 	timer := time.NewTimer(queueWait)
 	defer timer.Stop()
 	select {
-	case s.slots <- struct{}{}:
-		return true
+	case slots <- struct{}{}:
+		return release, true
 	case <-r.Context().Done():
-		return false
+		return nil, false
 	case <-timer.C:
 		w.Header().Set("Retry-After", "5")
 		s.error(w, r, 429, "rate_limit_error", "concurrency limit reached", "")
-		return false
+		return nil, false
 	}
 }
 
@@ -219,12 +233,13 @@ func (s *Server) prepare(w http.ResponseWriter, r *http.Request, data []byte, fo
 		s.writeError(w, r, err)
 		return protocol.PreparedRequest{}, false
 	}
-	catalog, err := s.getCatalog(r.Context())
+	a := accountOf(r)
+	catalog, err := a.getCatalog(r.Context())
 	if err != nil {
 		s.writeError(w, r, err)
 		return protocol.PreparedRequest{}, false
 	}
-	planner := protocol.Planner{State: s.state, SanitizeClientMarkers: s.cfg.SanitizeClientMarkers, ResolveMedia: s.resolveMedia}
+	planner := protocol.Planner{State: a.State, SanitizeClientMarkers: s.cfg.SanitizeClientMarkers, ResolveMedia: s.resolveMedia}
 	prepared, err := planner.Prepare(r.Context(), intent, catalog, operation, r.Header)
 	s.note(r, intent.Model, prepared.Warnings...)
 	if err != nil {
@@ -295,10 +310,14 @@ func (s *sseWriter) close() {
 func (s *Server) generate(w http.ResponseWriter, r *http.Request, format protocol.Format, operation protocol.Operation) {
 	// The body is read before queueing so slow uploads do not hold a slot.
 	data, ok := s.readBody(w, r)
-	if !ok || !s.acquire(w, r) {
+	if !ok {
 		return
 	}
-	defer func() { <-s.slots }()
+	release, ok := s.acquire(w, r)
+	if !ok {
+		return
+	}
+	defer release()
 	in, ok := s.prepare(w, r, data, format, operation)
 	if !ok {
 		return
@@ -329,8 +348,9 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, format protoco
 			}
 		}()
 	}
-	renderer := protocol.NewRenderer(in, s.state, emit)
-	err := s.upstream.Generate(r.Context(), in.Model, in.Request, ag.KindAgent, func(chunk ag.Chunk) error {
+	a := accountOf(r)
+	renderer := protocol.NewRenderer(in, a.State, emit)
+	err := a.Upstream.Generate(r.Context(), in.Model, in.Request, ag.KindAgent, func(chunk ag.Chunk) error {
 		return renderer.Add(r.Context(), chunk)
 	})
 	if err == nil {
@@ -369,7 +389,7 @@ func (s *Server) count(w http.ResponseWriter, r *http.Request, format protocol.F
 	if !ok {
 		return
 	}
-	n, err := s.upstream.Count(r.Context(), in.Request)
+	n, err := accountOf(r).Upstream.Count(r.Context(), in.Request)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -381,26 +401,26 @@ func (s *Server) count(w http.ResponseWriter, r *http.Request, format protocol.F
 	}
 }
 
-// getCatalog caches the model catalog. When a refresh fails, the previous
-// catalog keeps serving and the refresh is retried shortly.
-func (s *Server) getCatalog(ctx context.Context) (ag.Catalog, error) {
-	s.catalogMu.Lock()
-	defer s.catalogMu.Unlock()
+// getCatalog caches the account's model catalog. When a refresh fails, the
+// previous catalog keeps serving and the refresh is retried shortly.
+func (a *Account) getCatalog(ctx context.Context) (ag.Catalog, error) {
+	a.catalogMu.Lock()
+	defer a.catalogMu.Unlock()
 	now := time.Now()
-	if now.Before(s.catalogExpiry) {
-		return s.catalog, nil
+	if now.Before(a.catalogExpiry) {
+		return a.catalog, nil
 	}
-	catalog, err := s.upstream.Models(ctx)
+	catalog, err := a.Upstream.Models(ctx)
 	if err != nil {
-		if s.catalog.Models != nil {
-			s.catalogExpiry = now.Add(catalogRetry)
-			s.logger.Warn("model catalog refresh failed; serving the cached catalog", "error", err.Error())
-			return s.catalog, nil
+		if a.catalog.Models != nil {
+			a.catalogExpiry = now.Add(catalogRetry)
+			a.logger.Warn("model catalog refresh failed; serving the cached catalog", "error", err.Error())
+			return a.catalog, nil
 		}
 		return ag.Catalog{}, err
 	}
-	s.catalog = catalog
-	s.catalogExpiry = now.Add(catalogTTL)
+	a.catalog = catalog
+	a.catalogExpiry = now.Add(catalogTTL)
 	return catalog, nil
 }
 
@@ -421,7 +441,7 @@ func modelObject(id string, value json.RawMessage, anthropicFormat bool) map[str
 	return map[string]any{"id": id, "type": "model", "display_name": info.DisplayName, "created_at": "1970-01-01T00:00:00Z"}
 }
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
-	catalog, err := s.getCatalog(r.Context())
+	catalog, err := accountOf(r).getCatalog(r.Context())
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -449,7 +469,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 func (s *Server) model(w http.ResponseWriter, r *http.Request) {
-	catalog, err := s.getCatalog(r.Context())
+	catalog, err := accountOf(r).getCatalog(r.Context())
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -470,7 +490,7 @@ func served(catalog ag.Catalog, id string, anthropicFormat bool) bool {
 }
 
 func (s *Server) stored(w http.ResponseWriter, r *http.Request) (protocol.StoredResponse, bool) {
-	record, err := protocol.LoadResponse(r.Context(), s.state, r.PathValue("id"))
+	record, err := protocol.LoadResponse(r.Context(), accountOf(r).State, r.PathValue("id"))
 	if errors.Is(err, state.ErrNotFound) {
 		s.error(w, r, 404, "not_found_error", "response not found or expired", "")
 		return record, false
@@ -496,7 +516,7 @@ func (s *Server) retrieve(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(record.Response)
 }
 func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
-	deleted, err := s.state.Delete(r.Context(), "response", r.PathValue("id"))
+	deleted, err := accountOf(r).State.Delete(r.Context(), "response", r.PathValue("id"))
 	if err != nil {
 		s.writeError(w, r, err)
 		return

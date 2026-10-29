@@ -12,7 +12,6 @@ import io
 import json
 import os
 import re
-import shutil
 import socket
 import sqlite3
 import subprocess
@@ -28,7 +27,7 @@ from pathlib import Path
 import anthropic
 import openai
 
-from config_helpers import read_config, write_config
+from config_helpers import read_config, write_account, write_config
 from media_fixtures import png_fixture
 
 
@@ -67,35 +66,56 @@ def pdf_fixture():
     return bytes(data)
 
 
+def source_account(accounts, chosen):
+    """The account directory whose credentials the run copies."""
+    ids = (
+        sorted(p.name for p in accounts.iterdir() if not p.name.startswith("."))
+        if accounts.is_dir()
+        else []
+    )
+    if chosen:
+        if chosen not in ids:
+            raise SystemExit(f"no account {chosen}; run agy2api accounts")
+        return accounts / chosen
+    if len(ids) != 1:
+        raise SystemExit(
+            "run agy2api login first"
+            if not ids
+            else f"pass --account, one of: {', '.join(ids)}"
+        )
+    return accounts / ids[0]
+
+
 class Live:
-    def __init__(self, config, binary, report):
+    def __init__(self, config, binary, report, account=None):
         self.source = read_config(config)
-        self.source_data = Path(
+        source_data = Path(
             os.environ.get("AGY2API_DATA_DIR", self.source.get("data_dir", "data"))
         ).resolve()
+        source = source_account(source_data / "accounts", account)
+        info = json.loads((source / "account.json").read_text())
         self.binary, self.report_path = binary.resolve(), report
         self.tmp = tempfile.TemporaryDirectory(prefix="agy2api-live-")
         self.root = Path(self.tmp.name)
         data = self.root / "data"
         data.mkdir(mode=0o700)
-        shutil.copyfile(
-            self.source_data / "credentials.json", data / "credentials.json"
+        # A copy of the account with its own key and an empty state database.
+        self.key = "agy2api-live-local-key"
+        self.account = write_account(
+            data,
+            info["user_id"],
+            self.key,
+            json.loads((source / "credentials.json").read_text()),
+            info["email"],
         )
-        (data / "credentials.json").chmod(0o600)
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             self.port = sock.getsockname()[1]
         self.base = f"http://127.0.0.1:{self.port}"
-        self.key = "agy2api-live-local-key"
-        cfg = dict(
-            self.source,
-            listen=f"127.0.0.1:{self.port}",
-            data_dir=str(data),
-            api_key=self.key,
-        )
+        cfg = dict(self.source, listen=f"127.0.0.1:{self.port}", data_dir=str(data))
         write_config(self.root / "config.toml", cfg)
         self.env = dict(os.environ)
-        for name in ("AGY2API_DATA_DIR", "AGY2API_LISTEN", "AGY2API_API_KEY"):
+        for name in ("AGY2API_DATA_DIR", "AGY2API_LISTEN"):
             self.env.pop(name, None)
         self.log = (self.root / "service.log").open("w+")
         self.process = None
@@ -1158,7 +1178,7 @@ class Live:
     def refresh(self):
         self.process.terminate()
         self.process.wait(timeout=10)
-        path = self.root / "data" / "credentials.json"
+        path = self.account / "credentials.json"
         creds = json.loads(path.read_text())
         creds["token"]["expiry"] = "2000-01-01T00:00:00Z"
         path.write_text(json.dumps(creds))
@@ -1613,8 +1633,11 @@ def main():
         "--report", type=Path, default=Path(".cache/validation/live-report.json")
     )
     parser.add_argument("--only", action="append", default=[])
+    parser.add_argument(
+        "--account", help="account whose credentials to copy; needed with several"
+    )
     args = parser.parse_args()
-    suite = Live(args.config, args.binary, args.report)
+    suite = Live(args.config, args.binary, args.report, args.account)
     try:
         cases = []
         models = [m.id for m in suite.o.models.list()]

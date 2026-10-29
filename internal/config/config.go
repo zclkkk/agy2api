@@ -1,4 +1,5 @@
-// Package config defines the single-account service configuration.
+// Package config defines the service configuration. Accounts are not
+// configured: they live in the data directory, managed by the CLI.
 package config
 
 import (
@@ -9,7 +10,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,7 +20,6 @@ import (
 type Config struct {
 	Listen                string `toml:"listen"`
 	DataDir               string `toml:"data_dir"`
-	APIKey                string `toml:"api_key"`
 	ProxyURL              string `toml:"proxy_url"`
 	MaxBodyBytes          int64  `toml:"max_body_bytes"`
 	MaxConcurrentRequests int    `toml:"max_concurrent_requests"`
@@ -75,7 +74,7 @@ func Load(path string) (Config, error) {
 	for _, v := range []struct {
 		name string
 		dst  *string
-	}{{"AGY2API_LISTEN", &c.Listen}, {"AGY2API_DATA_DIR", &c.DataDir}, {"AGY2API_API_KEY", &c.APIKey}, {"AGY2API_PROXY_URL", &c.ProxyURL}} {
+	}{{"AGY2API_LISTEN", &c.Listen}, {"AGY2API_DATA_DIR", &c.DataDir}, {"AGY2API_PROXY_URL", &c.ProxyURL}} {
 		if s, ok := os.LookupEnv(v.name); ok {
 			*v.dst = s
 		}
@@ -84,17 +83,13 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	host, port, err := net.SplitHostPort(c.Listen)
+	_, port, err := net.SplitHostPort(c.Listen)
 	if err != nil {
 		return fmt.Errorf("listen must be host:port: %w", err)
 	}
 	n, err := strconv.Atoi(port)
 	if err != nil || n < 0 || n > 65535 {
 		return errors.New("listen port must be between 0 and 65535")
-	}
-	ip := net.ParseIP(host)
-	if c.APIKey == "" && host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		return errors.New("api_key is required when listening outside loopback")
 	}
 	if strings.TrimSpace(c.DataDir) == "" {
 		return errors.New("data_dir must not be empty")
@@ -120,5 +115,3 @@ func (c Config) Validate() error {
 	}
 	return nil
 }
-
-func (c Config) CredentialsPath() string { return filepath.Join(c.DataDir, "credentials.json") }
