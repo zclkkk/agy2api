@@ -56,7 +56,6 @@ func (in PreparedRequest) PublicTool(native string) ToolName {
 // requestPlan is private working state, separate from decoded client intent.
 type requestPlan struct {
 	RequestIntent
-	toolRecords map[string]SignatureRecord // replay records read while resolving history
 }
 
 // Planner is the only entry point from a decoded request to an upstream request.
@@ -106,7 +105,7 @@ func (p Planner) Prepare(ctx context.Context, intent RequestIntent, catalog ag.C
 			return finish(), err
 		}
 	}
-	if err := (replayStore{p.State}).resolveHistoryTools(ctx, &in); err != nil {
+	if err := in.nameHistoryCalls(); err != nil {
 		return finish(), err
 	}
 	in.Request.System = joinSystem(in.Instructions, in.HistorySystem)

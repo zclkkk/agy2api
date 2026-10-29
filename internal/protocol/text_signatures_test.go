@@ -2,26 +2,22 @@ package protocol
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
 )
 
-func TestMessagesEndsWithTextAndRestoresItsSignature(t *testing.T) {
-	for _, withThinking := range []bool{false, true} {
-		t.Run(map[bool]string{false: "text only", true: "thinking then text"}[withThinking], func(t *testing.T) {
+// Gemini can sign the final text of a Messages reply. The signature is not
+// shown to the client; it is recorded for the session and system instructions
+// and restored when the same text is replayed.
+func TestMessagesTextSignatureIsRestored(t *testing.T) {
+	for name, withThinking := range map[string]bool{"text only": false, "thinking then text": true} {
+		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			s := testStore(t)
-			d := testPipeline{State: s}
-			headers := http.Header{"Session-Id": []string{"text-signature-test"}}
-			d.headers = headers
-			in, err := d.Messages(ctx, []byte(`{"model":"gemini-test","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`), false)
-			if err != nil {
-				t.Fatal(err)
-			}
+			p := testPipeline{State: s, headers: http.Header{"Session-Id": {"text-signature-test"}}}
+			in := p.mustMessages(t, messages(user("hello")))
 			var blockTypes []string
 			r := NewRenderer(in, s, func(name string, event map[string]any) error {
 				if name == "content_block_start" {
@@ -29,40 +25,28 @@ func TestMessagesEndsWithTextAndRestoresItsSignature(t *testing.T) {
 				}
 				return nil
 			})
+			chunks := []ag.Chunk{{Parts: []ag.Part{{Text: "Hello "}}}, {Parts: []ag.Part{{Text: "world", Signature: "text-signature"}}, Finish: "STOP"}}
 			if withThinking {
-				if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Thought: true, Text: "Plan", Signature: "thought-signature"}}}); err != nil {
+				chunks = append([]ag.Chunk{{Parts: []ag.Part{{Thought: true, Text: "Plan", Signature: "thought-signature"}}}}, chunks...)
+			}
+			for _, chunk := range chunks {
+				if err := r.Add(ctx, chunk); err != nil {
 					t.Fatal(err)
 				}
-			}
-			if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "Hello "}}}); err != nil {
-				t.Fatal(err)
-			}
-			if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "world", Signature: "text-signature"}}, Finish: "STOP"}); err != nil {
-				t.Fatal(err)
 			}
 			if err := r.Finish(ctx); err != nil {
 				t.Fatal(err)
 			}
-			var reply struct {
-				Content []Block `json:"content"`
+			reply := messageContent(t, r)
+			wantBlocks := 1
+			if withThinking {
+				wantBlocks = 2
 			}
-			if err := json.Unmarshal(r.Result, &reply); err != nil {
-				t.Fatal(err)
+			if len(reply) != wantBlocks || reply[len(reply)-1].Type != "text" || blockTypes[len(blockTypes)-1] != "text" {
+				t.Fatalf("reply blocks %v, streamed %v", reply, blockTypes)
 			}
-			if blockTypes[len(blockTypes)-1] != "text" || reply.Content[len(reply.Content)-1].Type != "text" {
-				t.Fatal("a synthetic thinking block followed the visible answer")
-			}
-			if !withThinking && len(reply.Content) != 1 {
-				t.Fatal("plain text acquired an extra thinking block")
-			}
-			body := raw(map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": []any{
-				map[string]any{"role": "user", "content": "hello"}, map[string]any{"role": "assistant", "content": reply.Content}, map[string]any{"role": "user", "content": "continue"},
-			}})
-			next, err := d.Messages(ctx, body, false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			parts := next.Request.Contents[1].Parts
+			body := messages(user("hello"), assistant(reply), user("continue"))
+			parts := p.mustMessages(t, body).Request.Contents[1].Parts
 			last := parts[len(parts)-1]
 			if last.Text != "Hello world" || last.Signature != "text-signature" {
 				t.Fatalf("text signature was lost: %+v", last)
@@ -70,26 +54,13 @@ func TestMessagesEndsWithTextAndRestoresItsSignature(t *testing.T) {
 			if withThinking && parts[0].Signature != "thought-signature" {
 				t.Fatal("thinking signature changed")
 			}
-			d.headers = http.Header{"Session-Id": []string{"another-session"}}
-			changed, err := d.Messages(ctx, body, false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			last = changed.Request.Contents[1].Parts[len(parts)-1]
-			if last.Signature != "" || last.Text != "Hello world" {
+			// Another session or other system instructions get the text unsigned.
+			other := testPipeline{State: s, headers: http.Header{"Session-Id": {"another-session"}}}
+			if last := other.mustMessages(t, body).Request.Contents[1].Parts[len(parts)-1]; last.Signature != "" || last.Text != "Hello world" {
 				t.Fatal("text signature crossed sessions or text was changed")
 			}
-			d.headers = headers
-			var changedBody map[string]json.RawMessage
-			if err := json.Unmarshal(body, &changedBody); err != nil {
-				t.Fatal(err)
-			}
-			changedBody["system"] = raw("Different instructions")
-			changed, err = d.Messages(ctx, raw(changedBody), false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if changed.Request.Contents[1].Parts[len(parts)-1].Signature != "" {
+			body["system"] = "Different instructions"
+			if p.mustMessages(t, body).Request.Contents[1].Parts[len(parts)-1].Signature != "" {
 				t.Fatal("text signature crossed system contexts")
 			}
 		})
@@ -97,94 +68,48 @@ func TestMessagesEndsWithTextAndRestoresItsSignature(t *testing.T) {
 }
 
 func TestTextSignatureCacheSeparatesRepeatedAnswers(t *testing.T) {
-	ctx := context.Background()
 	s := testStore(t)
-	d := testPipeline{State: s}
-	headers := http.Header{"Session-Id": []string{"same-session"}}
-	d.headers = headers
-	history := []any{map[string]string{"role": "user", "content": "first"}}
+	p := testPipeline{State: s, headers: http.Header{"Session-Id": {"same-session"}}}
+	history := []any{user("first")}
 	for _, signature := range []string{"signature-one", "signature-two"} {
-		in, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": history}), false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r := NewRenderer(in, s, nil)
-		if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: "OK", Signature: signature}}, Finish: "STOP"}); err != nil {
-			t.Fatal(err)
-		}
-		if err := r.Finish(ctx); err != nil {
-			t.Fatal(err)
-		}
-		var reply struct {
-			Content []Block `json:"content"`
-		}
-		if err := json.Unmarshal(r.Result, &reply); err != nil {
-			t.Fatal(err)
-		}
-		history = append(history, map[string]any{"role": "assistant", "content": reply.Content}, map[string]string{"role": "user", "content": "next"})
+		r := turn(t, s, p.mustMessages(t, messages(history...)), ag.Part{Text: "OK", Signature: signature})
+		history = append(history, assistant(messageContent(t, r)), user("next"))
 	}
-	in, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": history}), false)
-	if err != nil {
-		t.Fatal(err)
-	}
+	in := p.mustMessages(t, messages(history...))
 	if in.Request.Contents[1].Parts[0].Signature != "signature-one" || in.Request.Contents[3].Parts[0].Signature != "signature-two" {
 		t.Fatal("equal text in different turns shared a signature")
 	}
-
 }
 
 func TestMissingTextSignatureRecordsAreReported(t *testing.T) {
-	ctx := context.Background()
 	s := testStore(t)
-	d := testPipeline{State: s}
+	in := func(session string) testPipeline {
+		return testPipeline{State: s, headers: http.Header{"Session-Id": {session}}}
+	}
 	reply := func(session, text, signature string) []Block {
 		t.Helper()
-		d.headers = http.Header{"Session-Id": []string{session}}
-		in, err := d.Messages(ctx, []byte(`{"model":"gemini-test","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}`), false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r := NewRenderer(in, s, nil)
-		if err := r.Add(ctx, ag.Chunk{Parts: []ag.Part{{Text: text, Signature: signature}}, Finish: "STOP"}); err != nil {
-			t.Fatal(err)
-		}
-		if err := r.Finish(ctx); err != nil {
-			t.Fatal(err)
-		}
-		var out struct {
-			Content []Block `json:"content"`
-		}
-		if err := json.Unmarshal(r.Result, &out); err != nil {
-			t.Fatal(err)
-		}
-		return out.Content
+		return messageContent(t, turn(t, s, in(session).mustMessages(t, messages(user("hello"))), ag.Part{Text: text, Signature: signature}))
 	}
-	restore := func(session string, assistant []Block) PreparedRequest {
+	restore := func(session string, content []Block) PreparedRequest {
 		t.Helper()
-		d.headers = http.Header{"Session-Id": []string{session}}
-		in, err := d.Messages(ctx, raw(map[string]any{"model": "gemini-test", "max_tokens": 1024, "messages": []any{
-			map[string]string{"role": "user", "content": "hello"}, map[string]any{"role": "assistant", "content": assistant}, map[string]string{"role": "user", "content": "next"},
-		}}), false)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return in
+		return in(session).mustMessages(t, messages(user("hello"), assistant(content), user("next")))
 	}
 	// A reply that came back unsigned is recorded as such and is not a miss.
-	if in := restore("a", reply("a", "unsigned answer", "")); len(in.Warnings) != 0 || in.Request.Contents[1].Parts[0].Signature != "" {
-		t.Fatalf("unsigned reply: %v %+v", in.Warnings, in.Request.Contents[1].Parts[0])
+	if got := restore("a", reply("a", "unsigned answer", "")); len(got.Warnings) != 0 || got.Request.Contents[1].Parts[0].Signature != "" {
+		t.Fatalf("unsigned reply: %v %+v", got.Warnings, got.Request.Contents[1].Parts[0])
 	}
-	// A signed reply replayed under another session, or text this bridge never produced, is a miss.
+	// A signed reply under another session, or text this service never
+	// produced, is a miss.
 	signed := reply("a", "signed answer", "sig")
-	for name, in := range map[string]PreparedRequest{
+	for name, got := range map[string]PreparedRequest{
 		"other session": restore("b", signed),
 		"client text":   restore("a", []Block{{Type: "text", Text: "prefilled by the client"}}),
 	} {
-		if len(in.Warnings) != 1 || !strings.Contains(in.Warnings[0], "no text signature record for 1") {
-			t.Errorf("%s: warnings %v", name, in.Warnings)
+		if len(got.Warnings) != 1 || !warned(got.Warnings, "no text signature record for 1") {
+			t.Errorf("%s: warnings %v", name, got.Warnings)
 		}
 	}
-	if in := restore("a", signed); len(in.Warnings) != 0 || in.Request.Contents[1].Parts[0].Signature != "sig" {
-		t.Fatalf("matching replay: %v %+v", in.Warnings, in.Request.Contents[1].Parts[0])
+	if got := restore("a", signed); len(got.Warnings) != 0 || got.Request.Contents[1].Parts[0].Signature != "sig" {
+		t.Fatalf("matching replay: %v %+v", got.Warnings, got.Request.Contents[1].Parts[0])
 	}
 }

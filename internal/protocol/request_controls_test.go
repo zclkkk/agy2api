@@ -202,15 +202,8 @@ func TestStreamObfuscation(t *testing.T) {
 func prepareControls(t *testing.T, format Format, body string) PreparedRequest {
 	t.Helper()
 	p := testPipeline{State: testStore(t)}
-	var in PreparedRequest
-	var err error
 	if format == Responses {
-		in, err = p.Responses(context.Background(), []byte(body))
-	} else {
-		in, err = p.Messages(context.Background(), []byte(body), false)
+		return p.mustResponses(t, body)
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return in
+	return p.mustMessages(t, body)
 }

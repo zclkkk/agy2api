@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"context"
 	"strings"
 	"testing"
 )
@@ -61,28 +60,28 @@ func TestMessagesTextDocumentsUseSourceData(t *testing.T) {
 	}
 }
 
-func TestImageInputAndClientToolImagesRemainSupported(t *testing.T) {
+func TestImageInputsAndToolResultImages(t *testing.T) {
 	d := testPipeline{State: testStore(t)}
 	for _, format := range []Format{Responses, Messages} {
 		t.Run(string(format), func(t *testing.T) {
 			var in PreparedRequest
 			var err error
 			if format == Responses {
-				in, err = d.Responses(context.Background(), []byte(`{
-					"model":"gemini-test","tools":[{"type":"function","name":"generate_image","parameters":{"type":"object"}}],
+				in, err = d.Responses(`{
+					"model":"gemini-test","tools":[{"type":"function","name":"render_chart","parameters":{"type":"object"}}],
 					"input":[
 						{"role":"user","content":[{"type":"input_text","text":"Compare these images."},{"type":"input_image","image_url":"data:image/png;base64,YWJj"}]},
-						{"type":"function_call","call_id":"call_client","name":"generate_image","arguments":"{}"},
+						{"type":"function_call","call_id":"call_client","name":"render_chart","arguments":"{}"},
 						{"type":"function_call_output","call_id":"call_client","output":[{"type":"input_image","image_url":"data:image/png;base64,ZGVm"}]}
-					]}`))
+					]}`)
 			} else {
-				in, err = d.Messages(context.Background(), []byte(`{
-					"model":"gemini-test","max_tokens":100,"tools":[{"name":"generate_image","input_schema":{"type":"object"}}],
+				in, err = d.Messages(`{
+					"model":"gemini-test","max_tokens":100,"tools":[{"name":"render_chart","input_schema":{"type":"object"}}],
 					"messages":[
 						{"role":"user","content":[{"type":"text","text":"Compare these images."},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YWJj"}}]},
-						{"role":"assistant","content":[{"type":"tool_use","id":"toolu_client","name":"generate_image","input":{}}]},
+						{"role":"assistant","content":[{"type":"tool_use","id":"toolu_client","name":"render_chart","input":{}}]},
 						{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_client","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"ZGVm"}}]}]}
-					]}`), false)
+					]}`)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -96,11 +95,11 @@ func TestImageInputAndClientToolImagesRemainSupported(t *testing.T) {
 				t.Fatal("user image was lost")
 			}
 			call := contents[1].Parts[0]
-			if call.FunctionCall.Name != "generate_image" || call.Signature != SkipSignature {
+			if call.FunctionCall.Name != "render_chart" || call.Signature != SkipSignature {
 				t.Fatal("ordinary function identity or signature was lost")
 			}
 			result := contents[2].Parts[0].FunctionResponse
-			if result == nil || result.Name != "generate_image" || len(result.Parts) != 1 || result.Parts[0].InlineData == nil || result.Parts[0].InlineData.Data != "ZGVm" {
+			if result == nil || result.Name != "render_chart" || len(result.Parts) != 1 || result.Parts[0].InlineData == nil || result.Parts[0].InlineData.Data != "ZGVm" {
 				t.Fatal("client tool image was lost")
 			}
 		})

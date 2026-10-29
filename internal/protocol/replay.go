@@ -31,7 +31,6 @@ type SignatureRecord struct {
 type Replay struct {
 	Version      int       `json:"version,omitempty"`
 	Model        string    `json:"model,omitempty"`
-	Kind         string    `json:"kind,omitempty"`
 	Parts        []ag.Part `json:"parts,omitempty"`
 	PreviousText string    `json:"previous_text,omitempty"`
 	Signature    string    `json:"signature,omitempty"`

@@ -75,41 +75,6 @@ func TestUnsupportedCapabilitiesAreRejectedBeforeExecution(t *testing.T) {
 	}
 }
 
-func TestSameNamedFunctionsRemainClientTools(t *testing.T) {
-	_, s := newService(t, nil, staticModels, func(w http.ResponseWriter, r *http.Request) {
-		var envelope ag.Envelope
-		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-			t.Error(err)
-			return
-		}
-		if envelope.RequestType != ag.KindAgent || envelope.Model != "gemini-test" || len(envelope.Request.Tools) != 1 {
-			t.Errorf("function request was rerouted: %+v", envelope)
-			return
-		}
-		tool := envelope.Request.Tools[0]
-		if tool.GoogleSearch != nil || len(tool.Functions) != 1 {
-			t.Errorf("function became a hosted tool: %+v", tool)
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		frame(w, chunk([]ag.Part{{FunctionCall: &ag.Call{Name: tool.Functions[0].Name, Args: json.RawMessage(`{}`)}, Signature: "tool-signature"}}, "STOP", nil))
-	})
-	for _, name := range []string{"web_search", "WebSearch", "image_generation", "generate_image"} {
-		for _, path := range []string{"/v1/responses", "/v1/messages"} {
-			body := `{"model":"gemini-test","input":"run the tool","tools":[{"type":"function","name":"` + name + `","parameters":{"type":"object"}}],"tool_choice":{"type":"function","name":"` + name + `"}}`
-			want := `"type":"function_call"`
-			if path == "/v1/messages" {
-				body = `{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"run the tool"}],"tools":[{"name":"` + name + `","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"` + name + `"}}`
-				want = `"type":"tool_use"`
-			}
-			res, out := send(t, s, path, body, nil)
-			if res.StatusCode != 200 || !strings.Contains(out, want) || !strings.Contains(out, `"name":"`+name+`"`) {
-				t.Fatalf("%s %s: %d %s", path, name, res.StatusCode, out)
-			}
-		}
-	}
-}
-
 func TestUnexpectedImageOutputFailsWithoutSuccess(t *testing.T) {
 	for _, partial := range []bool{false, true} {
 		s, _ := setup(t, func(w http.ResponseWriter, r *http.Request) {

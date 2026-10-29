@@ -38,7 +38,7 @@ func LoadResponse(ctx context.Context, s *state.Store, id string) (StoredRespons
 }
 
 func (s replayStore) seal(model string, replay Replay) (string, error) {
-	replay.Version, replay.Model, replay.Kind = recordVersion, model, "reasoning"
+	replay.Version, replay.Model = recordVersion, model
 	return s.State.Seal("agy2api/replay/v2", replay)
 }
 
@@ -47,7 +47,7 @@ func (s replayStore) open(model, token string) (Replay, error) {
 	if err := s.State.Unseal("agy2api/replay/v2", token, &replay); err != nil {
 		return Replay{}, err
 	}
-	if replay.Version != recordVersion || replay.Kind != "reasoning" {
+	if replay.Version != recordVersion {
 		return Replay{}, errors.New("unsupported replay record")
 	}
 	if replay.Model != model {
@@ -103,65 +103,17 @@ func (in *requestPlan) prependHistory(previous StoredResponse) error {
 	return nil
 }
 
-// resolveHistoryTools completes the identity of each call in the client's
-// input and names it. An omitted or empty namespace is unspecified. A matching
-// replay record confirms the full identity, including an ordinary tool's empty
-// namespace. Otherwise current declarations may resolve it. Explicit nonempty
-// namespaces are preserved; signature eligibility is checked separately.
-func (s replayStore) resolveHistoryTools(ctx context.Context, in *requestPlan) error {
-	in.toolRecords = map[string]SignatureRecord{}
-	fromState, fromDeclarations := 0, 0
+// nameHistoryCalls names each call in the client's input after the tool the
+// client identified. Whether a call's signature can be replayed is checked
+// against its record when the history is restored.
+func (in *requestPlan) nameHistoryCalls() error {
 	for _, h := range in.historyCalls {
 		call := in.Request.Contents[h.Content].Parts[h.Part].FunctionCall
-		identity := h.Tool
-		resolved := identity.Namespace != ""
-		if agyCallID(call.ID) {
-			var record SignatureRecord
-			err := s.State.Get(ctx, "tool", call.ID, &record)
-			if err != nil && !errors.Is(err, state.ErrNotFound) {
-				return err
-			}
-			if err == nil {
-				in.toolRecords[call.ID] = record
-				if !resolved && record.Tool.Name == identity.Name &&
-					record.Tool.Custom == identity.Custom && record.Digest == digest(call.Args) {
-					identity = record.Tool
-					resolved = true
-					if identity.Namespace != "" {
-						fromState++
-					}
-				}
-			}
-		}
-		if !resolved {
-			if declared, ok := in.Tools[toolSymbol(identity)]; !ok || declared != identity {
-				var candidate ToolName
-				matches := 0
-				for _, t := range in.Tools {
-					if t.Namespace != "" && t.Name == identity.Name && t.Custom == identity.Custom {
-						candidate, matches = t, matches+1
-					}
-				}
-				switch {
-				case matches == 1:
-					identity = candidate
-					fromDeclarations++
-				case matches > 1:
-					in.warn("namespace of historical tool call %s is ambiguous: several declared tools match", call.ID)
-				}
-			}
-		}
-		native, err := in.registerHistoryTool(identity)
+		native, err := in.registerHistoryTool(h.Tool)
 		if err != nil {
 			return err
 		}
 		call.Name = native
-	}
-	if fromState > 0 {
-		in.warn("filled the missing namespace of %d historical tool call(s) from replay state", fromState)
-	}
-	if fromDeclarations > 0 {
-		in.warn("filled the missing namespace of %d historical tool call(s) from declared tools", fromDeclarations)
 	}
 	return nil
 }
@@ -215,15 +167,12 @@ func (s replayStore) restore(ctx context.Context, in *requestPlan) error {
 				continue
 			}
 			if p.FunctionCall != nil && p.Signature == "" && agyCallID(p.FunctionCall.ID) {
-				record, found := in.toolRecords[p.FunctionCall.ID]
-				if !found {
-					// Calls from stored history were not resolved from client input.
-					err := s.State.Get(ctx, "tool", p.FunctionCall.ID, &record)
-					if err != nil && !errors.Is(err, state.ErrNotFound) {
-						return err
-					}
-					found = err == nil
+				var record SignatureRecord
+				err := s.State.Get(ctx, "tool", p.FunctionCall.ID, &record)
+				if err != nil && !errors.Is(err, state.ErrNotFound) {
+					return err
 				}
+				found := err == nil
 				// The full identity, not the short-hashed name, decides whether a
 				// signature belongs to this call; a mismatch only declines it.
 				identity, known := in.historyTools[p.FunctionCall.Name]

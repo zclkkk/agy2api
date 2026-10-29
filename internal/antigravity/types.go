@@ -83,8 +83,7 @@ type Function struct {
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
 type Tool struct {
-	Functions    []Function      `json:"functionDeclarations,omitempty"`
-	GoogleSearch json.RawMessage `json:"googleSearch,omitempty"`
+	Functions []Function `json:"functionDeclarations,omitempty"`
 }
 type CallingConfig struct {
 	Mode         string   `json:"mode"`
