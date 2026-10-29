@@ -1,8 +1,8 @@
 # agy2api
 
-将一个 Antigravity 账号的 **Gemini 订阅**接入 **OpenAI Responses / Images** 和 **Anthropic Messages** API。
+将 Antigravity 账号的 **Gemini 订阅**接入 **OpenAI Responses / Images** 和 **Anthropic Messages** API。
 
-原生单文件部署，支持流式响应、工具调用、思考回放、多模态输入和上下文压缩。所有接口调用的都是 Gemini 模型。
+原生单文件部署，支持流式响应、工具调用、思考回放、多模态输入和上下文压缩。所有接口调用的都是 Gemini 模型。一个服务可以托管多个账号，每个账号使用自己的 API Key。
 
 ## 安装
 
@@ -23,26 +23,28 @@ CGO_ENABLED=0 go build -trimpath -o agy2api ./cmd/agy2api
 ```sh
 cp config.example.toml config.toml
 ./agy2api login --config config.toml
-./agy2api models --config config.toml
 ./agy2api serve --config config.toml
 ```
 
-登录时打开终端打印的链接，在浏览器完成授权，再将官方页面显示的授权码粘回终端。本机和 SSH 环境使用相同流程。账号需要已能正常使用 Antigravity，凭据之后会自动刷新。
+登录时打开终端打印的链接，在浏览器完成授权，再将官方页面显示的授权码粘回终端。本机和 SSH 环境使用相同流程。账号需要已能正常使用 Antigravity，凭据之后会自动刷新。登录完成后终端显示账号 ID 和 API Key，之后可用 `accounts` 命令再次查看。
 
-默认监听 `127.0.0.1:8080`，数据保存在当前目录的 `data/`。对外提供服务或通过域名反向代理访问时，先在配置中设置 `api_key`。完整选项见[配置参考](docs/configuration.md)。
+要托管多个账号，为每个账号运行一次 `login`，再重启 `serve`。授权链接可以发给账号的使用者，由对方授权后把授权码交回。`logout <账号 ID>` 删除账号，`quota` 查看各账号的额度；详见[配置参考](docs/configuration.md#账号)。
+
+默认监听 `127.0.0.1:8080`，数据保存在当前目录的 `data/`。所有请求都需要 API Key，可以直接对外监听或通过反向代理访问。完整选项见[配置参考](docs/configuration.md)。
 
 ## 模型选择
 
-`models` 命令和 `/v1/models` 列出 Antigravity 自身使用的 Gemini 模型：模型选择器中的模型，上游指定给默认对话、命令和提交信息、搜索等任务的模型，最后是图片生成模型。返回的都是上游的实际模型 ID；`models` 命令还显示各模型的剩余额度和重置时间。列表规则见 [API 与兼容边界](docs/api.md#模型列表)。
+`/v1/models` 列出 API Key 对应账号中 Antigravity 自身使用的 Gemini 模型：模型选择器中的模型，上游指定给默认对话、命令和提交信息、搜索等任务的模型，最后是图片生成模型。返回的都是上游的实际模型 ID；`quota` 命令按账号列出同样的模型及其剩余额度和重置时间。列表规则见 [API 与兼容边界](docs/api.md#模型列表)。
 
 ## 调用
 
-将 `MODEL_ID` 替换为 `models` 命令返回的模型 ID。
+将 `API_KEY` 替换为 `accounts` 命令显示的 Key，`MODEL_ID` 替换为 `quota` 命令或 `/v1/models` 返回的模型 ID。
 
 OpenAI Responses：
 
 ```sh
 curl -N http://127.0.0.1:8080/v1/responses \
+  -H 'Authorization: Bearer API_KEY' \
   -H 'Content-Type: application/json' \
   -d '{"model":"MODEL_ID","input":"你好","stream":true}'
 ```
@@ -51,14 +53,13 @@ Anthropic Messages：
 
 ```sh
 curl -N http://127.0.0.1:8080/v1/messages \
+  -H 'x-api-key: API_KEY' \
   -H 'Content-Type: application/json' \
   -H 'anthropic-version: 2023-06-01' \
   -d '{"model":"MODEL_ID","max_tokens":1024,"messages":[{"role":"user","content":"你好"}],"stream":true}'
 ```
 
-设置了 `api_key` 时，补充 `Authorization: Bearer <api_key>` 请求头；Messages 也接受 `x-api-key`。
-
-接入客户端时，选择对应的 API 格式：Responses 客户端的 Base URL 通常填写 `http://127.0.0.1:8080/v1`，Anthropic SDK 的 Base URL 填写 `http://127.0.0.1:8080`。模型使用服务返回的 Gemini ID。
+接入客户端时，选择对应的 API 格式，API Key 填写账号的 Key：Responses 客户端的 Base URL 通常填写 `http://127.0.0.1:8080/v1`，Anthropic SDK 的 Base URL 填写 `http://127.0.0.1:8080`。模型使用服务返回的 Gemini ID。
 
 ## 支持范围
 
@@ -70,7 +71,7 @@ Codex 和 Claude Code 的日常工作流承诺可用，由真实账号验证覆�
 - 图片、PDF、音视频文件输入。
 - 独立 Images API 的图片生成与编辑，支持文件上传和 Base64 返回。
 
-项目仅面向单账号，不实现 Responses / Messages 的全集：不提供网页搜索等托管工具，也不提供 Chat Completions、Files、Batch 等平台服务。与标准协议的差异和 Images 的参数范围见 [API 与兼容边界](docs/api.md)。
+每个账号独立使用自己的额度，服务不会在账号之间分配请求或切换。项目不实现 Responses / Messages 的全集：不提供网页搜索等托管工具，也不提供 Chat Completions、Files、Batch 等平台服务。与标准协议的差异和 Images 的参数范围见 [API 与兼容边界](docs/api.md)。
 
 ## 更多文档
 
