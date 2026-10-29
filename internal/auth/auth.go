@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sync"
@@ -32,6 +33,42 @@ func OAuthConfig() oauth2.Config {
 type Credentials struct {
 	Token     oauth2.Token `json:"token"`
 	ProjectID string       `json:"project_id"`
+}
+
+// UserInfoURL returns the signed-in Google account; the login scopes include
+// its email and profile.
+const UserInfoURL = "https://www.googleapis.com/oauth2/v2/userinfo"
+
+// User is the Google account behind a login. ID is stable for the account;
+// Email and Name are for display.
+type User struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
+func FetchUser(ctx context.Context, client *http.Client, accessToken string) (User, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, UserInfoURL, nil)
+	if err != nil {
+		return User{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	res, err := client.Do(req)
+	if err != nil {
+		return User{}, errors.New("could not read the Google account; check connectivity and run agy2api login again")
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return User{}, fmt.Errorf("Google account lookup failed with HTTP %d", res.StatusCode)
+	}
+	var user User
+	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&user); err != nil || user.ID == "" || user.Email == "" {
+		return User{}, errors.New("Google did not return the account ID and email")
+	}
+	return user, nil
 }
 
 func Save(path string, c Credentials) error {

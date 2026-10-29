@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -98,5 +100,38 @@ func TestInvalidateForcesRefreshOnlyForCurrentToken(t *testing.T) {
 	m.Invalidate("valid")
 	if token, err := m.AccessToken(context.Background()); err != nil || token != "next-access" || calls.Load() != 1 {
 		t.Fatalf("%q %v calls=%d", token, err, calls.Load())
+	}
+}
+
+type userTransport func(*http.Request) (*http.Response, error)
+
+func (f userTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestFetchUserRequiresIDAndEmail(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		body   string
+		want   User
+	}{
+		{200, `{"id":"104","email":"a@example.com","name":"Alice","picture":"https://example.com/p"}`, User{ID: "104", Email: "a@example.com", Name: "Alice"}},
+		{200, `{"id":"104","email":"a@example.com"}`, User{ID: "104", Email: "a@example.com"}},
+		{200, `{"email":"a@example.com"}`, User{}},
+		{200, `{"id":"104"}`, User{}},
+		{200, `not json`, User{}},
+		{401, `{"error":"invalid_token"}`, User{}},
+	} {
+		client := &http.Client{Transport: userTransport(func(r *http.Request) (*http.Response, error) {
+			if r.URL.String() != UserInfoURL || r.Header.Get("Authorization") != "Bearer access" {
+				t.Errorf("unexpected request: %s", r.URL)
+			}
+			return &http.Response{StatusCode: tc.status, Body: io.NopCloser(strings.NewReader(tc.body)), Request: r}, nil
+		})}
+		user, err := FetchUser(context.Background(), client, "access")
+		if (err == nil) != (tc.want.ID != "") || user != tc.want {
+			t.Fatalf("%s: user=%+v err=%v", tc.body, user, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "access") {
+			t.Fatal("error echoes the access token")
+		}
 	}
 }
