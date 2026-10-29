@@ -204,7 +204,6 @@ class Live:
                 self.process.wait()
         self.log.close()
         self.tmp.cleanup()
-        self.tmp.cleanup()
 
     def write_report(self):
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
