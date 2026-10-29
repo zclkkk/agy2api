@@ -388,7 +388,7 @@ class Live:
             "tool result was not used"
         )
         signed_tools = 0
-        with sqlite3.connect(self.root / "data" / "state.db") as db:
+        with sqlite3.connect(self.account / "state.db") as db:
             for call in calls:
                 call_id = call.call_id if proto == "responses" else call.id
                 row = db.execute(
@@ -464,7 +464,7 @@ class Live:
             assert call.input.strip() == "ok"
         else:
             assert json.loads(call.arguments) == {"value": "ok"}
-        with sqlite3.connect(self.root / "data" / "state.db") as db:
+        with sqlite3.connect(self.account / "state.db") as db:
             row = db.execute(
                 "SELECT data FROM entries WHERE kind='tool' AND id=?", (call.call_id,)
             ).fetchone()
@@ -1462,7 +1462,7 @@ class Live:
         # Losing state.db drops every replay record and the sealing key.
         self.process.terminate()
         self.process.wait(timeout=10)
-        (self.root / "data" / "state.db").unlink()
+        (self.account / "state.db").unlink()
         self.start()
         for model, (tools, messages) in turns.items():
             r = self.a.messages.create(
