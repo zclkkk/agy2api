@@ -39,7 +39,7 @@ python tests/live_validate.py --config config.toml --account <账号 ID> --only 
 
 模型取自账号的模型列表：每个对话模型各跑一次基本请求，协议功能场景只用一个模型，默认是列表中的第一个，可用 `--model` 指定。不显示思考内容的模型会让思考相关场景记为 `partial`；需要完整覆盖时，指定一个会返回可见思考的模型。
 
-报告默认写入 `.cache/validation/live-report.json`，可通过 `--report` 指定其他位置。`fail` 会使脚本非零退出；上游阻挡和覆盖受限单独记录。
+报告默认写入 `.cache/validation/live-report.json`，可通过 `--report` 指定其他位置。`fail` 会使脚本非零退出；上游阻挡、覆盖受限，以及账号缺少场景所需模型（如图片模型）时的 `skipped` 单独记录。
 
 每个行为只在能观察到它的最低一层测试一次：
 

@@ -33,6 +33,10 @@ class PartialCoverage(Exception):
     """A supported operation with a verified protocol-information limitation."""
 
 
+class Unavailable(Exception):
+    """The account lacks what a case needs, such as an image model."""
+
+
 def ungroup_numbers(text):
     """Accept plain and LaTeX thousands separators in arithmetic checks."""
     return text.replace("{,}", "").replace(r"\,", "").replace(",", "")
@@ -85,6 +89,10 @@ def source_account(accounts, chosen):
 
 
 class Live:
+    """A verification service on a copy of one account. Construction only
+    prepares files; entering the context starts the service and discovers its
+    models, and leaving it always stops the service and removes the copy."""
+
     def __init__(self, config, binary, report, account=None, model=None):
         self.source = read_config(config)
         source_data = Path(
@@ -120,21 +128,46 @@ class Live:
         self.results = []
         self.lock = threading.Lock()
         self.started = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        self.start()
+        self.requested_model = model
         self.o = openai.OpenAI(
             api_key=self.key, base_url=self.base + "/v1", max_retries=0, timeout=120
         )
         self.a = anthropic.Anthropic(
             api_key=self.key, base_url=self.base, max_retries=0, timeout=120
         )
-        # Models come from the account's own listing: the Anthropic format lists
-        # the conversation models, the OpenAI format adds the image models.
-        self.models = [m.id for m in self.a.models.list()]
-        self.images = [m.id for m in self.o.models.list() if m.id not in self.models]
-        assert len(self.models) >= 2 and self.images, "the listing lacks models"
-        self.model = model or self.models[0]
-        self.other = next(m for m in self.models if m != self.model)
-        self.image_model = self.images[0]
+
+    def __enter__(self):
+        try:
+            self.start()
+            # Models come from the account's own listing: the Anthropic format
+            # lists the conversation models, the OpenAI format adds image models.
+            self.models = [m.id for m in self.a.models.list()]
+            if not self.models:
+                raise RuntimeError("the account lists no conversation models")
+            self.images = [
+                m.id for m in self.o.models.list() if m.id not in self.models
+            ]
+            self.model = self.requested_model or self.models[0]
+            self.other = next((m for m in self.models if m != self.model), None)
+            self.image_model = next(iter(self.images), None)
+        except BaseException:
+            self.close()
+            raise
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def requiring(self, need, fn):
+        """A case that runs only when the account offers what it needs."""
+        wanted = {"other": "second conversation model", "image_model": "image model"}
+
+        def case():
+            if getattr(self, need) is None:
+                raise Unavailable(f"the account lists no {wanted[need]}")
+            return fn()
+
+        return case
 
     def start(self):
         self.process = subprocess.Popen(
@@ -162,7 +195,7 @@ class Live:
     def close(self):
         self.o.close()
         self.a.close()
-        if self.process:
+        if self.process and self.process.poll() is None:
             self.process.terminate()
             try:
                 self.process.wait(timeout=10)
@@ -170,6 +203,7 @@ class Live:
                 self.process.kill()
                 self.process.wait()
         self.log.close()
+        self.tmp.cleanup()
         self.tmp.cleanup()
 
     def write_report(self):
@@ -204,6 +238,8 @@ class Live:
             status = (
                 "partial"
                 if isinstance(error, PartialCoverage)
+                else "skipped"
+                if isinstance(error, Unavailable)
                 else (
                     "blocked"
                     if any(
@@ -982,7 +1018,7 @@ class Live:
         else:
             r = self.request(
                 proto,
-                self.other,
+                self.model,
                 prompt,
                 tools=[{"name": "inspect", "input_schema": schema}],
                 tool_choice={"type": "tool", "name": "inspect"},
@@ -1608,8 +1644,7 @@ def main():
         "--model", help="model for the feature cases; the first listed by default"
     )
     args = parser.parse_args()
-    suite = Live(args.config, args.binary, args.report, args.account, args.model)
-    try:
+    with Live(args.config, args.binary, args.report, args.account, args.model) as suite:
         model = suite.model
         # Every listed conversation model answers.
         cases = [
@@ -1649,14 +1684,17 @@ def main():
             ("media/https_image", suite.remote_image),
             ("media/audio_file", lambda: suite.av_file("audio")),
             ("media/video_file", lambda: suite.av_file("video")),
-            ("images/generate", suite.images_generate),
-            ("images/edit", suite.images_edit),
-            ("images/validation", suite.images_validation),
+            ("images/generate", suite.requiring("image_model", suite.images_generate)),
+            ("images/edit", suite.requiring("image_model", suite.images_edit)),
+            (
+                "images/validation",
+                suite.requiring("image_model", suite.images_validation),
+            ),
             ("http/cancellation", suite.cancellation),
             ("http/negative", suite.negative),
             ("compat/claude_code", lambda: suite.claude_code_shape(model)),
             ("compat/codex", lambda: suite.codex_shape(model)),
-            ("compat/model_switch", suite.model_switch),
+            ("compat/model_switch", suite.requiring("other", suite.model_switch)),
             ("compat/trailing_reasoning", suite.trailing_reasoning),
             ("compaction/trigger", lambda: suite.compaction(model, endpoint=False)),
             ("compaction/endpoint", lambda: suite.compaction(model, endpoint=True)),
@@ -1689,7 +1727,7 @@ def main():
                 future.result()
         for name, fn in [
             ("state/restart", suite.persistence),
-            ("state/lost_state", suite.lost_state),
+            ("state/lost_state", suite.requiring("other", suite.lost_state)),
             ("auth/refresh", suite.refresh),
             ("http/concurrency", suite.concurrency),
         ]:
@@ -1700,6 +1738,7 @@ def main():
                 {
                     "passed": sum(r["status"] == "pass" for r in suite.results),
                     "partial": sum(r["status"] == "partial" for r in suite.results),
+                    "skipped": sum(r["status"] == "skipped" for r in suite.results),
                     "blocked": sum(r["status"] == "blocked" for r in suite.results),
                     "failed": sum(r["status"] == "fail" for r in suite.results),
                     "report": str(args.report),
@@ -1708,8 +1747,6 @@ def main():
             flush=True,
         )
         return 1 if any(r["status"] == "fail" for r in suite.results) else 0
-    finally:
-        suite.close()
 
 
 if __name__ == "__main__":
