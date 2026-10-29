@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 )
 
+// Write replaces path with data. The directory must exist: a write never
+// recreates a directory that was removed, such as an account deleted while
+// the service still refreshes its token.
 func Write(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return err
-	}
 	f, err := os.CreateTemp(dir, ".agy2api-*")
 	if err != nil {
 		return err

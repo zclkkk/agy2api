@@ -195,6 +195,11 @@ func writeInfo(dir string, info Info) error {
 
 // Remove deletes an account's directory with its credentials, key and state.
 // A damaged account can be removed too; its Info is then empty but for ID.
+//
+// The directory is first renamed to a dot entry, which List skips, so the
+// account is gone at once and a deletion that fails partway leaves nothing
+// that stops the service from starting. A running service still writes by
+// the old path, which no longer exists.
 func Remove(dataDir, id string) (Account, error) {
 	if !ValidID(id) {
 		return Account{}, fmt.Errorf("invalid account ID %q; run agy2api accounts to list them", id)
@@ -209,8 +214,16 @@ func Remove(dataDir, id string) (Account, error) {
 	if err != nil {
 		a = Account{Info: Info{ID: id}, Dir: dir}
 	}
-	if err := os.RemoveAll(dir); err != nil {
+	suffix := make([]byte, 4)
+	if _, err := rand.Read(suffix); err != nil {
 		return Account{}, err
+	}
+	removed := filepath.Join(root(dataDir), ".removed-"+id+"-"+hex.EncodeToString(suffix))
+	if err := os.Rename(dir, removed); err != nil {
+		return Account{}, fmt.Errorf("remove account %s: %w", id, err)
+	}
+	if err := os.RemoveAll(removed); err != nil {
+		return a, fmt.Errorf("account %s is removed, but deleting its data failed; delete %s: %w", id, removed, err)
 	}
 	return a, nil
 }

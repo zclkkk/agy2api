@@ -1,7 +1,10 @@
 package account
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,8 +140,11 @@ func TestListOrderAndDamage(t *testing.T) {
 		}
 		ids = append(ids, a.ID)
 	}
-	if err := os.Mkdir(filepath.Join(dataDir, "accounts", ".login-stale"), 0700); err != nil {
-		t.Fatal(err)
+	// Unfinished logins and removals leave dot entries, which are skipped.
+	for _, name := range []string{".login-stale", ".removed-" + ids[0] + "-0a1b2c3d"} {
+		if err := os.Mkdir(filepath.Join(dataDir, "accounts", name), 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	accounts, err := List(dataDir)
 	if err != nil || len(accounts) != 2 || accounts[0].ID != ids[0] || accounts[1].ID != ids[1] {
@@ -213,7 +219,66 @@ func TestRemove(t *testing.T) {
 	if err != nil || removed.ID != a.ID {
 		t.Fatalf("remove %+v err %v", removed, err)
 	}
+	if entries, _ := os.ReadDir(filepath.Join(dataDir, "accounts")); len(entries) != 0 {
+		t.Fatalf("account data remains: %v", entries)
+	}
+}
+
+// A deletion that fails partway leaves only an entry that List skips, so the
+// service still starts.
+func TestFailedDeletionDoesNotBlockStartup(t *testing.T) {
+	dataDir := t.TempDir()
+	a, _, err := Login(dataDir, auth.User{ID: "104", Email: "a@example.com"}, creds("p", "r"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stuck := filepath.Join(a.Dir, "stuck")
+	if err := os.MkdirAll(filepath.Join(stuck, "inner"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stuck, 0500); err != nil { // its entries cannot be removed
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		filepath.WalkDir(dataDir, func(path string, _ os.DirEntry, _ error) error { return os.Chmod(path, 0700) })
+	})
+	if _, err := Remove(dataDir, a.ID); err == nil || !strings.Contains(err.Error(), "deleting its data failed") {
+		t.Fatalf("partial deletion not reported: %v", err)
+	}
+	if accounts, err := List(dataDir); err != nil || len(accounts) != 0 {
+		t.Fatalf("a partial deletion blocks startup: %v %v", accounts, err)
+	}
+}
+
+type refreshTransport struct{}
+
+func (refreshTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}},
+		Body: io.NopCloser(strings.NewReader(`{"access_token":"fresh","expires_in":3600,"token_type":"Bearer"}`)), Request: r}, nil
+}
+
+// A service keeps refreshing the token of an account it loaded. Logging the
+// account out meanwhile must not leave a directory that stops the next start.
+func TestLogoutWhileTheServiceRuns(t *testing.T) {
+	dataDir := t.TempDir()
+	a, _, err := Login(dataDir, auth.User{ID: "104", Email: "a@example.com"}, creds("p", "r"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serving, err := auth.Load(a.CredentialsPath(), &http.Client{Transport: refreshTransport{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Remove(dataDir, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if token, err := serving.AccessToken(context.Background()); err != nil || token != "fresh" {
+		t.Fatalf("the running service lost the account: %q %v", token, err)
+	}
+	if accounts, err := List(dataDir); err != nil || len(accounts) != 0 {
+		t.Fatalf("after logout: %v %v", accounts, err)
+	}
 	if _, err := os.Stat(a.Dir); !os.IsNotExist(err) {
-		t.Fatal("account directory remains")
+		t.Fatal("the account directory was recreated")
 	}
 }

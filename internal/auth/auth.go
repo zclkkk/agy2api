@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"sync"
@@ -91,18 +92,30 @@ type Manager struct {
 }
 
 func Load(path string, client *http.Client) (*Manager, error) {
+	creds, err := read(path)
+	if err != nil {
+		return nil, err
+	}
+	return &Manager{path: path, creds: creds, client: client, config: OAuthConfig()}, nil
+}
+
+func read(path string) (Credentials, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read credentials (run agy2api login first): %w", err)
+		return Credentials{}, fmt.Errorf("read credentials (run agy2api login first): %w", err)
 	}
 	var creds Credentials
 	if err := json.Unmarshal(data, &creds); err != nil {
-		return nil, fmt.Errorf("decode credentials: %w", err)
+		return Credentials{}, fmt.Errorf("decode credentials: %w", err)
 	}
 	if creds.Token.RefreshToken == "" || creds.ProjectID == "" {
-		return nil, errors.New("credentials are incomplete; run agy2api login")
+		return Credentials{}, errors.New("credentials are incomplete; run agy2api login")
 	}
-	return &Manager{path: path, creds: creds, client: client, config: OAuthConfig()}, nil
+	return creds, nil
+}
+
+func valid(t oauth2.Token) bool {
+	return t.AccessToken != "" && !t.Expiry.IsZero() && time.Until(t.Expiry) > time.Minute
 }
 
 func (m *Manager) ProjectID() string { m.mu.Lock(); defer m.mu.Unlock(); return m.creds.ProjectID }
@@ -117,11 +130,25 @@ func (m *Manager) Invalidate(token string) {
 	}
 }
 
+// AccessToken returns a valid access token, refreshing it when needed.
+//
+// The credentials file is the authority and the manager's copy a cache: the
+// file can change while the service runs, since login and logout do not wait
+// for it. Before a refresh the manager rereads the file and adopts credentials
+// a later login wrote, and it writes the refreshed token back only while the
+// file still exists. An account removed while it is served keeps working from
+// memory until the service restarts, and its directory is never recreated.
 func (m *Manager) AccessToken(ctx context.Context) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.creds.Token.AccessToken != "" && !m.creds.Token.Expiry.IsZero() && time.Until(m.creds.Token.Expiry) > time.Minute {
+	if valid(m.creds.Token) {
 		return m.creds.Token.AccessToken, nil
+	}
+	if stored, err := read(m.path); err == nil && stored.Token.RefreshToken != m.creds.Token.RefreshToken {
+		m.creds = stored
+		if valid(m.creds.Token) {
+			return m.creds.Token.AccessToken, nil
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -138,7 +165,9 @@ func (m *Manager) AccessToken(ctx context.Context) (string, error) {
 	}
 	next := m.creds
 	next.Token = *token
-	if err := Save(m.path, next); err != nil {
+	// The directory of a removed account is gone: the write fails on it and
+	// is skipped, without recreating it.
+	if err := Save(m.path, next); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("persist refreshed token: %w", err)
 	}
 	m.creds = next

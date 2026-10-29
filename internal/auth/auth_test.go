@@ -135,3 +135,87 @@ func TestFetchUserRequiresIDAndEmail(t *testing.T) {
 		}
 	}
 }
+
+// tokenServer refreshes any token and reports the refresh token it received.
+func tokenServer(t *testing.T, used *[]string) *httptest.Server {
+	t.Helper()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		*used = append(*used, r.Form.Get("refresh_token"))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"refreshed","expires_in":3600,"token_type":"Bearer"}`)
+	}))
+	t.Cleanup(up.Close)
+	return up
+}
+
+func expired(refresh string) Credentials {
+	return Credentials{ProjectID: "project", Token: oauth2.Token{AccessToken: "old", RefreshToken: refresh, Expiry: time.Now().Add(-time.Hour)}}
+}
+
+// A login while the service runs replaces the credentials file; the service
+// uses the new credentials instead of overwriting them with its own.
+func TestRefreshAdoptsCredentialsALaterLoginWrote(t *testing.T) {
+	var used []string
+	up := tokenServer(t, &used)
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	if err := Save(path, expired("refresh-one")); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Load(path, up.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.config.Endpoint.TokenURL = up.URL
+	if err := Save(path, expired("refresh-two")); err != nil {
+		t.Fatal(err)
+	}
+	if token, err := m.AccessToken(context.Background()); err != nil || token != "refreshed" {
+		t.Fatalf("%q %v", token, err)
+	}
+	saved, err := read(path)
+	if err != nil || len(used) != 1 || used[0] != "refresh-two" || saved.Token.RefreshToken != "refresh-two" || saved.Token.AccessToken != "refreshed" {
+		t.Fatalf("refreshed with %v, saved %+v (%v)", used, saved.Token, err)
+	}
+	// A login whose access token is still valid needs no refresh at all.
+	fresh := expired("refresh-three")
+	fresh.Token.AccessToken, fresh.Token.Expiry = "from-login", time.Now().Add(time.Hour)
+	if err := Save(path, fresh); err != nil {
+		t.Fatal(err)
+	}
+	m.Invalidate("refreshed")
+	if token, err := m.AccessToken(context.Background()); err != nil || token != "from-login" || len(used) != 1 {
+		t.Fatalf("%q %v, refreshes %v", token, err, used)
+	}
+}
+
+// An account removed while the service runs keeps working from memory, and
+// the refresh does not bring its directory back.
+func TestRefreshOfARemovedAccountDoesNotRecreateIt(t *testing.T) {
+	var used []string
+	up := tokenServer(t, &used)
+	dir := filepath.Join(t.TempDir(), "account")
+	if err := os.Mkdir(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "credentials.json")
+	if err := Save(path, expired("refresh")); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Load(path, up.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.config.Endpoint.TokenURL = up.URL
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if token, err := m.AccessToken(context.Background()); err != nil || token != "refreshed" || len(used) != 1 {
+		t.Fatalf("%q %v, refreshes %v", token, err, used)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("the removed account directory was recreated")
+	}
+}
