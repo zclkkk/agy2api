@@ -36,7 +36,7 @@ func TestConcurrentRefreshPersistsRotatedTokenOnce(t *testing.T) {
 	if err := Save(path, Credentials{ProjectID: "project", Token: oauth2.Token{AccessToken: "expired", RefreshToken: "refresh-old", Expiry: time.Now().Add(-time.Hour)}}); err != nil {
 		t.Fatal(err)
 	}
-	m, err := Load(path, up.Client())
+	m, err := Load(path, up.Client(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestInvalidateForcesRefreshOnlyForCurrentToken(t *testing.T) {
 	if err := Save(path, Credentials{ProjectID: "project", Token: oauth2.Token{AccessToken: "valid", RefreshToken: "refresh", Expiry: time.Now().Add(time.Hour)}}); err != nil {
 		t.Fatal(err)
 	}
-	m, err := Load(path, up.Client())
+	m, err := Load(path, up.Client(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestRefreshAdoptsCredentialsALaterLoginWrote(t *testing.T) {
 	if err := Save(path, expired("refresh-one")); err != nil {
 		t.Fatal(err)
 	}
-	m, err := Load(path, up.Client())
+	m, err := Load(path, up.Client(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestRefreshAdoptsCredentialsALaterLoginWrote(t *testing.T) {
 	if token, err := m.AccessToken(context.Background()); err != nil || token != "refreshed" {
 		t.Fatalf("%q %v", token, err)
 	}
-	saved, err := read(path)
+	saved, err := Read(path)
 	if err != nil || len(used) != 1 || used[0] != "refresh-two" || saved.Token.RefreshToken != "refresh-two" || saved.Token.AccessToken != "refreshed" {
 		t.Fatalf("refreshed with %v, saved %+v (%v)", used, saved.Token, err)
 	}
@@ -204,7 +204,7 @@ func TestRefreshOfARemovedAccountDoesNotRecreateIt(t *testing.T) {
 	if err := Save(path, expired("refresh")); err != nil {
 		t.Fatal(err)
 	}
-	m, err := Load(path, up.Client())
+	m, err := Load(path, up.Client(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,5 +217,45 @@ func TestRefreshOfARemovedAccountDoesNotRecreateIt(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatal("the removed account directory was recreated")
+	}
+}
+
+// A login that replaces the credentials while a refresh is in flight wins:
+// the refreshed token is used once, but not written over the login's.
+func TestALoginDuringTheRefreshWins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials.json")
+	if err := Save(path, expired("refresh-old")); err != nil {
+		t.Fatal(err)
+	}
+	var used []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
+		}
+		used = append(used, r.Form.Get("refresh_token"))
+		if len(used) == 1 {
+			// The login lands between the manager's read and its write-back.
+			if err := Save(path, expired("refresh-login")); err != nil {
+				t.Error(err)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"refreshed","expires_in":3600,"token_type":"Bearer"}`)
+	}))
+	defer up.Close()
+	m, err := Load(path, up.Client(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.config.Endpoint.TokenURL = up.URL
+	if token, err := m.AccessToken(context.Background()); err != nil || token != "refreshed" {
+		t.Fatalf("%q %v", token, err)
+	}
+	if saved, err := Read(path); err != nil || saved.Token.RefreshToken != "refresh-login" {
+		t.Fatalf("the login's credentials were overwritten: %+v %v", saved.Token, err)
+	}
+	m.Invalidate("refreshed")
+	if _, err := m.AccessToken(context.Background()); err != nil || len(used) != 2 || used[1] != "refresh-login" {
+		t.Fatalf("the next refresh used %v: %v", used, err)
 	}
 }

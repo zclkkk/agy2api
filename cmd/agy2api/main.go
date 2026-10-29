@@ -142,7 +142,7 @@ func run(ctx context.Context, args []string) error {
 
 // upstreamFor is the Antigravity client that acts as the account.
 func upstreamFor(a account.Account, client *http.Client, agent *ag.UserAgent) (*ag.Client, error) {
-	manager, err := auth.Load(a.CredentialsPath(), client)
+	manager, err := auth.Load(a.CredentialsPath(), client, a.Lock())
 	if err != nil {
 		return nil, err
 	}

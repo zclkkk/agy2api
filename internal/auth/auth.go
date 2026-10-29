@@ -83,23 +83,33 @@ func Save(path string, c Credentials) error {
 	return securefile.Write(path, data)
 }
 
+// Lock runs fn while holding the lock that every change to a credentials file
+// takes, across processes. fn does only local file work.
+type Lock func(fn func() error) error
+
 type Manager struct {
 	mu     sync.Mutex
 	path   string
+	lock   Lock
 	creds  Credentials
 	client *http.Client
 	config oauth2.Config
 }
 
-func Load(path string, client *http.Client) (*Manager, error) {
-	creds, err := read(path)
+// Load manages the credentials at path. Refreshed tokens are written back
+// under lock, which may be nil where no other process changes the file.
+func Load(path string, client *http.Client, lock Lock) (*Manager, error) {
+	creds, err := Read(path)
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{path: path, creds: creds, client: client, config: OAuthConfig()}, nil
+	if lock == nil {
+		lock = func(fn func() error) error { return fn() }
+	}
+	return &Manager{path: path, lock: lock, creds: creds, client: client, config: OAuthConfig()}, nil
 }
 
-func read(path string) (Credentials, error) {
+func Read(path string) (Credentials, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Credentials{}, fmt.Errorf("read credentials (run agy2api login first): %w", err)
@@ -132,19 +142,21 @@ func (m *Manager) Invalidate(token string) {
 
 // AccessToken returns a valid access token, refreshing it when needed.
 //
-// The credentials file is the authority and the manager's copy a cache: the
-// file can change while the service runs, since login and logout do not wait
-// for it. Before a refresh the manager rereads the file and adopts credentials
-// a later login wrote, and it writes the refreshed token back only while the
-// file still exists. An account removed while it is served keeps working from
-// memory until the service restarts, and its directory is never recreated.
+// The credentials file is the authority and the manager's copy a cache: a
+// login can replace the file and a logout remove it while the service runs.
+// Before a refresh the manager adopts credentials a later login wrote. After
+// it, holding the lock, it writes the refreshed token back only if the file
+// still holds the refresh token it refreshed from; if a login replaced it in
+// the meantime, the login's credentials win. An account removed while it is
+// served keeps working from memory until the service restarts, and its
+// directory is never recreated.
 func (m *Manager) AccessToken(ctx context.Context) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if valid(m.creds.Token) {
 		return m.creds.Token.AccessToken, nil
 	}
-	if stored, err := read(m.path); err == nil && stored.Token.RefreshToken != m.creds.Token.RefreshToken {
+	if stored, err := Read(m.path); err == nil && stored.Token.RefreshToken != m.creds.Token.RefreshToken {
 		m.creds = stored
 		if valid(m.creds.Token) {
 			return m.creds.Token.AccessToken, nil
@@ -165,11 +177,21 @@ func (m *Manager) AccessToken(ctx context.Context) (string, error) {
 	}
 	next := m.creds
 	next.Token = *token
-	// The directory of a removed account is gone: the write fails on it and
-	// is skipped, without recreating it.
-	if err := Save(m.path, next); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	err = m.lock(func() error {
+		stored, err := Read(m.path)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // the account was removed: keep the token in memory only
+		}
+		if err == nil && stored.Token.RefreshToken != previous.RefreshToken {
+			next = stored // a login replaced the credentials during the refresh
+			return nil
+		}
+		return Save(m.path, next)
+	})
+	if err != nil {
 		return "", fmt.Errorf("persist refreshed token: %w", err)
 	}
 	m.creds = next
+	// The token just refreshed is valid even when the login's credentials won.
 	return token.AccessToken, nil
 }

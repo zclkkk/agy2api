@@ -174,7 +174,7 @@ func TestLoginCreatesAndRenewsAccounts(t *testing.T) {
 			} else if !strings.Contains(output.String(), "Logged in as alice@example.com (Alice).") || !strings.Contains(output.String(), a.ID) || !strings.Contains(output.String(), a.APIKey) {
 				t.Fatalf("new account output: %s", output.String())
 			}
-			manager, err := auth.Load(a.CredentialsPath(), client)
+			manager, err := auth.Load(a.CredentialsPath(), client, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

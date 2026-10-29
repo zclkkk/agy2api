@@ -3,6 +3,7 @@ module github.com/zclkkk/agy2api
 go 1.27.0
 
 require (
+	github.com/gofrs/flock v0.13.1
 	github.com/pelletier/go-toml/v2 v2.4.3
 	golang.org/x/image v0.47.0
 	golang.org/x/oauth2 v0.37.0

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/zclkkk/agy2api/internal/auth"
 	"golang.org/x/oauth2"
 )
@@ -21,7 +22,7 @@ func creds(project, refresh string) auth.Credentials {
 
 func savedCreds(t *testing.T, a Account) (string, string) {
 	t.Helper()
-	m, err := auth.Load(a.CredentialsPath(), nil)
+	stored, err := auth.Read(a.CredentialsPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +30,23 @@ func savedCreds(t *testing.T, a Account) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return m.ProjectID(), string(token)
+	return stored.ProjectID, string(token)
+}
+
+// leftovers lists the entries in the accounts directory besides the lock.
+func leftovers(t *testing.T, dataDir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(dataDir, "accounts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		if e.Name() != lockFile {
+			names = append(names, e.Name())
+		}
+	}
+	return names
 }
 
 func TestIDs(t *testing.T) {
@@ -119,9 +136,8 @@ func TestFailedLoginLeavesNoAccount(t *testing.T) {
 	if _, _, err := Login(dataDir, auth.User{ID: "104", Email: "a@example.com"}, auth.Credentials{ProjectID: "p"}); err == nil {
 		t.Fatal("incomplete credentials accepted")
 	}
-	entries, err := os.ReadDir(filepath.Join(dataDir, "accounts"))
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("failed login left %v (%v)", entries, err)
+	if left := leftovers(t, dataDir); len(left) != 0 {
+		t.Fatalf("failed login left %v", left)
 	}
 }
 
@@ -219,8 +235,8 @@ func TestRemove(t *testing.T) {
 	if err != nil || removed.ID != a.ID {
 		t.Fatalf("remove %+v err %v", removed, err)
 	}
-	if entries, _ := os.ReadDir(filepath.Join(dataDir, "accounts")); len(entries) != 0 {
-		t.Fatalf("account data remains: %v", entries)
+	if left := leftovers(t, dataDir); len(left) != 0 {
+		t.Fatalf("account data remains: %v", left)
 	}
 }
 
@@ -265,7 +281,7 @@ func TestLogoutWhileTheServiceRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serving, err := auth.Load(a.CredentialsPath(), &http.Client{Transport: refreshTransport{}})
+	serving, err := auth.Load(a.CredentialsPath(), &http.Client{Transport: refreshTransport{}}, a.Lock())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,5 +296,63 @@ func TestLogoutWhileTheServiceRuns(t *testing.T) {
 	}
 	if _, err := os.Stat(a.Dir); !os.IsNotExist(err) {
 		t.Fatal("the account directory was recreated")
+	}
+}
+
+// Another process holding the lock, simulated by a second lock on the same
+// file, holds back login, logout and the write-back of a refreshed token until
+// it lets go.
+func TestAccountChangesWaitForTheLock(t *testing.T) {
+	dataDir := t.TempDir()
+	removed, _, err := Login(dataDir, auth.User{ID: "104", Email: "a@example.com"}, creds("p", "r1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	served, _, err := Login(dataDir, auth.User{ID: "105", Email: "b@example.com"}, creds("p", "r2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := auth.Load(served.CredentialsPath(), &http.Client{Transport: refreshTransport{}}, served.Lock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := flock.New(filepath.Join(dataDir, "accounts", lockFile))
+	if err := other.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	login, logout, refresh := make(chan error, 1), make(chan error, 1), make(chan error, 1)
+	go func() {
+		_, _, err := Login(dataDir, auth.User{ID: "106", Email: "c@example.com"}, creds("p", "r3"))
+		login <- err
+	}()
+	go func() { _, err := Remove(dataDir, removed.ID); logout <- err }()
+	go func() { _, err := manager.AccessToken(context.Background()); refresh <- err }()
+	select {
+	case <-login:
+		t.Fatal("login ran while another process held the lock")
+	case <-logout:
+		t.Fatal("logout ran while another process held the lock")
+	case <-refresh:
+		t.Fatal("the token was written back while another process held the lock")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if accounts, err := List(dataDir); err != nil || len(accounts) != 2 {
+		t.Fatalf("the accounts changed while another process held the lock: %v %v", accounts, err)
+	}
+	if err := other.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+	for name, done := range map[string]chan error{"login": login, "logout": logout, "refresh": refresh} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s did not run after the lock was released", name)
+		}
+	}
+	if stored, err := auth.Read(served.CredentialsPath()); err != nil || stored.Token.AccessToken != "fresh" {
+		t.Fatalf("refreshed token not written back: %+v %v", stored.Token, err)
 	}
 }
