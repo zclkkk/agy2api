@@ -13,7 +13,7 @@ func TestFinishReasonsAndUnknownParts(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	run := func(chunk ag.Chunk) (*Renderer, error) {
-		r := NewRenderer(PreparedRequest{Format: Messages, Model: "gemini-test"}, s, nil)
+		r := NewRenderer(PreparedRequest{requestFields{Format: Messages, Model: "gemini-test"}}, s, nil)
 		if err := r.Add(ctx, chunk); err != nil {
 			return r, err
 		}
@@ -47,7 +47,7 @@ func TestFinishReasonsAndUnknownParts(t *testing.T) {
 func TestMediaOutputIsAnError(t *testing.T) {
 	for _, part := range []ag.Part{{InlineData: &ag.Blob{MIMEType: "image/png", Data: "aGVsbG8="}}, {FileData: &ag.File{URI: "https://example.com/a.png"}}} {
 		var events []string
-		r := NewRenderer(PreparedRequest{Format: Responses, Model: "gemini-test", Stream: true}, testStore(t), func(name string, _ map[string]any) error {
+		r := NewRenderer(PreparedRequest{requestFields{Format: Responses, Model: "gemini-test", Stream: true}}, testStore(t), func(name string, _ map[string]any) error {
 			events = append(events, name)
 			return nil
 		})

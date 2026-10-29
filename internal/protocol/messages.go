@@ -59,7 +59,7 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 	if err != nil {
 		return RequestIntent{}, err
 	}
-	in := RequestIntent{Format: Messages, Model: r.Model, Stream: r.Stream, Request: ag.Request{Generation: ag.Generation{MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP, TopK: r.TopK, Stop: r.Stop}}}
+	in := RequestIntent{requestFields: requestFields{Format: Messages, Model: r.Model, Stream: r.Stream, Request: ag.Request{Generation: ag.Generation{MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP, TopK: r.TopK, Stop: r.Stop}}}}
 	if len(ignored) > 0 {
 		in.warn("ignored request fields: %s", strings.Join(ignored, ", "))
 	}

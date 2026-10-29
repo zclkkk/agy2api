@@ -26,7 +26,7 @@ func applyEffort(in *RequestIntent, value string) {
 
 // plan checks the model, converts thinking intent and rewrites schemas into
 // the subset Antigravity accepts.
-func (in *requestPlan) plan(catalog ag.Catalog) error {
+func (in *RequestIntent) plan(catalog ag.Catalog) error {
 	info, ok := catalog.Info(in.Model)
 	if !ok {
 		return invalid("model", "model is not available; agy2api only serves Gemini models available to this account")

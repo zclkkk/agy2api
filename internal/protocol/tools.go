@@ -37,13 +37,6 @@ func (in *RequestIntent) declare(t ToolName) (string, error) {
 	return native, nil
 }
 
-func (in *RequestIntent) PublicTool(native string) ToolName {
-	if t, ok := in.Tools[native]; ok {
-		return t
-	}
-	return ToolName{Name: native}
-}
-
 var invalidNameChars = regexp.MustCompile(`[^a-zA-Z0-9_.:-]`)
 
 func nativeName(public string) string { return toolSymbol(ToolName{Name: public}) }

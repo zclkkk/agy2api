@@ -35,7 +35,7 @@ func (x *textSignatureIndex) key(text string) string {
 // reply text is recorded, signed or not, so a missing record means the history
 // before it changed or the state expired; such text is sent unsigned and the
 // count is reported.
-func (d replayStore) restoreTextSignatures(ctx context.Context, in *requestPlan) error {
+func (d replayStore) restoreTextSignatures(ctx context.Context, in *RequestIntent) error {
 	index := newTextSignatureIndex(in.Model, in.Request.SessionID, in.Request.System)
 	missing := 0
 	for i := range in.Request.Contents {

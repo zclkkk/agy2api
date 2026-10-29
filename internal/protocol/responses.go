@@ -95,7 +95,7 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 	if err != nil {
 		return RequestIntent{}, err
 	}
-	in := RequestIntent{Format: Responses, Model: r.Model, Stream: r.Stream, Store: r.Store == nil || *r.Store, PreviousID: r.PreviousID, Metadata: r.Metadata, Options: responseOptions(data), ClientSession: r.PromptCacheKey, Request: ag.Request{Generation: ag.Generation{MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP}}}
+	in := RequestIntent{ClientSession: r.PromptCacheKey, requestFields: requestFields{Format: Responses, Model: r.Model, Stream: r.Stream, Store: r.Store == nil || *r.Store, PreviousID: r.PreviousID, Metadata: r.Metadata, Options: responseOptions(data), Request: ag.Request{Generation: ag.Generation{MaxTokens: r.MaxTokens, Temperature: r.Temperature, TopP: r.TopP}}}}
 	if len(ignored) > 0 {
 		in.warn("ignored request fields: %s", strings.Join(ignored, ", "))
 	}

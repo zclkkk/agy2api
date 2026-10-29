@@ -35,7 +35,7 @@ func TestSanitizeClientMarkersPreservesBusinessInstructions(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			original := &ag.Content{Role: "user", Parts: []ag.Part{{Text: tc.input}}}
-			in := RequestIntent{Request: ag.Request{System: original}}
+			in := RequestIntent{requestFields: requestFields{Request: ag.Request{System: original}}}
 			in.SanitizeClientMarkers()
 			if tc.want == "" {
 				if in.Request.System != nil {
@@ -72,12 +72,12 @@ func TestSanitizeClientMarkersPreservesBusinessInstructions(t *testing.T) {
 
 func TestSanitizeClientMarkersAcrossSystemBlocks(t *testing.T) {
 	const identity = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
-	in := RequestIntent{Request: ag.Request{System: &ag.Content{Parts: []ag.Part{
+	in := RequestIntent{requestFields: requestFields{Request: ag.Request{System: &ag.Content{Parts: []ag.Part{
 		{Text: "x-anthropic-billing-header: cc_version=test;"},
 		{Text: "Example follows:\n```text\n"},
 		{Text: identity + "\n"},
 		{Text: "```\n" + identity + "\nBusiness instructions"},
-	}}}}
+	}}}}}
 	in.SanitizeClientMarkers()
 	want := []ag.Part{{Text: "Example follows:\n```text\n"}, {Text: identity + "\n"}, {Text: "```\nBusiness instructions"}}
 	if in.Request.System == nil || !reflect.DeepEqual(in.Request.System.Parts, want) {
@@ -90,7 +90,7 @@ func TestSanitizeClientMarkersAcrossSystemBlocks(t *testing.T) {
 
 func TestSanitizeClientMarkersLeavesHistoryToolsAndSignedDataAlone(t *testing.T) {
 	const marker = "You are a Claude agent, built on Anthropic's Claude Agent SDK."
-	in := RequestIntent{
+	in := RequestIntent{requestFields: requestFields{
 		Model: "gemini-test", Options: map[string]json.RawMessage{"instructions": raw(marker)}, Metadata: raw(map[string]string{"session_id": "session-test"}),
 		OriginalItems: []json.RawMessage{raw(map[string]string{"role": "user", "content": marker})},
 		Request: ag.Request{
@@ -103,7 +103,7 @@ func TestSanitizeClientMarkersLeavesHistoryToolsAndSignedDataAlone(t *testing.T)
 			Tools:     []ag.Tool{{Functions: []ag.Function{{Name: "echo", Description: marker, Parameters: raw(map[string]any{"type": "object", "description": marker})}}}},
 			SessionID: "stable-session",
 		},
-	}
+	}}
 	before := string(raw(in))
 	systemBefore := in.Request.System
 	in.SanitizeClientMarkers()
@@ -115,7 +115,7 @@ func TestSanitizeClientMarkersLeavesHistoryToolsAndSignedDataAlone(t *testing.T)
 		t.Fatal("sanitization changed data outside the system instruction")
 	}
 	for _, part := range []ag.Part{{Text: marker, Thought: true, Signature: "opaque"}, {Text: marker, Signature: "opaque"}} {
-		in := RequestIntent{Request: ag.Request{System: &ag.Content{Parts: []ag.Part{part}}}}
+		in := RequestIntent{requestFields: requestFields{Request: ag.Request{System: &ag.Content{Parts: []ag.Part{part}}}}}
 		in.SanitizeClientMarkers()
 		if !reflect.DeepEqual(in.Request.System.Parts[0], part) || len(in.Warnings) != 0 {
 			t.Fatal("signed system data was edited")

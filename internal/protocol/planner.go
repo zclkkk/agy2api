@@ -28,35 +28,7 @@ const (
 
 // PreparedRequest is a snapshot ready for the upstream. It has no tool-choice
 // intent or deferred replay references and is not mutated by output encoders.
-type PreparedRequest struct {
-	Format        Format
-	Model         string
-	Request       ag.Request
-	Stream, Store bool
-	PreviousID    string
-	OriginalItems []json.RawMessage
-	Metadata      json.RawMessage
-	Options       map[string]json.RawMessage
-	HideThinking  bool
-	SingleCall    bool
-	Obfuscate     bool
-	Tools         map[string]ToolName
-	Compact       string
-	Warnings      []string
-	HistorySystem *ag.Content
-}
-
-func (in PreparedRequest) PublicTool(native string) ToolName {
-	if name, ok := in.Tools[native]; ok {
-		return name
-	}
-	return ToolName{Name: native}
-}
-
-// requestPlan is private working state, separate from decoded client intent.
-type requestPlan struct {
-	RequestIntent
-}
+type PreparedRequest struct{ requestFields }
 
 // Planner is the only entry point from a decoded request to an upstream request.
 // All endpoints share this ordering, including counts and compaction.
@@ -67,14 +39,9 @@ type Planner struct {
 }
 
 func (p Planner) Prepare(ctx context.Context, intent RequestIntent, catalog ag.Catalog, operation Operation, headers http.Header) (PreparedRequest, error) {
-	in := requestPlan{RequestIntent: cloneIntent(intent)}
-	finish := func() PreparedRequest {
-		return PreparedRequest{Format: in.Format, Model: in.Model,
-			Request: in.Request, Stream: in.Stream, Store: in.Store,
-			PreviousID: in.PreviousID, OriginalItems: in.OriginalItems, Metadata: in.Metadata, Options: in.Options,
-			HideThinking: in.HideThinking, SingleCall: in.SingleCall, Obfuscate: in.Obfuscate, Tools: in.Tools, Compact: in.Compact,
-			Warnings: in.Warnings, HistorySystem: in.HistorySystem}
-	}
+	// Planning works on a copy: the caller's intent is never modified.
+	in := cloneIntent(intent)
+	finish := func() PreparedRequest { return PreparedRequest{in.requestFields} }
 	var previous *StoredResponse
 	if in.PreviousID != "" {
 		value, err := LoadResponse(ctx, p.State, in.PreviousID)
@@ -132,7 +99,7 @@ func (p Planner) Prepare(ctx context.Context, intent RequestIntent, catalog ag.C
 	if err := in.finalize(headers); err != nil {
 		return finish(), err
 	}
-	if err := validateIntent(&in.RequestIntent); err != nil {
+	if err := validateIntent(&in); err != nil {
 		return finish(), err
 	}
 	if in.Format == Messages && operation == Generate {

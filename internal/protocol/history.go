@@ -68,7 +68,7 @@ func (in *RequestIntent) deferReplay(token, visible string) {
 	in.references = append(in.references, replayReference{Content: i, Part: len(in.Request.Contents[i].Parts) - 1, Token: token, Visible: visible})
 }
 
-func (in *requestPlan) prependHistory(previous StoredResponse) error {
+func (in *RequestIntent) prependHistory(previous StoredResponse) error {
 	for native, identity := range previous.Tools {
 		name, err := in.registerHistoryTool(identity)
 		if err != nil {
@@ -106,7 +106,7 @@ func (in *requestPlan) prependHistory(previous StoredResponse) error {
 // nameHistoryCalls names each call in the client's input after the tool the
 // client identified. Whether a call's signature can be replayed is checked
 // against its record when the history is restored.
-func (in *requestPlan) nameHistoryCalls() error {
+func (in *RequestIntent) nameHistoryCalls() error {
 	for _, h := range in.historyCalls {
 		call := in.Request.Contents[h.Content].Parts[h.Part].FunctionCall
 		native, err := in.registerHistoryTool(h.Tool)
@@ -118,7 +118,7 @@ func (in *requestPlan) nameHistoryCalls() error {
 	return nil
 }
 
-func (s replayStore) restore(ctx context.Context, in *requestPlan) error {
+func (s replayStore) restore(ctx context.Context, in *RequestIntent) error {
 	refs := map[[2]int]replayReference{}
 	for _, ref := range in.references {
 		refs[[2]int{ref.Content, ref.Part}] = ref

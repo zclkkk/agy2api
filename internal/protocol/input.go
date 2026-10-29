@@ -38,7 +38,11 @@ type ThinkingIntent struct {
 // RequestIntent preserves client intent. Decoding performs no state or network
 // access. Its content uses Gemini's part vocabulary, with opaque replay items
 // kept separately until Planner has selected the actual upstream model.
-type RequestIntent struct {
+// requestFields are what a request carries from decoding through planning to
+// the upstream call and the response encoders. RequestIntent and
+// PreparedRequest share them, so a new field reaches the encoders by being
+// declared here once.
+type requestFields struct {
 	Format        Format
 	Model         string // model requested by the client
 	Request       ag.Request
@@ -46,19 +50,33 @@ type RequestIntent struct {
 	Store         bool
 	PreviousID    string
 	OriginalItems []json.RawMessage
-	Choice        ToolChoice
 	Metadata      json.RawMessage
 	Options       map[string]json.RawMessage
-	Thinking      ThinkingIntent
 	HideThinking  bool                // Messages thinking.display=omitted
 	SingleCall    bool                // parallel tool calls disabled; reported, not enforced
 	Obfuscate     bool                // Responses stream obfuscation, on by default
 	Tools         map[string]ToolName // native function name -> client identity
-	ClientSession string              // session ID found in the request body
 	Compact       string              // "trigger" (compaction_trigger item) or "endpoint" (/v1/responses/compact)
 	Warnings      []string
-	Instructions  *ag.Content // this request's top-level instructions
 	HistorySystem *ag.Content // system/developer messages that belong to history
+}
+
+func (f requestFields) PublicTool(native string) ToolName {
+	if t, ok := f.Tools[native]; ok {
+		return t
+	}
+	return ToolName{Name: native}
+}
+
+// RequestIntent is a decoded request. Besides the shared fields it holds what
+// only planning consumes: the tool choice and thinking intent, and the replay
+// work the decoder deferred.
+type RequestIntent struct {
+	requestFields
+	Choice        ToolChoice
+	Thinking      ThinkingIntent
+	ClientSession string      // session ID found in the request body
+	Instructions  *ag.Content // this request's top-level instructions
 	references    []replayReference
 	historyCalls  []historyCall       // calls in the client's input, as the client identified them
 	historyTools  map[string]ToolName // native name -> identity of tools seen only in history

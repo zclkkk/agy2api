@@ -217,7 +217,7 @@ func TestRequestsEndWithAUserTurn(t *testing.T) {
 		"pending tool call": {[]ag.Content{u, {Role: "model", Parts: []ag.Part{{FunctionCall: &ag.Call{ID: "c", Name: "f"}}}}},
 			[]string{"user:hi", "model:"}},
 	} {
-		in := RequestIntent{Request: ag.Request{Contents: tc.contents}}
+		in := RequestIntent{requestFields: requestFields{Request: ag.Request{Contents: tc.contents}}}
 		in.endWithUser()
 		var got []string
 		for _, c := range in.Request.Contents {
