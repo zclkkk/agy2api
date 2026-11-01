@@ -7,6 +7,9 @@ import (
 
 type messagesEncoder struct{}
 
+// message_start reports the input usage, which arrives with the first output.
+func (messagesEncoder) startsOnAccept() bool { return false }
+
 func (messagesEncoder) start(r *wireState) error {
 	return r.event("message_start", map[string]any{"message": r.message(nil)})
 }

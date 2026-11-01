@@ -263,7 +263,11 @@ func (c *Client) Count(ctx context.Context, request Request) (int, error) {
 
 // Generate consumes the upstream stream in order. Success requires a finish reason;
 // EOF and [DONE] alone are not proof that generation completed.
-func (c *Client) Generate(ctx context.Context, model string, request Request, kind string, emit func(Chunk) error) error {
+// Generate streams the model's output to emit. accepted, if not nil, runs once
+// the upstream has accepted the request, before any output arrives: a long
+// silent wait such as hidden thinking follows it, and errors the upstream
+// reports by HTTP status precede it.
+func (c *Client) Generate(ctx context.Context, model string, request Request, kind string, accepted func() error, emit func(Chunk) error) error {
 	if kind == "" {
 		kind = KindAgent
 	}
@@ -278,6 +282,11 @@ func (c *Client) Generate(ctx context.Context, model string, request Request, ki
 		return err
 	}
 	defer r.Body.Close()
+	if accepted != nil {
+		if err := accepted(); err != nil {
+			return err
+		}
+	}
 	finished := false
 	consume := func(data []byte) error {
 		if bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {

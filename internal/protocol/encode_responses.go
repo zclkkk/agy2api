@@ -8,6 +8,9 @@ import (
 
 type responsesEncoder struct{}
 
+// response.created and response.in_progress describe only the request.
+func (responsesEncoder) startsOnAccept() bool { return true }
+
 func (responsesEncoder) start(r *wireState) error {
 	if err := r.event("response.created", map[string]any{"response": r.response("in_progress", nil)}); err != nil {
 		return err

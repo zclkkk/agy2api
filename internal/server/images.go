@@ -55,7 +55,7 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 				return
 			}
 			collector := protocol.NewImageCollector(in)
-			err := a.Upstream.Generate(r.Context(), in.Model, in.Request, ag.KindImage, collector.Add)
+			err := a.Upstream.Generate(r.Context(), in.Model, in.Request, ag.KindImage, nil, collector.Add)
 			if err != nil {
 				if r.Context().Err() == nil {
 					s.writeError(w, r, err)

@@ -62,7 +62,7 @@ func TestHubIdentityForModelDiscoveryAndGeneration(t *testing.T) {
 				t.Fatal("Hub model missing from catalog")
 			}
 			var answer string
-			if err := client.Generate(context.Background(), "gemini-4-argon-high", Request{}, KindAgent, func(chunk Chunk) error {
+			if err := client.Generate(context.Background(), "gemini-4-argon-high", Request{}, KindAgent, nil, func(chunk Chunk) error {
 				for _, part := range chunk.Parts {
 					answer += part.Text
 				}
@@ -112,7 +112,7 @@ func TestGenerateDoesNotTreatTruncationOrTrailingErrorAsSuccess(t *testing.T) {
 			}))
 			defer up.Close()
 			client := Client{HTTP: up.Client(), BaseURL: up.URL, UserAgent: func() string { return "test" }, Auth: testToken{}}
-			err := client.Generate(context.Background(), "gemini-test", Request{}, KindAgent, func(Chunk) error { return nil })
+			err := client.Generate(context.Background(), "gemini-test", Request{}, KindAgent, nil, func(Chunk) error { return nil })
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("error=%v, wantErr=%v", err, tc.wantErr)
 			}
@@ -244,5 +244,33 @@ func TestGoogleRetryInfoBecomesRetryAfter(t *testing.T) {
 	}
 	if got := upstreamRetryAfter("", []byte(`{"error":{"details":[{"@type":"other","retryDelay":"100s"}]}}`)); got != "" {
 		t.Fatal(got)
+	}
+}
+
+// accepted runs once the upstream accepted the request and before any output;
+// an error status is returned without it.
+func TestGenerateReportsAcceptanceBeforeOutput(t *testing.T) {
+	for _, status := range []int{200, 429} {
+		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if status != 200 {
+				w.WriteHeader(status)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}]}}\n\n")
+		}))
+		client := Client{HTTP: up.Client(), BaseURL: up.URL, Auth: testToken{}}
+		var order []string
+		err := client.Generate(context.Background(), "gemini-test", Request{}, KindAgent,
+			func() error { order = append(order, "accepted"); return nil },
+			func(Chunk) error { order = append(order, "chunk"); return nil })
+		up.Close()
+		want := "accepted,chunk"
+		if status != 200 {
+			want = ""
+		}
+		if got := strings.Join(order, ","); got != want || (err != nil) != (status != 200) {
+			t.Fatalf("status %d: order %q err %v", status, got, err)
+		}
 	}
 }

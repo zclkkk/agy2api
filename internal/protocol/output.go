@@ -83,6 +83,15 @@ func NewRenderer(in PreparedRequest, s *state.Store, emit func(string, map[strin
 	return r
 }
 
+// Accept marks that the upstream accepted the request. Start events that do
+// not depend on the output go out now rather than with the first output.
+func (r *Renderer) Accept() error {
+	if !r.encoder.startsOnAccept() {
+		return nil
+	}
+	return r.start()
+}
+
 func (r *Renderer) start() error {
 	if r.started {
 		return nil
@@ -291,9 +300,9 @@ func (r *Renderer) Finish(ctx context.Context) error {
 	}
 	return r.encoder.finish(&r.wireState, status, stop, r.Result)
 }
+
+// Fail ends a stream with an error event. A Messages stream can fail before
+// message_start, once the upstream accepted; an error event needs none.
 func (r *Renderer) Fail(message string) error {
-	if !r.started {
-		return nil
-	}
 	return r.encoder.fail(&r.wireState, message)
 }

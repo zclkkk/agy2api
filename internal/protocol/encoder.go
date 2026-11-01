@@ -22,6 +22,9 @@ type wireState struct {
 }
 
 type wireEncoder interface {
+	// startsOnAccept reports whether the start events carry nothing the output
+	// determines, so they can go out as soon as the upstream accepts.
+	startsOnAccept() bool
 	start(*wireState) error
 	open(*wireState, *outputBlock) error
 	delta(*wireState, *outputBlock, string) error

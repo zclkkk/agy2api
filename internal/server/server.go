@@ -261,30 +261,51 @@ func (s *Server) counter(format protocol.Format) http.HandlerFunc {
 type sseWriter struct {
 	mu      sync.Mutex
 	w       http.ResponseWriter
-	started bool
+	started bool // the response headers went out
+	events  bool // an event went out
 	closed  bool
 	last    time.Time
+}
+
+// open sends the response headers, so the client sees the stream begin while
+// the model is still silent.
+func (s *sseWriter) open() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.begin()
+}
+
+func (s *sseWriter) begin() error {
+	if s.started {
+		return nil
+	}
+	s.w.Header().Set("Content-Type", "text/event-stream")
+	s.w.Header().Set("Cache-Control", "no-cache")
+	s.w.Header().Set("X-Accel-Buffering", "no")
+	s.w.WriteHeader(200)
+	s.started = true
+	s.last = time.Now()
+	return http.NewResponseController(s.w).Flush()
 }
 
 func (s *sseWriter) send(event string, data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.started {
-		s.w.Header().Set("Content-Type", "text/event-stream")
-		s.w.Header().Set("Cache-Control", "no-cache")
-		s.w.Header().Set("X-Accel-Buffering", "no")
-		s.w.WriteHeader(200)
-		s.started = true
+	if err := s.begin(); err != nil {
+		return err
 	}
 	if _, err := fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", event, data); err != nil {
 		return err
 	}
+	s.events = true
 	s.last = time.Now()
 	return http.NewResponseController(s.w).Flush()
 }
 
-// ping keeps idle streams alive while the model is still working, e.g. while
-// it generates a large tool call that arrives as one upstream part.
+// ping keeps idle streams alive while the model is still working: during
+// hidden thinking before the first output, or while it generates a large tool
+// call that arrives as one upstream part. Messages pings are events, which
+// clients accept only after message_start; before it a comment is sent.
 func (s *sseWriter) ping(messages bool, idle time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -292,7 +313,7 @@ func (s *sseWriter) ping(messages bool, idle time.Duration) {
 		return
 	}
 	frame := ": keep-alive\n\n"
-	if messages {
+	if messages && s.events {
 		frame = "event: ping\ndata: {\"type\":\"ping\"}\n\n"
 	}
 	if _, err := io.WriteString(s.w, frame); err == nil {
@@ -350,7 +371,19 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, format protoco
 	}
 	a := accountOf(r)
 	renderer := protocol.NewRenderer(in, a.State, emit)
-	err := a.Upstream.Generate(r.Context(), in.Model, in.Request, ag.KindAgent, func(chunk ag.Chunk) error {
+	// A stream begins once the upstream accepts, before the first output, so a
+	// client is not left without a response through a long silent wait. Errors
+	// before that keep their HTTP status.
+	var accepted func() error
+	if in.Stream {
+		accepted = func() error {
+			if err := sse.open(); err != nil {
+				return err
+			}
+			return renderer.Accept()
+		}
+	}
+	err := a.Upstream.Generate(r.Context(), in.Model, in.Request, ag.KindAgent, accepted, func(chunk ag.Chunk) error {
 		return renderer.Add(r.Context(), chunk)
 	})
 	if err == nil {
