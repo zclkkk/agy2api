@@ -3,7 +3,7 @@ listen = "127.0.0.1:8080"
 data_dir = "./data"
 
 # Accounts are added with `agy2api login` and kept in data_dir. Every request
-# needs an account's API key; `agy2api accounts` lists them.
+# except /healthz needs an account's API key; `agy2api accounts` lists them.
 
 # Optional overrides; omitted fields use the application's defaults.
 # proxy_url = "http://127.0.0.1:7890"

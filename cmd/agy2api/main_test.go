@@ -109,7 +109,7 @@ func TestServeRejectsUnusableAccounts(t *testing.T) {
 			store.Close()
 			creds, _ := os.ReadFile(a.CredentialsPath())
 			os.WriteFile(a.CredentialsPath(), []byte(strings.Replace(string(creds), "project-104", "project-other", 1)), 0600)
-		}, "another Antigravity account"},
+		}, "another Antigravity project"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dataDir, configPath := testData(t)

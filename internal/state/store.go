@@ -109,7 +109,7 @@ func (s *Store) BindAccount(ctx context.Context, project string) error {
 		return err
 	}
 	if string(existing) != string(fingerprint[:]) {
-		return errors.New("data directory belongs to another Antigravity account; use a different data_dir")
+		return errors.New("state database belongs to another Antigravity project; log the account out, then log in again")
 	}
 	return nil
 }
@@ -213,7 +213,7 @@ func (s *Store) Unseal(scope, token string, value any) error {
 	}
 	data, err = s.aead.Open(nil, data[:s.aead.NonceSize()], data[s.aead.NonceSize():], []byte(scope))
 	if err != nil {
-		return errors.New("reasoning item belongs to another model or instance, or was modified")
+		return errors.New("reasoning item belongs to another account or instance, or was modified")
 	}
 	if err := json.Unmarshal(data, value); err != nil {
 		return fmt.Errorf("decode reasoning item: %w", err)

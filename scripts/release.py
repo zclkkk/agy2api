@@ -173,10 +173,6 @@ def build(version, targets, output):
                     (ROOT / "config.example.toml").read_bytes(),
                     0o644,
                 ),
-                "THIRD_PARTY_NOTICES": (
-                    (ROOT / "THIRD_PARTY_NOTICES").read_bytes(),
-                    0o644,
-                ),
                 "DEPENDENCY_LICENSES.txt": (licenses, 0o644),
                 "RELEASE_NOTES.md": (notes.read_bytes(), 0o644),
                 "BUILD.json": (

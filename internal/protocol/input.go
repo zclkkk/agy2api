@@ -35,9 +35,6 @@ type ThinkingIntent struct {
 	Show   bool // return thought text: Messages thinking enabled, Responses summary requested
 }
 
-// RequestIntent preserves client intent. Decoding performs no state or network
-// access. Its content uses Gemini's part vocabulary, with opaque replay items
-// kept separately until Planner has selected the actual upstream model.
 // requestFields are what a request carries from decoding through planning to
 // the upstream call and the response encoders. RequestIntent and
 // PreparedRequest share them, so a new field reaches the encoders by being
@@ -68,7 +65,10 @@ func (f requestFields) PublicTool(native string) ToolName {
 	return ToolName{Name: native}
 }
 
-// RequestIntent is a decoded request. Besides the shared fields it holds what
+// RequestIntent is a decoded request and preserves client intent. Decoding
+// performs no state or network access. Its content uses Gemini's part
+// vocabulary, with opaque replay items kept separately until Planner has
+// selected the actual upstream model. Besides the shared fields it holds what
 // only planning consumes: the tool choice and thinking intent, and the replay
 // work the decoder deferred.
 type RequestIntent struct {

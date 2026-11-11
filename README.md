@@ -30,7 +30,7 @@ cp config.example.toml config.toml
 
 要托管多个账号，为每个账号运行一次 `login`，再重启 `serve`。授权链接可以发给账号的使用者，由对方授权后把授权码交回。`logout <账号 ID>` 删除账号，`quota` 查看各账号的额度；详见[配置参考](docs/configuration.md#账号)。
 
-默认监听 `127.0.0.1:8080`，数据保存在当前目录的 `data/`。所有请求都需要 API Key，可以直接对外监听或通过反向代理访问。完整选项见[配置参考](docs/configuration.md)。
+默认监听 `127.0.0.1:8080`，数据保存在当前目录的 `data/`。除健康检查外，所有请求都需要 API Key，可以直接对外监听或通过反向代理访问。完整选项见[配置参考](docs/configuration.md)。
 
 ## 模型选择
 
@@ -79,4 +79,4 @@ Codex 和 Claude Code 的日常工作流承诺可用，由真实账号验证覆�
 - [API 与兼容边界](docs/api.md)
 - [开发与发布](docs/development.md)
 
-上游协议参考 CLIProxyAPI；agy2api 不依赖 CPA 模块。相关来源和许可见 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)。
+上游协议参考 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)；agy2api 不依赖 CPA 模块。

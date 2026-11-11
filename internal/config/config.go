@@ -65,7 +65,8 @@ func Load(path string) (Config, error) {
 			var decode *toml.DecodeError
 			if errors.As(err, &decode) {
 				row, column := decode.Position()
-				// Do not print the contextual source excerpt: it may contain a key.
+				// Do not print the contextual source excerpt: it may contain
+				// proxy credentials.
 				return c, fmt.Errorf("decode config at line %d, column %d: %w", row, column, err)
 			}
 			return c, fmt.Errorf("decode config: %w", err)

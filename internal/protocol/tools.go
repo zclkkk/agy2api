@@ -80,8 +80,8 @@ func toolSymbol(t ToolName) string {
 }
 
 // historyCall locates a call in the client's input and the identity the client
-// gave it. Clients may omit fields such as the namespace, so the planner
-// completes the identity before naming the call.
+// gave it. The planner registers that identity once stored history has been
+// prepended, so collisions are checked across the whole conversation.
 type historyCall struct {
 	Content, Part int
 	Tool          ToolName

@@ -59,18 +59,20 @@ Responses / Messages 生成请求支持 `stream: true`，以 SSE 返回事件。
 
 Responses 默认 `store: true`，可用 `previous_response_id` 续聊；已保存的响应可以查询、删除，并分页读取输入项。`store: false` 不保存会话历史，但工具回合所需的签名记录仍会保存。
 
-`/v1/responses/compact` 返回 `response.compaction` 对象。也可以在输入中发送 `compaction_trigger`（Codex 使用），在普通响应中获得压缩项。压缩项由实例密钥加密，只能由使用同一数据目录的服务展开；其他实例或服务商签发的压缩项返回 400。
+`/v1/responses/compact` 返回 `response.compaction` 对象。也可以在输入中发送 `compaction_trigger`（Codex 使用），在普通响应中获得压缩项。压缩项由账号的密钥加密，只能由签发它的账号在同一数据目录下展开；其他账号、实例或服务商签发的压缩项返回 400。
 
 ## Images
 
-图片生成使用 JSON；编辑支持 `multipart/form-data` 上传或 JSON 图片引用。`model` 须为图片生成模型，以下 `IMAGE_MODEL_ID` 替换为账号可用的图片模型 ID：
+图片生成使用 JSON；编辑支持 `multipart/form-data` 上传或 JSON 图片引用。`model` 须为图片生成模型，以下 `API_KEY` 替换为账号的 Key，`IMAGE_MODEL_ID` 替换为账号可用的图片模型 ID：
 
 ```sh
 curl http://127.0.0.1:8080/v1/images/generations \
+  -H 'Authorization: Bearer API_KEY' \
   -H 'Content-Type: application/json' \
   -d '{"model":"IMAGE_MODEL_ID","prompt":"白色背景上的红色圆形"}'
 
 curl http://127.0.0.1:8080/v1/images/edits \
+  -H 'Authorization: Bearer API_KEY' \
   -F model=IMAGE_MODEL_ID \
   -F prompt='把圆形改为蓝色' \
   -F image=@input.png
