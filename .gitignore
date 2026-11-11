@@ -3,24 +3,17 @@
 /bin/
 /dist/
 /data/
-/config.json
 /config.toml
 /.cache/
 
 # Local credentials and runtime files, including custom data directories.
 credentials.json
+account.json
 *.db
 *.db-*
 *.log
-*.pid
-.env
-.env.*
-!.env.example
 
-# Generated validation output and local Python environments.
-/tests/live-report*.json
-/docs/**/*validation*.json
-/docs/**/*report*.json
+# Local Python environments and caches.
 __pycache__/
 *.py[cod]
 .venv/
