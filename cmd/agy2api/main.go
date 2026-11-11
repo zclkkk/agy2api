@@ -32,7 +32,7 @@ Commands:
   login     [--config path]       add an account, or renew its credentials
   logout    [--config path] ID    remove an account with its key and state
   accounts  [--config path]       list the accounts and their API keys
-  quota     [--config path]       show each account's models and quota
+  quota     [--config path]       show each account's shared quota windows
   serve     [--config path]       serve every account
   version
 

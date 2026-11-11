@@ -12,6 +12,7 @@ import datetime
 import json
 import os
 import pathlib
+import re
 import socket
 import subprocess
 import tempfile
@@ -42,6 +43,35 @@ class Upstream(BaseHTTPRequestHandler):
     def do_POST(self):
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert self.headers["Authorization"] == "Bearer fixture-access"
+        if self.path == "/v1internal:retrieveUserQuotaSummary":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            second = payload["project"] == "fixture-project-b"
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "groups": [
+                            {
+                                "displayName": "Gemini Models",
+                                "buckets": [
+                                    {
+                                        "bucketId": "gemini-weekly",
+                                        "window": "weekly",
+                                        "remainingFraction": 0.75 if second else 0.25,
+                                    },
+                                    {
+                                        "bucketId": "gemini-5h",
+                                        "window": "5h",
+                                        "remainingFraction": 1 if second else 0.5,
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                ).encode()
+            )
+            return
         if self.path == "/v1internal:fetchAvailableModels":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -256,8 +286,14 @@ def check_accounts(base, cli, ids):
     for section, key in zip(cli("quota").strip().split("\n\n"), keys, strict=True):
         title, header, *rows = section.splitlines()
         assert title.split()[0] == ids[key]
-        assert header.split() == ["MODEL", "QUOTA", "RESETS"]
-        assert [row.split()[0] for row in rows] == catalogs[key]
+        assert header.split() == ["GROUP", "WINDOW", "REMAINING", "STATUS", "RESETS"]
+        weekly, five_hour = (
+            ("25.00%", "50.00%") if key == "fixture-key" else ("75.00%", "100.00%")
+        )
+        assert [re.split(r"\s{2,}", row) for row in rows] == [
+            ["Gemini Models", "weekly", weekly, "available", "-"],
+            ["Gemini Models", "5h", five_hour, "available", "-"],
+        ]
 
 
 def check_responses(client):

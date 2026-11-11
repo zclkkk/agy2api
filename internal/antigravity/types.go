@@ -202,19 +202,10 @@ func (c Catalog) ListedModelIDs() []string {
 	return ids
 }
 
-// ModelInfo is the subset of catalog metadata used to shape requests and to
-// report quota.
+// ModelInfo is the subset of catalog metadata used to shape requests.
 type ModelInfo struct {
-	MinThinkingBudget int    `json:"minThinkingBudget"`
-	Quota             *Quota `json:"quotaInfo"`
-	Image             bool   `json:"-"`
-}
-
-// Quota is the account's remaining share for a model. The upstream omits the
-// fraction once it reaches zero, so an absent fraction means exhausted.
-type Quota struct {
-	Remaining float64 `json:"remainingFraction"`
-	Reset     string  `json:"resetTime"`
+	MinThinkingBudget int  `json:"minThinkingBudget"`
+	Image             bool `json:"-"`
 }
 
 func (c Catalog) Info(id string) (ModelInfo, bool) {

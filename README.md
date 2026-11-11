@@ -34,11 +34,13 @@ cp config.example.toml config.toml
 
 ## 模型选择
 
-`/v1/models` 列出 API Key 对应账号中 Antigravity 自身使用的 Gemini 模型：模型选择器中的模型，上游指定给默认对话、命令和提交信息、搜索等任务的模型，最后是图片生成模型。返回的都是上游的实际模型 ID；`quota` 命令按账号列出同样的模型及其剩余额度和重置时间。列表规则见 [API 与兼容边界](docs/api.md#模型列表)。
+`/v1/models` 列出 API Key 对应账号中 Antigravity 自身使用的 Gemini 模型：模型选择器中的模型，上游指定给默认对话、命令和提交信息、搜索等任务的模型，最后是图片生成模型。返回的都是上游的实际模型 ID。列表规则见 [API 与兼容边界](docs/api.md#模型列表)。
+
+`quota` 使用与官方 `/usage` 相同的额度汇总接口，按账号和模型组分别显示五小时、周剩余额度及重置时间。同组模型共享额度；输出包含上游返回的所有组，包括本服务尚不支持调用的 Claude 和 GPT 模型组。字段说明见[额度查询](docs/configuration.md#额度查询)。
 
 ## 调用
 
-将 `API_KEY` 替换为 `accounts` 命令显示的 Key，`MODEL_ID` 替换为 `quota` 命令或 `/v1/models` 返回的模型 ID。
+将 `API_KEY` 替换为 `accounts` 命令显示的 Key，`MODEL_ID` 替换为 `/v1/models` 返回的模型 ID。
 
 OpenAI Responses：
 
