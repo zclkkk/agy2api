@@ -173,6 +173,7 @@ def build(version, targets, output):
                     (ROOT / "config.example.toml").read_bytes(),
                     0o644,
                 ),
+                "LICENSE": ((ROOT / "LICENSE").read_bytes(), 0o644),
                 "DEPENDENCY_LICENSES.txt": (licenses, 0o644),
                 "RELEASE_NOTES.md": (notes.read_bytes(), 0o644),
                 "BUILD.json": (

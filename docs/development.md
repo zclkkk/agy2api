@@ -66,7 +66,7 @@ python scripts/release.py --version v0.1.0 --target linux/amd64
 
 默认目标为 Linux、macOS 的 amd64/arm64 和 Windows amd64，输出到 `dist/<version>/`。脚本不覆盖已有输出；可用 `--output` 指定其他目录。
 
-每个包包含程序、配置示例、用户文档、发布说明和依赖的许可证声明（`DEPENDENCY_LICENSES.txt`）。`SHA256SUMS` 用于校验资产，`BUILD.json` 和 `manifest.json` 记录版本、目标平台及来源提交。脚本不会创建 tag 或上传 GitHub Release。
+每个包包含程序、配置示例、用户文档、发布说明、项目许可证（`LICENSE`）和依赖的许可证声明（`DEPENDENCY_LICENSES.txt`）。`SHA256SUMS` 用于校验资产，`BUILD.json` 和 `manifest.json` 记录版本、目标平台及来源提交。脚本不会创建 tag 或上传 GitHub Release。
 
 对应版本的发布说明放在 `docs/releases/<version>.md`，只描述用户可见的功能、变更和限制。
 

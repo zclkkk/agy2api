@@ -79,4 +79,8 @@ Codex 和 Claude Code 的日常工作流承诺可用，由真实账号验证覆�
 - [API 与兼容边界](docs/api.md)
 - [开发与发布](docs/development.md)
 
+## 许可证
+
+agy2api 以 [MIT 许可证](LICENSE)发布。发布包中的 `DEPENDENCY_LICENSES.txt` 收录 Go 运行时和所链接依赖的许可证声明。
+
 上游协议参考 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)；agy2api 不依赖 CPA 模块。
