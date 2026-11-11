@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
-	"strconv"
 	"text/tabwriter"
 	"time"
 
@@ -74,7 +72,7 @@ func printQuota(w io.Writer, accounts []account.Account, fetch func(account.Acco
 			fmt.Fprintln(w, "error:", err)
 			continue
 		}
-		if err := printQuotaSummary(w, summary, loc, time.Now()); err != nil {
+		if err := printQuotaSummary(w, summary, loc); err != nil {
 			return err
 		}
 	}
@@ -84,76 +82,35 @@ func printQuota(w io.Writer, accounts []account.Account, fetch func(account.Acco
 	return nil
 }
 
-// printQuotaSummary preserves the upstream group and window order, including
-// groups for models that this bridge does not serve.
-func printQuotaSummary(w io.Writer, summary ag.QuotaSummary, loc *time.Location, now time.Time) error {
+// printQuotaSummary lists every group and window in the upstream's order,
+// including groups for models that this bridge does not serve.
+func printQuotaSummary(w io.Writer, summary ag.QuotaSummary, loc *time.Location) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "GROUP\tWINDOW\tREMAINING\tSTATUS\tRESETS")
+	fmt.Fprintln(tw, "GROUP\tWINDOW\tREMAINING\tRESETS")
 	for _, group := range summary.Groups {
-		name := group.DisplayName
-		if name == "" {
-			name = "-"
-		}
 		for _, bucket := range group.Buckets {
-			window := bucket.Window
-			if window == "" {
-				window = bucket.DisplayName
+			remaining, reset, full := "-", "-", false
+			if f := bucket.RemainingFraction; f != nil {
+				remaining, full = percent(*f), *f == 1
 			}
-			if window == "" {
-				window = bucket.ID
+			// An untouched window reports now+window, which moves with every query.
+			if t, err := time.Parse(time.RFC3339, bucket.ResetTime); err == nil && !full {
+				reset = t.In(loc).Format("2006-01-02 15:04 MST")
 			}
-			if window == "" {
-				window = "-"
-			}
-			remaining, status, reset := quotaDetails(bucket, loc, now)
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", name, window, remaining, status, reset)
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", group.DisplayName, bucket.Window, remaining, reset)
 		}
 	}
 	return tw.Flush()
 }
 
-func quotaDetails(bucket ag.QuotaBucket, loc *time.Location, now time.Time) (remaining, status, reset string) {
-	if bucket.Disabled {
-		return "-", "disabled", "-"
-	}
-	remaining, status, reset = "-", "unknown", "-"
+// percent keeps 0.00% and 100.00% for the upstream's exact zero and one, so
+// rounding never shows a partly used window as exhausted or untouched.
+func percent(fraction float64) string {
 	switch {
-	case bucket.RemainingFraction != nil && bucket.RemainingAmount == nil:
-		fraction := *bucket.RemainingFraction
-		if math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction < 0 || fraction > 1 {
-			return
-		}
-		remaining, status = fmt.Sprintf("%.2f%%", fraction*100), "available"
-		switch {
-		case fraction == 1:
-			// Full buckets may return a moving now+window reset time. Like the
-			// official panel, show availability rather than a pending reset.
-			return
-		case fraction == 0:
-			status = "exhausted"
-		case fraction < 0.0001:
-			remaining = "<0.01%"
-		case fraction > 0.9999:
-			remaining = ">99.99%"
-		}
-	case bucket.RemainingAmount != nil && bucket.RemainingFraction == nil:
-		amount, err := bucket.RemainingAmount.Int64()
-		if err != nil || amount < 0 {
-			return
-		}
-		remaining, status = strconv.FormatInt(amount, 10), "available"
-		if amount == 0 {
-			status = "exhausted"
-		}
-	default:
-		return
+	case fraction > 0 && fraction < 0.0001:
+		return "<0.01%"
+	case fraction > 0.9999 && fraction < 1:
+		return ">99.99%"
 	}
-	if t, err := time.Parse(time.RFC3339, bucket.ResetTime); err == nil {
-		reset = t.In(loc).Format("2006-01-02 15:04 MST")
-		if !t.After(now) {
-			// Do not invent a fresh quota when the upstream reset has passed.
-			status = "reset due"
-		}
-	}
-	return
+	return fmt.Sprintf("%.2f%%", fraction*100)
 }

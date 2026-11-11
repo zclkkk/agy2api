@@ -286,13 +286,13 @@ def check_accounts(base, cli, ids):
     for section, key in zip(cli("quota").strip().split("\n\n"), keys, strict=True):
         title, header, *rows = section.splitlines()
         assert title.split()[0] == ids[key]
-        assert header.split() == ["GROUP", "WINDOW", "REMAINING", "STATUS", "RESETS"]
+        assert header.split() == ["GROUP", "WINDOW", "REMAINING", "RESETS"]
         weekly, five_hour = (
             ("25.00%", "50.00%") if key == "fixture-key" else ("75.00%", "100.00%")
         )
         assert [re.split(r"\s{2,}", row) for row in rows] == [
-            ["Gemini Models", "weekly", weekly, "available", "-"],
-            ["Gemini Models", "5h", five_hour, "available", "-"],
+            ["Gemini Models", "weekly", weekly, "-"],
+            ["Gemini Models", "5h", five_hour, "-"],
         ]
 
 

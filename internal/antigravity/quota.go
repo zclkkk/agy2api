@@ -2,7 +2,6 @@ package antigravity
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 )
@@ -19,16 +18,11 @@ type QuotaGroup struct {
 }
 
 type QuotaBucket struct {
-	ID          string `json:"bucketId"`
-	DisplayName string `json:"displayName"`
-	Window      string `json:"window"`
-	// The upstream uses a oneof: a fraction or an absolute amount. Pointers
-	// preserve explicit zero separately from an absent value. ProtoJSON int64
-	// amounts are strings; json.Number also accepts numeric JSON losslessly.
-	RemainingFraction *float64     `json:"remainingFraction"`
-	RemainingAmount   *json.Number `json:"remainingAmount"`
-	Disabled          bool         `json:"disabled"`
-	ResetTime         string       `json:"resetTime"`
+	Window string `json:"window"`
+	// RemainingFraction is nil when the upstream gives no value, which is not
+	// the same as an explicit zero.
+	RemainingFraction *float64 `json:"remainingFraction"`
+	ResetTime         string   `json:"resetTime"`
 }
 
 func (c *Client) QuotaSummary(ctx context.Context) (QuotaSummary, error) {

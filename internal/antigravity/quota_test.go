@@ -29,8 +29,7 @@ func TestQuotaSummaryReadsIndependentWindowsAndValuePresence(t *testing.T) {
 				{"bucketId":"gemini-weekly","displayName":"Weekly Limit Remaining","window":"weekly","remainingFraction":0.24087813,"resetTime":"2026-11-16T17:46:38Z"},
 				{"bucketId":"gemini-5h","window":"5h","remainingFraction":0.8156261,"resetTime":"2026-11-11T19:46:38Z"}]},
 			{"displayName":"Other models","buckets":[
-				{"remainingFraction":0}, {}, {"remainingFraction":null}, {"disabled":true},
-				{"remainingAmount":"9007199254740993"}, {"remainingAmount":0}]}]}`)
+				{"remainingFraction":0}, {}, {"remainingFraction":null}]}]}`)
 	}))
 	defer up.Close()
 	c := Client{HTTP: up.Client(), BaseURL: up.URL, Auth: testToken{}, UserAgent: func() string { return "antigravity/hub/test" }}
@@ -38,28 +37,20 @@ func TestQuotaSummaryReadsIndependentWindowsAndValuePresence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(summary.Groups) != 2 || len(summary.Groups[0].Buckets) != 2 || len(summary.Groups[1].Buckets) != 6 {
+	if len(summary.Groups) != 2 || len(summary.Groups[0].Buckets) != 2 || len(summary.Groups[1].Buckets) != 3 {
 		t.Fatalf("groups = %+v", summary.Groups)
 	}
 	gemini := summary.Groups[0]
 	weekly, fiveHour := gemini.Buckets[0], gemini.Buckets[1]
-	if gemini.DisplayName != "Gemini Models" || weekly.ID != "gemini-weekly" || weekly.DisplayName != "Weekly Limit Remaining" || weekly.Window != "weekly" || weekly.RemainingFraction == nil || *weekly.RemainingFraction != 0.24087813 || weekly.ResetTime != "2026-11-16T17:46:38Z" {
+	if gemini.DisplayName != "Gemini Models" || weekly.Window != "weekly" || weekly.RemainingFraction == nil || *weekly.RemainingFraction != 0.24087813 || weekly.ResetTime != "2026-11-16T17:46:38Z" {
 		t.Fatalf("weekly = %+v", weekly)
 	}
 	if fiveHour.Window != "5h" || fiveHour.RemainingFraction == nil || *fiveHour.RemainingFraction != 0.8156261 || fiveHour.ResetTime != "2026-11-11T19:46:38Z" {
 		t.Fatalf("five hour = %+v", fiveHour)
 	}
 	b := summary.Groups[1].Buckets
-	if b[0].RemainingFraction == nil || *b[0].RemainingFraction != 0 || b[1].RemainingFraction != nil || b[2].RemainingFraction != nil || !b[3].Disabled {
-		t.Fatalf("zero, missing, null or disabled lost: %+v", b)
-	}
-	for i, want := range []int64{9007199254740993, 0} {
-		if b[i+4].RemainingAmount == nil {
-			t.Fatal("missing amount")
-		}
-		if got, err := b[i+4].RemainingAmount.Int64(); err != nil || got != want {
-			t.Fatalf("amount = %d, %v; want %d", got, err, want)
-		}
+	if b[0].RemainingFraction == nil || *b[0].RemainingFraction != 0 || b[1].RemainingFraction != nil || b[2].RemainingFraction != nil {
+		t.Fatalf("zero, missing or null lost: %+v", b)
 	}
 }
 
