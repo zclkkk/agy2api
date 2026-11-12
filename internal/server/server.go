@@ -460,14 +460,22 @@ func (a *Account) getCatalog(ctx context.Context) (ag.Catalog, error) {
 func anthropic(r *http.Request) bool {
 	return strings.HasPrefix(r.URL.Path, "/v1/messages") || r.Header.Get("Anthropic-Version") != ""
 }
-func modelObject(id string, value json.RawMessage, anthropicFormat bool) map[string]any {
+
+// modelObject describes a served model. output_modalities is an extension to
+// the OpenAI model object: image models serve only the Images API, and the
+// standard object gives a client no way to tell them from the others.
+func modelObject(catalog ag.Catalog, id string, anthropicFormat bool) map[string]any {
 	if !anthropicFormat {
-		return map[string]any{"id": id, "object": "model", "created": 0, "owned_by": "antigravity"}
+		modality := "text"
+		if info, _ := catalog.Info(id); info.Image {
+			modality = "image"
+		}
+		return map[string]any{"id": id, "object": "model", "created": 0, "owned_by": "antigravity", "output_modalities": []string{modality}}
 	}
 	var info struct {
 		DisplayName string `json:"displayName"`
 	}
-	_ = json.Unmarshal(value, &info)
+	_ = json.Unmarshal(catalog.Models[id], &info)
 	if info.DisplayName == "" {
 		info.DisplayName = id
 	}
@@ -484,7 +492,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	for _, id := range catalog.ListedModelIDs() {
 		if served(catalog, id, anthropic(r)) {
 			ids = append(ids, id)
-			data = append(data, modelObject(id, catalog.Models[id], anthropic(r)))
+			data = append(data, modelObject(catalog, id, anthropic(r)))
 		}
 	}
 	out := map[string]any{"data": data}
@@ -512,7 +520,7 @@ func (s *Server) model(w http.ResponseWriter, r *http.Request) {
 		s.error(w, r, 404, "not_found_error", "model not found", "model")
 		return
 	}
-	writeJSON(w, 200, modelObject(id, catalog.Models[id], anthropic(r)))
+	writeJSON(w, 200, modelObject(catalog, id, anthropic(r)))
 }
 
 // served reports whether the requesting API format can use the model. Image

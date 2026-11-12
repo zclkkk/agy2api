@@ -99,6 +99,81 @@ func checkFormatListing(t *testing.T, server *httptest.Server, messages bool, wa
 	}
 }
 
+// A client picks image models by the output_modalities of the OpenAI model
+// object; the Anthropic format lists no image models and carries no such field.
+func TestModelObjectsReportOutputModalities(t *testing.T) {
+	for _, tc := range []struct {
+		name, catalog string
+		want          map[string]string
+	}{
+		{
+			"upstream image model list",
+			selectorCatalog,
+			map[string]string{"gemini-z": "text", "gemini-a": "text", "gemini-lite": "text", "gemini-canvas": "image"},
+		},
+		{
+			"same fallback as Images validation",
+			`{"models":{
+				"gemini-chat":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"},
+				"gemini-image":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI"}
+			},"agentModelSorts":[{"groups":[{"modelIds":["gemini-chat","gemini-image"]}]}]}`,
+			map[string]string{"gemini-chat": "text", "gemini-image": "image"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, s := newService(t, nil, func(w http.ResponseWriter) { io.WriteString(w, tc.catalog) }, answer("ok", "STOP"))
+			get := func(path string, messages bool, into any) {
+				t.Helper()
+				req, _ := http.NewRequest(http.MethodGet, s.URL+path, nil)
+				if messages {
+					req.Header.Set("Anthropic-Version", "2023-06-01")
+				}
+				res, err := s.Client().Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer res.Body.Close()
+				if err := json.NewDecoder(res.Body).Decode(into); err != nil || res.StatusCode != http.StatusOK {
+					t.Fatalf("%s: status=%d error=%v", path, res.StatusCode, err)
+				}
+			}
+			var listing struct {
+				Data []map[string]any `json:"data"`
+			}
+			get("/v1/models", false, &listing)
+			got := map[string]string{}
+			for _, model := range listing.Data {
+				modalities, _ := model["output_modalities"].([]any)
+				if len(modalities) != 1 {
+					t.Fatalf("output_modalities = %v", model["output_modalities"])
+				}
+				got[model["id"].(string)], _ = modalities[0].(string)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("modalities = %v, want %v", got, tc.want)
+			}
+			for id, want := range tc.want {
+				if got[id] != want {
+					t.Fatalf("modalities = %v, want %v", got, tc.want)
+				}
+				// A single model reads the same as its list entry.
+				var model map[string]any
+				get("/v1/models/"+id, false, &model)
+				if modalities, _ := model["output_modalities"].([]any); len(modalities) != 1 || modalities[0] != want {
+					t.Fatalf("%s output_modalities = %v, want %s", id, model["output_modalities"], want)
+				}
+			}
+			listing.Data = nil
+			get("/v1/models", true, &listing)
+			for _, model := range listing.Data {
+				if _, ok := model["output_modalities"]; ok || tc.want[model["id"].(string)] != "text" {
+					t.Fatalf("Anthropic model object = %v", model)
+				}
+			}
+		})
+	}
+}
+
 func TestModelListingDoesNotRestrictExplicitRequests(t *testing.T) {
 	_, s := newService(t, nil, func(w http.ResponseWriter) { io.WriteString(w, selectorCatalog) }, func(w http.ResponseWriter, r *http.Request) {
 		var request ag.Envelope
