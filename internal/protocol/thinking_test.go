@@ -32,6 +32,58 @@ func TestUnrequestedThoughtsAreDropped(t *testing.T) {
 	}
 }
 
+// A hidden thought keeps its signature in its own reasoning block; it does
+// not take the place of the signature of the block before it.
+func TestHiddenThoughtKeepsOtherSignatures(t *testing.T) {
+	s := testStore(t)
+	p := testPipeline{State: s}
+	parts := []ag.Part{
+		{Text: "intro", Signature: "text-signature"},
+		{Thought: true, Text: "after the text", Signature: "thought-after-text"},
+		{FunctionCall: &ag.Call{Name: "lookup", Args: raw(map[string]string{"id": "A17"})}, Signature: "tool-signature"},
+		{Thought: true, Text: "after the call", Signature: "thought-after-call"},
+	}
+	check := func(name string, got []ag.Part) {
+		t.Helper()
+		var signatures []string
+		for _, part := range got {
+			if part.Thought && part.Text != "" {
+				t.Fatalf("%s: hidden thought text replayed: %s", name, raw(got))
+			}
+			signatures = append(signatures, part.Signature)
+		}
+		if want := []string{"text-signature", "thought-after-text", "tool-signature", "thought-after-call"}; strings.Join(signatures, ",") != strings.Join(want, ",") || got[2].FunctionCall == nil {
+			t.Fatalf("%s: replayed parts %s", name, raw(got))
+		}
+	}
+	tools := []map[string]any{{"type": "function", "name": "lookup", "parameters": map[string]any{"type": "object"}}}
+	r := turn(t, s, p.mustResponses(t, map[string]any{"model": "gemini-test", "input": "hello", "store": false, "tools": tools}), parts...)
+	output := responseOutput(t, r)
+	var call ResponseItem
+	for _, item := range output {
+		var i ResponseItem
+		_ = json.Unmarshal(item, &i)
+		if i.Type == "function_call" {
+			call = i
+		}
+	}
+	input := append([]json.RawMessage{raw(map[string]any{"role": "user", "content": "hello"})}, output...)
+	input = append(input, raw(map[string]any{"type": "function_call_output", "call_id": call.CallID, "output": "shipped"}))
+	check("responses", p.mustResponses(t, map[string]any{"model": "gemini-test", "input": input, "store": false, "tools": tools}).Request.Contents[1].Parts)
+
+	messageTools := []map[string]any{{"name": "lookup", "input_schema": map[string]any{"type": "object"}}}
+	m := turn(t, s, p.mustMessages(t, map[string]any{"model": "gemini-test", "max_tokens": 1024, "tools": messageTools, "messages": []any{user("hello")}}), parts...)
+	content := messageContent(t, m)
+	var callID string
+	for _, b := range content {
+		if b.Type == "tool_use" {
+			callID = b.ID
+		}
+	}
+	result := user([]map[string]any{{"type": "tool_result", "tool_use_id": callID, "content": "shipped"}})
+	check("messages", p.mustMessages(t, map[string]any{"model": "gemini-test", "max_tokens": 1024, "tools": messageTools, "messages": []any{user("hello"), assistant(content), result}}).Request.Contents[1].Parts)
+}
+
 // Each request carries a thinking configuration: the client's effort or
 // budget, or its API's default, fitted to the levels the model offers.
 func TestThinkingConfig(t *testing.T) {

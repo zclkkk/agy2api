@@ -162,7 +162,12 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 		}
 		if part.Text == "" && part.FunctionCall == nil {
 			if part.Signature != "" {
-				if r.active == nil {
+				// A bare signature belongs to the block before it; a thought's,
+				// including a hidden thought's, to a reasoning block.
+				if r.active == nil || part.Thought && r.active.Kind != "thinking" {
+					if err := r.closeBlock(ctx); err != nil {
+						return err
+					}
 					if err := r.open("thinking"); err != nil {
 						return err
 					}
