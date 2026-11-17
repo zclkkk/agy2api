@@ -50,12 +50,14 @@ func (s *Server) images(edit bool) http.HandlerFunc {
 		}
 		response := protocol.ImagesResponse{Created: time.Now().Unix(), OutputFormat: in.OutputFormat}
 		outputBytes := 0
+		logOf(r).call(in.Model, nil)
 		for i := 0; i < in.Count; i++ {
 			if r.Context().Err() != nil {
 				return
 			}
 			collector := protocol.NewImageCollector(in)
 			err := a.Upstream.Generate(r.Context(), in.Model, in.Request, ag.KindImage, nil, collector.Add)
+			logOf(r).addUsage(collector.Usage())
 			if err != nil {
 				if r.Context().Err() == nil {
 					s.writeError(w, r, err)

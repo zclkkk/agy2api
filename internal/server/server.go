@@ -93,26 +93,110 @@ type accountKey struct{}
 // accountOf returns the account an authenticated request belongs to.
 func accountOf(r *http.Request) *Account { return r.Context().Value(accountKey{}).(*Account) }
 
-// requestLog collects per-request details for the completion log line.
+// requestLog collects what a request's single completion log line reports.
 type requestLog struct {
-	mu       sync.Mutex
-	account  string
-	model    string
-	warnings []string
+	mu           sync.Mutex
+	account      string
+	model        string
+	upstream     string // catalog model called
+	thinking     *ag.Thinking
+	usage        ag.Usage
+	warnings     []string
+	err          string // error message returned to the client
+	cause        error  // failure behind it: an upstream or internal error
+	streamFailed bool
 }
 type logKey struct{}
 
-func (s *Server) note(r *http.Request, model string, warnings ...string) {
-	l, _ := r.Context().Value(logKey{}).(*requestLog)
-	if l == nil {
-		return
+// logOf returns the request's log record; outside Handler, a detached one.
+func logOf(r *http.Request) *requestLog {
+	if l, _ := r.Context().Value(logKey{}).(*requestLog); l != nil {
+		return l
 	}
+	return &requestLog{}
+}
+
+func (s *Server) note(r *http.Request, model string, warnings ...string) {
+	l := logOf(r)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if model != "" {
 		l.model = model
 	}
 	l.warnings = append(l.warnings, warnings...)
+}
+
+func (l *requestLog) call(upstream string, thinking *ag.Thinking) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.upstream, l.thinking = upstream, thinking
+}
+
+func (l *requestLog) addUsage(u ag.Usage) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.usage.Input += u.Input
+	l.usage.Output += u.Output
+	l.usage.Thoughts += u.Thoughts
+	l.usage.Cached += u.Cached
+}
+
+func (l *requestLog) fail(message string, cause error, stream bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if message != "" {
+		l.err = message
+	}
+	if cause != nil {
+		l.cause = cause
+	}
+	l.streamFailed = l.streamFailed || stream
+}
+
+// write logs the completion line. Failures that are not the client's own
+// mistake, such as upstream errors, internal errors, broken streams and
+// rate limits, are warnings.
+func (l *requestLog) write(logger *slog.Logger, r *http.Request, id string, status int, started time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	attrs := []any{"request_id", id, "method", r.Method, "path", r.URL.Path, "status", status, "duration_ms", time.Since(started).Milliseconds()}
+	add := func(key string, value any, ok bool) {
+		if ok {
+			attrs = append(attrs, key, value)
+		}
+	}
+	ua := r.UserAgent()
+	add("user_agent", ua[:min(len(ua), 200)], ua != "")
+	add("account", l.account, l.account != "")
+	add("model", l.model, l.model != "")
+	add("upstream_model", l.upstream, l.upstream != "" && l.upstream != l.model)
+	if t := l.thinking; t != nil {
+		add("thinking_level", t.Level, t.Level != 0)
+		if t.Budget != nil {
+			attrs = append(attrs, "thinking_budget", *t.Budget)
+		}
+	}
+	if u := l.usage; u.Input+u.Output+u.Thoughts+u.Cached > 0 {
+		attrs = append(attrs, slog.Group("usage", "input", u.Input, "output", u.Output, "thoughts", u.Thoughts, "cached", u.Cached))
+	}
+	add("warnings", l.warnings, len(l.warnings) > 0)
+	add("error", l.err, l.err != "")
+	add("stream_failed", true, l.streamFailed)
+	var upstream *ag.HTTPError
+	if errors.As(l.cause, &upstream) {
+		add("upstream_status", upstream.Status, true)
+		add("upstream_reason", upstream.Reason, upstream.Reason != "")
+		add("upstream_detail", upstream.Detail, upstream.Detail != "")
+		add("retry_after", upstream.RetryAfter, upstream.RetryAfter != "")
+	} else if l.cause != nil {
+		add("cause", l.cause.Error(), true)
+	}
+	add("canceled", true, r.Context().Err() != nil)
+	level := slog.LevelInfo
+	if l.cause != nil || l.streamFailed || status >= 500 || status == http.StatusTooManyRequests {
+		level = slog.LevelWarn
+	}
+	logger.Log(context.Background(), level, "request completed", attrs...)
 }
 
 type statusWriter struct {
@@ -153,13 +237,15 @@ func (s *Server) Handler() http.Handler {
 		s.error(w, r, 404, "not_found_error", "endpoint not found", "")
 	})
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		started := time.Now()
 		id := ag.ID("req_")
 		w := &statusWriter{ResponseWriter: rw}
 		w.Header().Set("X-Request-Id", id)
 		w.Header().Set("Request-Id", id)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		info := &requestLog{}
-		ctx := context.WithValue(r.Context(), logKey{}, info)
+		r = r.WithContext(context.WithValue(r.Context(), logKey{}, info))
+		defer func() { info.write(s.logger, r, id, w.status, started) }()
 		if r.URL.Path != "/healthz" {
 			a := s.authenticate(r)
 			if a == nil {
@@ -167,21 +253,9 @@ func (s *Server) Handler() http.Handler {
 				return
 			}
 			info.account = a.ID
-			ctx = context.WithValue(ctx, accountKey{}, a)
+			r = r.WithContext(context.WithValue(r.Context(), accountKey{}, a))
 		}
-		started := time.Now()
-		mux.ServeHTTP(w, r.WithContext(ctx))
-		attrs := []any{"request_id", id, "method", r.Method, "path", r.URL.Path, "status", w.status, "duration_ms", time.Since(started).Milliseconds()}
-		if info.account != "" {
-			attrs = append(attrs, "account", info.account)
-		}
-		if info.model != "" {
-			attrs = append(attrs, "model", info.model)
-		}
-		if len(info.warnings) > 0 {
-			attrs = append(attrs, "warnings", info.warnings)
-		}
-		s.logger.Info("request completed", attrs...)
+		mux.ServeHTTP(w, r)
 	})
 }
 
@@ -383,6 +457,7 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, format protoco
 			return renderer.Accept()
 		}
 	}
+	logOf(r).call(in.Upstream, in.Request.Generation.Thinking)
 	err := a.Upstream.Generate(r.Context(), in.Upstream, in.Request, ag.KindAgent, accepted, func(chunk ag.Chunk) error {
 		return renderer.Add(r.Context(), chunk)
 	})
@@ -390,6 +465,7 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, format protoco
 		err = renderer.Finish(r.Context())
 	}
 	s.note(r, "", renderer.Warnings...)
+	logOf(r).addUsage(renderer.Usage())
 	if err != nil {
 		if r.Context().Err() != nil {
 			return
@@ -398,8 +474,9 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, format protoco
 		started := sse.started
 		sse.mu.Unlock()
 		if started {
-			_ = renderer.Fail(publicError(err))
-			s.logger.Warn("stream failed", "request_id", w.Header().Get("X-Request-Id"), "error", err.Error())
+			message := publicError(err)
+			logOf(r).fail(message, err, true)
+			_ = renderer.Fail(message)
 			return
 		}
 		s.writeError(w, r, err)
@@ -606,13 +683,11 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 		if upstream.RetryAfter != "" {
 			w.Header().Set("Retry-After", upstream.RetryAfter)
 		}
-		if upstream.Detail != "" {
-			s.logger.Warn("upstream error", "request_id", w.Header().Get("X-Request-Id"), "status", upstream.Status, "detail", upstream.Detail)
-		}
+		logOf(r).fail("", err, false)
 		s.error(w, r, status, kind, upstream.Message, "")
 		return
 	}
-	s.logger.Warn("request failed", "request_id", w.Header().Get("X-Request-Id"), "error", err.Error())
+	logOf(r).fail("", err, false)
 	s.error(w, r, 502, "api_error", publicError(err), "")
 }
 func publicError(err error) string {
@@ -627,6 +702,7 @@ func publicError(err error) string {
 	return "generation failed; inspect the local service log"
 }
 func (s *Server) error(w http.ResponseWriter, r *http.Request, status int, kind, message, param string) {
+	logOf(r).fail(message, nil, false)
 	if anthropic(r) {
 		writeJSON(w, status, map[string]any{"type": "error", "error": map[string]string{"type": kind, "message": message}, "request_id": w.Header().Get("X-Request-Id")})
 		return

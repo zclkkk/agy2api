@@ -40,6 +40,9 @@ type HTTPError struct {
 	Status     int
 	Message    string
 	RetryAfter string
+	// Reason is the upstream status and reason enums, such as
+	// "RESOURCE_EXHAUSTED: RATE_LIMIT_EXCEEDED".
+	Reason string
 	// Detail is the upstream's own error text, for the local log only. It can
 	// echo request content, so it is never returned to API clients.
 	Detail string
@@ -113,7 +116,12 @@ func (c *Client) postToken(ctx context.Context, method string, payload any, toke
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-		return nil, &HTTPError{Status: resp.StatusCode, Message: upstreamErrorMessage(resp.StatusCode, data), RetryAfter: upstreamRetryAfter(resp.Header.Get("Retry-After"), data), Detail: upstreamErrorDetail(data)}
+		reason := upstreamReason(data)
+		message := fmt.Sprintf("Antigravity returned HTTP %d", resp.StatusCode)
+		if reason != "" {
+			message += " (" + reason + ")"
+		}
+		return nil, &HTTPError{Status: resp.StatusCode, Message: message, Reason: reason, RetryAfter: upstreamRetryAfter(resp.Header.Get("Retry-After"), data), Detail: upstreamErrorDetail(data)}
 	}
 	return resp, nil
 }
@@ -163,10 +171,10 @@ func upstreamErrorDetail(data []byte) string {
 	return detail
 }
 
-func upstreamErrorMessage(status int, data []byte) string {
-	message := fmt.Sprintf("Antigravity returned HTTP %d", status)
-	// Structured status/reason enums aid diagnosis without exposing raw error
-	// messages, project IDs, account metadata, or echoed request content.
+// upstreamReason joins the error's status and reason enums. They aid
+// diagnosis without exposing raw error messages, project IDs, account
+// metadata, or echoed request content.
+func upstreamReason(data []byte) string {
 	var body struct {
 		Error struct {
 			Status  string `json:"status"`
@@ -176,7 +184,7 @@ func upstreamErrorMessage(status int, data []byte) string {
 		} `json:"error"`
 	}
 	if json.Unmarshal(data, &body) != nil {
-		return message
+		return ""
 	}
 	var codes []string
 	if upstreamEnum.MatchString(body.Error.Status) {
@@ -187,10 +195,7 @@ func upstreamErrorMessage(status int, data []byte) string {
 			codes = append(codes, d.Reason)
 		}
 	}
-	if len(codes) > 0 {
-		message += " (" + strings.Join(codes, ": ") + ")"
-	}
-	return message
+	return strings.Join(codes, ": ")
 }
 
 func readJSON(r *http.Response, dst any) error {

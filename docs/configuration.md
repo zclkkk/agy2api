@@ -94,3 +94,24 @@ data/
 ```toml
 sanitize_client_markers = false
 ```
+
+## 日志
+
+服务日志为 JSON，写到标准错误。每个请求结束时写一行 `request completed`，包含该请求的全部结果：
+
+| 字段 | 内容 |
+|---|---|
+| `request_id` | 与响应头 `X-Request-Id` 相同 |
+| `method`、`path`、`status`、`duration_ms` | 请求与响应状态；流开始后才失败时 `status` 仍为 200，另记 `stream_failed` |
+| `user_agent` | 客户端的 User-Agent，最多 200 字节 |
+| `account`、`model` | 账号 ID 与请求的模型 |
+| `upstream_model` | 实际调用的上游模型，与 `model` 不同时记录 |
+| `thinking_level`、`thinking_budget` | 发往上游的思考档位编号或思考预算 |
+| `usage` | 上游报告的 `input`、`output`、`thoughts`、`cached` token 数 |
+| `warnings` | 降级处理和被忽略的字段 |
+| `error` | 返回给客户端的错误信息 |
+| `upstream_status`、`upstream_reason`、`upstream_detail`、`retry_after` | 上游错误的状态码、状态与原因枚举、上游原文，以及返回给客户端的重试等待秒数 |
+| `cause` | 客户端只收到通用错误信息时的内部原因 |
+| `canceled` | 客户端在请求完成前断开 |
+
+上游错误、内部错误、流中断和 429 记为 `WARN`，其余为 `INFO`。日志不记录请求和响应内容；`upstream_detail` 是上游自己的错误文字，可能引用请求内容，只写入本地日志，不返回给客户端。

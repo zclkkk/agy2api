@@ -83,6 +83,9 @@ func NewRenderer(in PreparedRequest, s *state.Store, emit func(string, map[strin
 	return r
 }
 
+// Usage is the upstream token usage reported so far.
+func (r *Renderer) Usage() ag.Usage { return r.usage }
+
 // Accept marks that the upstream accepted the request. Start events that do
 // not depend on the output go out now rather than with the first output.
 func (r *Renderer) Accept() error {

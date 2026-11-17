@@ -228,9 +228,9 @@ func TestModelCatalogKeepsOnlyGemini(t *testing.T) {
 }
 
 func TestSafeUpstreamErrorReason(t *testing.T) {
-	message := upstreamErrorMessage(503, []byte(`{"error":{"message":"secret@example.com sensitive-project","status":"UNAVAILABLE","details":[{"reason":"MODEL_CAPACITY_EXHAUSTED"},{"reason":"secret@example.com"}]}}`))
-	if !strings.Contains(message, "MODEL_CAPACITY_EXHAUSTED") || strings.Contains(message, "secret") || strings.Contains(message, "project") {
-		t.Fatal(message)
+	reason := upstreamReason([]byte(`{"error":{"message":"secret@example.com sensitive-project","status":"UNAVAILABLE","details":[{"reason":"MODEL_CAPACITY_EXHAUSTED"},{"reason":"secret@example.com"}]}}`))
+	if reason != "UNAVAILABLE: MODEL_CAPACITY_EXHAUSTED" {
+		t.Fatal(reason)
 	}
 }
 

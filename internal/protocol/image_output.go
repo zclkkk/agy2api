@@ -87,6 +87,9 @@ func NewImageCollector(options ImageIntent) *ImageCollector {
 	return &ImageCollector{options: options}
 }
 
+// Usage is the upstream token usage reported so far.
+func (c *ImageCollector) Usage() ag.Usage { return c.usage }
+
 func (c *ImageCollector) Add(chunk ag.Chunk) error {
 	if chunk.Usage != nil {
 		u := chunk.Usage
