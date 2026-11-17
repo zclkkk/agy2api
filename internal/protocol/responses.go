@@ -210,19 +210,18 @@ func (d Decoder) Responses(data []byte) (RequestIntent, error) {
 			return in, err
 		}
 	}
+	// OpenAI reasoning models default to medium effort.
+	in.Thinking.Effort = "medium"
 	if r.Reasoning != nil {
 		summary := r.Reasoning.Summary
 		if summary != "" && summary != "auto" && summary != "none" {
 			in.warn("reasoning.summary level is not enforced; upstream reasoning summaries are returned as available")
 		}
 		if r.Reasoning.Effort != "" {
-			applyEffort(&in, r.Reasoning.Effort)
+			setEffort(&in, r.Reasoning.Effort)
 		}
 		// Reasoning text is returned only when a summary is requested.
-		in.Thinking.Show = summary != "" && summary != "none"
-		if in.Thinking.Show && in.Thinking.Mode == "" {
-			in.Thinking.Mode = "adaptive"
-		}
+		in.ShowThinking = summary != "" && summary != "none"
 	}
 	if r.Text != nil && r.Text.Verbosity != "" {
 		in.warn("text.verbosity is ignored; verbosity control is not implemented")

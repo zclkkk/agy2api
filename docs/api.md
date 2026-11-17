@@ -38,7 +38,7 @@ Responses / Messages 生成请求支持 `stream: true`，以 SSE 返回事件。
 
 ### 行为差异
 
-- **思考**：Gemini 无法完全关闭思考，请求关闭时使用模型允许的最低预算。思考强度映射到 Gemini 的档位（`minimal` 为 `low`，`xhigh` / `max` 为 `high`）；`reasoning.summary` 不区分详略。
+- **思考**：每个请求都带思考设置。思考强度（Responses 的 `reasoning.effort`、Messages 的 `output_config.effort`）选择模型提供的档位：没有该档位时取低于它的最近档位，再没有则取最低档，`max` 为最高档。未指定强度时，Responses 按 `medium`；Messages 开启思考（`adaptive`，或 `enabled` 不带预算）按 `high`，未开启时使用模型允许的最低预算。`budget_tokens` 作为思考预算，不低于模型的下限。Gemini 无法完全关闭思考，请求关闭（`none`、`disabled`）时同样使用最低预算。没有档位变体的模型提供 `low`、`medium`、`high`；上游按预算配置的模型不使用档位，未指定预算时使用上游配置的预算。`reasoning.summary` 不区分详略。
 - **结构化输出**：工具参数、`text.format` 和 `output_config.format` 的 JSON Schema 转换为上游支持的子集，不保证 `strict` 语义。自定义工具的 grammar 只作为说明，不做语法校验。
 - **并行工具调用**：`parallel_tool_calls: false` 和 `disable_parallel_tool_use` 无法生效，模型仍可能一次返回多个调用。
 - **停止序列**：`stop_sequences` 能截断输出，但不报告命中的序列，`stop_reason` 不会是 `stop_sequence`。
@@ -97,6 +97,8 @@ OpenAI SDK 的 `client.images.generate(...)` 和 `client.images.edit(...)` 可�
 ## 模型列表
 
 `/v1/models` 只列出 Antigravity 自身使用的模型。图片生成模型只用于 Images 接口，因此不出现在 Anthropic 格式（带 `anthropic-version` 请求头）的列表和查询中。
+
+上游以多个 ID 提供同一模型的不同思考档位，ID 以各自的档位结尾（如 `gemini-x-low`、`gemini-x-high`）。本服务把它们作为一个模型提供，ID 去掉档位后缀（`gemini-x`），由请求的思考强度选择档位并调用对应的上游 ID；带档位后缀的 ID 不能直接查询或调用。
 
 OpenAI 格式的模型对象多一个扩展字段 `output_modalities`：图片生成模型为 `["image"]`，其余为 `["text"]`。客户端可据此区分只能用于 Images 接口的模型。
 

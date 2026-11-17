@@ -194,28 +194,30 @@ func (d Decoder) Messages(data []byte, countOnly bool) (RequestIntent, error) {
 			return in, err
 		}
 	}
+	// Anthropic leaves thinking off unless it is asked for, and the effort
+	// defaults to high. Off asks for the least thinking Gemini allows.
+	in.Thinking.Effort = "none"
+	disabled := false
 	if t := r.Thinking; t != nil {
 		if t.Display == "omitted" {
 			in.HideThinking = true
 		}
 		switch t.Type {
-		case "enabled":
-			if t.Budget != nil && *t.Budget > 0 {
-				in.Thinking = ThinkingIntent{Mode: "budget", Budget: *t.Budget, Show: true}
-			} else {
-				in.Thinking = ThinkingIntent{Mode: "adaptive", Show: true}
+		case "enabled", "adaptive":
+			in.Thinking.Effort, in.ShowThinking = "high", true
+			if t.Type == "enabled" && t.Budget != nil && *t.Budget > 0 {
+				in.Thinking.Budget = *t.Budget
 			}
-		case "adaptive":
-			in.Thinking = ThinkingIntent{Mode: "adaptive", Show: true}
 		case "disabled":
-			in.Thinking = ThinkingIntent{Mode: "disabled"}
+			disabled = true
+			in.warn(noDisableWarning)
 		default:
 			in.warn("ignored thinking.type %q", t.Type)
 		}
 	}
 	if c := r.OutputConfig; c != nil {
-		if c.Effort != "" {
-			applyEffort(&in, c.Effort)
+		if c.Effort != "" && !disabled {
+			setEffort(&in, c.Effort)
 		}
 		if f := c.Format; f != nil {
 			if f.Type != "json_schema" || !present(f.Schema) {

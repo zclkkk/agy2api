@@ -6,21 +6,20 @@ import (
 	ag "github.com/zclkkk/agy2api/internal/antigravity"
 )
 
-// Gemini thinking levels; some models reject "minimal", so it maps to "low".
-var thinkingLevels = map[string]string{"minimal": "low", "low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
+const noDisableWarning = "Gemini cannot disable thinking; using the minimum thinking budget"
 
-func knownEffort(effort string) bool { _, ok := thinkingLevels[effort]; return ok }
-
-// applyEffort records a reasoning effort unless an explicit budget or a
-// disabled state was requested. Whether thoughts are shown is unchanged.
-func applyEffort(in *RequestIntent, value string) {
+// setEffort records a reasoning effort the client gave: Gemini's thinking
+// levels, "max" for the model's highest level, or "none". Gemini cannot turn
+// thinking off, so "none" asks for the least thinking.
+func setEffort(in *RequestIntent, value string) {
 	switch {
 	case value == "none":
-		in.Thinking.Mode = "disabled"
-	case !knownEffort(value):
+		in.Thinking.Effort = value
+		in.warn(noDisableWarning)
+	case value == "max" || ag.IsThinkingLevel(value):
+		in.Thinking.Effort = value
+	default:
 		in.warn("ignored reasoning effort %q", value)
-	case in.Thinking.Mode != "budget" && in.Thinking.Mode != "disabled":
-		in.Thinking.Mode, in.Thinking.Effort = "effort", value
 	}
 }
 
@@ -67,23 +66,35 @@ func hasFunctions(tools []ag.Tool) bool {
 	return false
 }
 
+// applyThinking picks the catalog model and thinking configuration. A model
+// offered at several levels is served by the variant for the effort's level;
+// Antigravity applies a level only when the request names it, so every
+// request carries one.
 func (in *RequestIntent) applyThinking(info ag.ModelInfo) {
-	g := &in.Request.Generation
-	switch t := in.Thinking; t.Mode {
-	case "disabled":
-		// Gemini cannot turn thinking off: a zero budget is rejected by some
-		// models and ignored by others. The minimum budget comes closest.
+	in.Upstream = in.Model
+	if !info.Thinking {
+		return
+	}
+	t, g := in.Thinking, &in.Request.Generation
+	var level ag.Level
+	if len(info.Levels) > 0 {
+		level = info.Level(t.Effort)
+		in.Upstream = level.Model
+	}
+	switch {
+	case t.Budget > 0:
+		budget := max(t.Budget, info.MinThinkingBudget)
+		g.Thinking = &ag.Thinking{Budget: &budget, Include: in.ShowThinking}
+	case t.Effort == "none":
+		// A zero budget is rejected by some models and ignored by others; the
+		// minimum budget comes closest to no thinking.
 		budget := info.MinThinkingBudget
 		g.Thinking = &ag.Thinking{Budget: &budget}
-		in.warn("Gemini cannot disable thinking; using the minimum thinking budget")
-	case "effort":
-		g.Thinking = &ag.Thinking{Level: thinkingLevels[t.Effort], Include: t.Show}
-	case "budget":
-		budget := max(t.Budget, info.MinThinkingBudget)
-		g.Thinking = &ag.Thinking{Budget: &budget, Include: t.Show}
-	case "adaptive":
-		dynamic := -1
-		g.Thinking = &ag.Thinking{Budget: &dynamic, Include: t.Show}
+	case len(info.Levels) > 0:
+		g.Thinking = &ag.Thinking{Level: level.Number, Include: in.ShowThinking}
+	case info.Budget > 0:
+		budget := info.Budget
+		g.Thinking = &ag.Thinking{Budget: &budget, Include: in.ShowThinking}
 	}
 }
 

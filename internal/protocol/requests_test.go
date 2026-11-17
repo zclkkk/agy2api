@@ -61,7 +61,7 @@ func TestClaudeCodeRequestShapeIsAccepted(t *testing.T) {
 	if in.Tools["mcp__srv.example__do"].Name == "" {
 		t.Fatal("a name Gemini accepts must be sent unchanged")
 	}
-	if th := in.Request.Generation.Thinking; th == nil || th.Level != "high" || !th.Include {
+	if th := in.Request.Generation.Thinking; th == nil || th.Level != 3 || !th.Include {
 		t.Fatalf("effort not applied to adaptive thinking: %+v", th)
 	}
 	// Caching hints and the keep-all thinking edit are no-ops; the parallel-call
@@ -100,7 +100,8 @@ func TestCodexRequestShapeIsAccepted(t *testing.T) {
 	if in.Tools["exec_command"].Name != "exec_command" {
 		t.Fatal("a legal function name must be sent unchanged")
 	}
-	if th := in.Request.Generation.Thinking; th == nil || th.Level != "high" {
+	// gemini-test offers low, medium and high.
+	if th := in.Request.Generation.Thinking; th == nil || th.Level != 3 {
 		t.Fatalf("xhigh effort not mapped: %+v", th)
 	}
 }

@@ -12,10 +12,17 @@ import (
 	"github.com/zclkkk/agy2api/internal/state"
 )
 
-// testCatalog offers two models, so replay tests can switch between them.
+// testCatalog offers gemini-test and gemini-other, so replay tests can switch
+// between them; gemini-levels through variants at three levels; gemini-budget,
+// which the catalog configures by budget; and gemini-plain, without thinking.
 var testCatalog = ag.Catalog{Models: map[string]json.RawMessage{
-	"gemini-test":  json.RawMessage(`{"minThinkingBudget":128}`),
-	"gemini-other": json.RawMessage(`{}`),
+	"gemini-test":         json.RawMessage(`{"supportsThinking":true,"minThinkingBudget":128,"thinkingLevel":3}`),
+	"gemini-other":        json.RawMessage(`{"supportsThinking":true,"minThinkingBudget":128,"thinkingLevel":1}`),
+	"gemini-levels-low":   json.RawMessage(`{"supportsThinking":true,"minThinkingBudget":32,"thinkingLevel":1}`),
+	"gemini-levels-high":  json.RawMessage(`{"supportsThinking":true,"minThinkingBudget":32,"thinkingLevel":3}`),
+	"gemini-levels-xhigh": json.RawMessage(`{"supportsThinking":true,"minThinkingBudget":32,"thinkingLevel":100}`),
+	"gemini-budget":       json.RawMessage(`{"supportsThinking":true,"minThinkingBudget":128,"thinkingBudget":1024}`),
+	"gemini-plain":        json.RawMessage(`{}`),
 }}
 
 func testStore(t *testing.T) *state.Store {

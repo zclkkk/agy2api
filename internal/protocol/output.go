@@ -138,6 +138,11 @@ func (r *Renderer) Add(ctx context.Context, chunk ag.Chunk) error {
 		if len(part.Unknown) > 0 {
 			r.warn("ignored upstream part fields: %s", strings.Join(part.Unknown, ", "))
 		}
+		if part.Thought && !r.input.ShowThinking {
+			// Some models return thought text the request did not include;
+			// only a signature it carries is kept, for replay.
+			part.Text = ""
+		}
 		if part.Empty() {
 			continue
 		}

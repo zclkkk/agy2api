@@ -227,6 +227,51 @@ func TestModelListingDoesNotRestrictExplicitRequests(t *testing.T) {
 	}
 }
 
+// A model Antigravity offers at several levels is listed once; the request's
+// effort picks the variant, which receives its level.
+func TestVariantsServeOneModel(t *testing.T) {
+	catalog := `{
+		"models":{
+			"gemini-v-low":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI","displayName":"Gemini V (Low)","supportsThinking":true,"thinkingLevel":1},
+			"gemini-v-high":{"apiProvider":"API_PROVIDER_GOOGLE_GEMINI","displayName":"Gemini V (High)","supportsThinking":true,"thinkingLevel":3}
+		},
+		"agentModelSorts":[{"groups":[{"modelIds":["gemini-v-high","gemini-v-low"]}]}]
+	}`
+	var upstream atomic.Value
+	_, s := newService(t, nil, func(w http.ResponseWriter) { io.WriteString(w, catalog) }, func(w http.ResponseWriter, r *http.Request) {
+		var request ag.Envelope
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		upstream.Store(request)
+		answer("ok", "STOP")(w, r)
+	})
+	checkModelListing(t, s, []string{"gemini-v"})
+	req, _ := http.NewRequest(http.MethodGet, s.URL+"/v1/models/gemini-v", nil)
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+	res, err := s.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var model map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&model)
+	res.Body.Close()
+	if model["display_name"] != "Gemini V" {
+		t.Fatalf("model object = %v", model)
+	}
+	if res, body := send(t, s, "/v1/responses", `{"model":"gemini-v-high","input":"hello","store":false}`, nil); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("variant ID request returned %d: %s", res.StatusCode, body)
+	}
+	res, body := send(t, s, "/v1/responses", `{"model":"gemini-v","input":"hello","store":false,"reasoning":{"effort":"high"}}`, nil)
+	if res.StatusCode != http.StatusOK || !strings.Contains(body, `"model":"gemini-v"`) {
+		t.Fatalf("request returned %d: %s", res.StatusCode, body)
+	}
+	sent, _ := upstream.Load().(ag.Envelope)
+	if th := sent.Request.Generation.Thinking; sent.Model != "gemini-v-high" || th == nil || th.Level != 3 {
+		t.Fatalf("upstream model %q thinking %+v", sent.Model, th)
+	}
+}
+
 func TestModelListingFollowsCatalogRefresh(t *testing.T) {
 	var upstream atomic.Value
 	upstream.Store(selectorCatalog)

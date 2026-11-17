@@ -14,7 +14,7 @@ func TestResponsesOutputReplaysWithItsSignatures(t *testing.T) {
 	s := testStore(t)
 	p := testPipeline{State: s}
 	ctx := context.Background()
-	in := p.mustResponses(t, `{"model":"gemini-test","input":"hello","store":false}`)
+	in := p.mustResponses(t, `{"model":"gemini-test","input":"hello","store":false,"reasoning":{"summary":"auto"}}`)
 	r := NewRenderer(in, s, nil)
 	for _, chunk := range []ag.Chunk{
 		{Parts: []ag.Part{{Thought: true, Text: "think "}}},

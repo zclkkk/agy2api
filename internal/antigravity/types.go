@@ -3,9 +3,7 @@ package antigravity
 
 import (
 	"encoding/json"
-	"slices"
 	"sort"
-	"strings"
 )
 
 type Blob struct {
@@ -93,9 +91,9 @@ type ToolConfig struct {
 	FunctionCallingConfig CallingConfig `json:"functionCallingConfig"`
 }
 type Thinking struct {
-	Budget  *int   `json:"thinkingBudget,omitempty"`
-	Level   string `json:"thinkingLevel,omitempty"`
-	Include bool   `json:"includeThoughts"`
+	Budget  *int `json:"thinkingBudget,omitempty"`
+	Level   int  `json:"thinkingLevel,omitempty"` // enum number, as the catalog names levels
+	Include bool `json:"includeThoughts"`
 }
 type ImageConfig struct {
 	AspectRatio string `json:"aspectRatio,omitempty"`
@@ -155,68 +153,6 @@ type Chunk struct {
 	Parts  []Part
 	Usage  *Usage
 	Finish string
-}
-type Catalog struct {
-	// Models holds the enabled Gemini models; Client.Models drops the rest.
-	Models          map[string]json.RawMessage `json:"models"`
-	ImageModels     []string                   `json:"imageGenerationModelIds"`
-	AgentModelSorts []struct {
-		Groups []struct {
-			ModelIDs []string `json:"modelIds"`
-		} `json:"groups"`
-	} `json:"agentModelSorts"`
-	// Models Antigravity assigns to editor roles.
-	DefaultModel        string   `json:"defaultAgentModelId"`
-	CommandModels       []string `json:"commandModelIds"`
-	CommitMessageModels []string `json:"commitMessageModelIds"`
-	QueryModels         []string `json:"mqueryModelIds"`
-	WebSearchModels     []string `json:"webSearchModelIds"`
-}
-
-// ListedModelIDs lists the models Antigravity itself uses: the agent selector,
-// then the models it assigns to the default agent, commands and background
-// tasks, then image generation models. Models remains the full catalog for
-// explicit lookups and requests.
-func (c Catalog) ListedModelIDs() []string {
-	ids := make([]string, 0)
-	seen := make(map[string]bool)
-	add := func(list ...string) {
-		for _, id := range list {
-			if _, ok := c.Models[id]; ok && !seen[id] {
-				seen[id] = true
-				ids = append(ids, id)
-			}
-		}
-	}
-	for _, order := range c.AgentModelSorts {
-		for _, group := range order.Groups {
-			add(group.ModelIDs...)
-		}
-	}
-	add(c.DefaultModel)
-	add(c.CommandModels...)
-	add(c.CommitMessageModels...)
-	add(c.QueryModels...)
-	add(c.WebSearchModels...)
-	add(c.ImageModels...)
-	return ids
-}
-
-// ModelInfo is the subset of catalog metadata used to shape requests.
-type ModelInfo struct {
-	MinThinkingBudget int  `json:"minThinkingBudget"`
-	Image             bool `json:"-"`
-}
-
-func (c Catalog) Info(id string) (ModelInfo, bool) {
-	raw, ok := c.Models[id]
-	if !ok {
-		return ModelInfo{}, false
-	}
-	var info ModelInfo
-	_ = json.Unmarshal(raw, &info)
-	info.Image = slices.Contains(c.ImageModels, id) || (len(c.ImageModels) == 0 && strings.Contains(id, "image"))
-	return info, true
 }
 
 // GeminiProvider is the catalog apiProvider of the Gemini models this bridge serves.

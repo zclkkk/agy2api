@@ -26,13 +26,12 @@ func unsupported(param string) error {
 	return invalid(param, "unsupported parameter or content: "+param)
 }
 
-// ThinkingIntent records what the client asked for; Prepare turns it into the
-// native thinking configuration once the model is known.
+// ThinkingIntent records what the client asked for, with each API's default
+// in place of what it left out; Prepare turns it into the native thinking
+// configuration once the model is known.
 type ThinkingIntent struct {
-	Mode   string // "", "budget", "adaptive", "disabled" or "effort"
-	Budget int
-	Effort string
-	Show   bool // return thought text: Messages thinking enabled, Responses summary requested
+	Effort string // reasoning effort; "none" asks for the least thinking
+	Budget int    // thinking tokens; when set it takes the place of Effort
 }
 
 // requestFields are what a request carries from decoding through planning to
@@ -42,6 +41,7 @@ type ThinkingIntent struct {
 type requestFields struct {
 	Format        Format
 	Model         string // model requested by the client
+	Upstream      string // catalog model that serves the request
 	Request       ag.Request
 	Stream        bool
 	Store         bool
@@ -49,6 +49,7 @@ type requestFields struct {
 	OriginalItems []json.RawMessage
 	Metadata      json.RawMessage
 	Options       map[string]json.RawMessage
+	ShowThinking  bool                // thought text asked for: Messages thinking enabled, Responses summary requested
 	HideThinking  bool                // Messages thinking.display=omitted
 	SingleCall    bool                // parallel tool calls disabled; reported, not enforced
 	Obfuscate     bool                // Responses stream obfuscation, on by default

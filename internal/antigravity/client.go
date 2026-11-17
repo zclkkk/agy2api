@@ -232,6 +232,7 @@ func (c *Client) Models(ctx context.Context) (Catalog, error) {
 			delete(catalog.Models, id)
 		}
 	}
+	catalog.index = catalog.buildIndex()
 	return catalog, err
 }
 

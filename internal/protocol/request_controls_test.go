@@ -147,9 +147,9 @@ func TestStreamObfuscation(t *testing.T) {
 		format     Format
 		want       bool
 	}{
-		{"default", `{"model":"gemini-test","input":"hi","tools":[{"type":"function","name":"f"}]}`, Responses, true},
-		{"enabled", `{"model":"gemini-test","input":"hi","stream_options":{"include_obfuscation":true},"tools":[{"type":"function","name":"f"}]}`, Responses, true},
-		{"disabled", `{"model":"gemini-test","input":"hi","stream_options":{"include_obfuscation":false},"tools":[{"type":"function","name":"f"}]}`, Responses, false},
+		{"default", `{"model":"gemini-test","input":"hi","reasoning":{"summary":"auto"},"tools":[{"type":"function","name":"f"}]}`, Responses, true},
+		{"enabled", `{"model":"gemini-test","input":"hi","reasoning":{"summary":"auto"},"stream_options":{"include_obfuscation":true},"tools":[{"type":"function","name":"f"}]}`, Responses, true},
+		{"disabled", `{"model":"gemini-test","input":"hi","reasoning":{"summary":"auto"},"stream_options":{"include_obfuscation":false},"tools":[{"type":"function","name":"f"}]}`, Responses, false},
 		{"messages", `{"model":"gemini-test","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"f"}]}`, Messages, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

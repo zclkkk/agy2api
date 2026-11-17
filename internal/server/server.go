@@ -383,7 +383,7 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request, format protoco
 			return renderer.Accept()
 		}
 	}
-	err := a.Upstream.Generate(r.Context(), in.Model, in.Request, ag.KindAgent, accepted, func(chunk ag.Chunk) error {
+	err := a.Upstream.Generate(r.Context(), in.Upstream, in.Request, ag.KindAgent, accepted, func(chunk ag.Chunk) error {
 		return renderer.Add(r.Context(), chunk)
 	})
 	if err == nil {
@@ -465,21 +465,19 @@ func anthropic(r *http.Request) bool {
 // the OpenAI model object: image models serve only the Images API, and the
 // standard object gives a client no way to tell them from the others.
 func modelObject(catalog ag.Catalog, id string, anthropicFormat bool) map[string]any {
+	info, _ := catalog.Info(id)
 	if !anthropicFormat {
 		modality := "text"
-		if info, _ := catalog.Info(id); info.Image {
+		if info.Image {
 			modality = "image"
 		}
 		return map[string]any{"id": id, "object": "model", "created": 0, "owned_by": "antigravity", "output_modalities": []string{modality}}
 	}
-	var info struct {
-		DisplayName string `json:"displayName"`
+	name := info.DisplayName
+	if name == "" {
+		name = id
 	}
-	_ = json.Unmarshal(catalog.Models[id], &info)
-	if info.DisplayName == "" {
-		info.DisplayName = id
-	}
-	return map[string]any{"id": id, "type": "model", "display_name": info.DisplayName, "created_at": "1970-01-01T00:00:00Z"}
+	return map[string]any{"id": id, "type": "model", "display_name": name, "created_at": "1970-01-01T00:00:00Z"}
 }
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	catalog, err := accountOf(r).getCatalog(r.Context())
