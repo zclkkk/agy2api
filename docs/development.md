@@ -98,11 +98,11 @@ Images 请求独立解码为 `ImageIntent`，复用上游客户端和服务端�
 - **平台服务**：需要服务端托管数据或任务的功能，如 Files、Batch、Conversations、后台任务和提示词模板。
 - **服务端执行的托管工具**：如文件搜索和远程 MCP。上游原生提供的托管工具（如网页搜索）单独评估。
 - **平台预定义工具**：用法依赖模型训练约定的工具，如 `shell`、`apply_patch`、`bash`、`text_editor` 和 `computer`。
-- **依赖其他服务商的历史内容**：依赖原服务商签名、私有格式或服务端记录的内容，如 Anthropic 服务端工具块和 `redacted_thinking`。普通 assistant 文本按角色和内容正常转换。
+- **跨服务商会话迁移**：例如为了接续外部会话，把 Responses 的 `refusal` 转成普通文本，或丢弃 Messages 的服务端工具块和 `redacted_thinking`。
+
+对话应从 agy2api 开始。历史回放需要覆盖本服务内切换模型、本地状态过期或丢失，以及客户端自行构造工具历史的情况。
 
 参考客户端是 Codex、Claude Code 和 DeepSeek Harness，它们的实际需求用来确定优先级和复现兼容问题，不构成支持承诺。范围内但没有参考客户端使用的能力暂不实现，如 `item_reference`，以及取回已保存响应时的事件流和按 `starting_after` 续读。
-
-Responses 的 `refusal` 历史回放也属于这一类。agy2api 不生成这种内容块，参考客户端在本服务内续聊时用不到它。目前也没有导入含 `refusal` 的外部历史的需求。
 
 ## 协议参数的处理原则
 
