@@ -71,7 +71,7 @@ curl -N http://127.0.0.1:8080/v1/messages \
 - 图片、PDF、音视频文件输入。
 - 独立 Images API 的图片生成与编辑，支持文件上传和 Base64 返回。
 
-每个账号独立使用自己的额度，服务不会在账号之间分配请求或切换。项目不实现 Responses / Messages 的全集：不提供网页搜索等托管工具，也不提供 Chat Completions、Files、Batch 等平台服务。与标准协议的差异和 Images 的参数范围见 [API 与兼容边界](docs/api.md)。
+每个账号独立使用自己的额度，服务不会在账号之间分配请求或切换。项目只做协议转换，不实现 Responses / Messages 的全集：不提供 Chat Completions 接口和 Files、Batch 等平台服务；网页搜索等托管工具目前不支持。与标准协议的差异和 Images 的参数范围见 [API 与兼容边界](docs/api.md)。
 
 ## 更多文档
 

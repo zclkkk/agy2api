@@ -33,7 +33,7 @@ Responses / Messages 生成请求支持 `stream: true`，以 SSE 返回事件。
 - 托管和服务端工具，如网页搜索、文件搜索、代码执行、图片生成和远程 MCP。
 - 平台预定义、由客户端执行的工具：Responses 的 `shell`、`local_shell`、`apply_patch`，Messages 的 `bash`、`text_editor`、`memory`、`computer`。同名的普通函数工具不受影响。
 - 平台功能：`background`、`conversation`、`prompt` 模板、`item_reference`、Files 引用（`file_id` 和 `file` 来源），以及带 `stream` 或 `starting_after` 的响应查询。
-- 其他服务商生成的历史内容，如 Anthropic 服务端工具块、`redacted_thinking` 和 OpenAI 的 `refusal`。对话应从本服务开始。
+- 历史中含有不支持的内容块，如 Messages 的服务端工具块、`redacted_thinking` 或 Responses 的 `refusal`。普通 assistant 文本可以回放。
 - 在 Responses / Messages 中使用图片生成模型；图片生成请使用 Images 接口。
 
 ### 行为差异
