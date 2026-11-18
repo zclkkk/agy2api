@@ -65,8 +65,6 @@ curl -N http://127.0.0.1:8080/v1/messages \
 
 ## 支持范围
 
-Codex 和 Claude Code 的日常工作流承诺可用，由真实账号验证覆盖。
-
 - Responses 和 Messages 的流式、非流式生成及 token 计数。
 - 函数工具、并行工具回合；Responses 命名空间和自由文本工具。
 - 思考内容、签名回放、Responses 历史续聊和上下文压缩。
