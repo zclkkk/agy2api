@@ -313,7 +313,7 @@ func (s *Server) prepare(w http.ResponseWriter, r *http.Request, data []byte, fo
 		s.writeError(w, r, err)
 		return protocol.PreparedRequest{}, false
 	}
-	planner := protocol.Planner{State: a.State, SanitizeClientMarkers: s.cfg.SanitizeClientMarkers, ResolveMedia: s.resolveMedia}
+	planner := protocol.Planner{State: a.State, ResolveMedia: s.resolveMedia}
 	prepared, err := planner.Prepare(r.Context(), intent, catalog, operation, r.Header)
 	s.note(r, intent.Model, prepared.Warnings...)
 	if err != nil {

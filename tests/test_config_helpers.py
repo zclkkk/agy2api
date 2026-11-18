@@ -14,7 +14,7 @@ class TOMLFixtures(unittest.TestCase):
             "escaped": "fixture\tvalue\nwith\\escapes",
             "proxy_url": "http://localhost:8081",
             "max_body_bytes": 33_554_432,
-            "sanitize_client_markers": False,
+            "boolean": False,
         }
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / "config.toml"

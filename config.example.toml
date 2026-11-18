@@ -11,6 +11,3 @@ data_dir = "./data"
 # max_body_bytes = 33_554_432  # 32 MiB; also the remote attachment download budget
 # state_ttl_hours = 168      # 7 days
 # max_state_bytes = 1_073_741_824  # 1 GiB of stored record content per account
-
-# Disable only when investigating client system-marker compatibility.
-# sanitize_client_markers = true

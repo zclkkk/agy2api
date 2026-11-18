@@ -25,14 +25,12 @@ type Config struct {
 	MaxConcurrentRequests int    `toml:"max_concurrent_requests"`
 	StateTTLHours         int    `toml:"state_ttl_hours"`
 	MaxStateBytes         int64  `toml:"max_state_bytes"`
-	SanitizeClientMarkers bool   `toml:"sanitize_client_markers"`
 }
 
 func Default() Config {
 	return Config{
 		Listen: "127.0.0.1:8080", DataDir: "./data",
-		SanitizeClientMarkers: true,
-		MaxBodyBytes:          32 << 20, MaxConcurrentRequests: 4,
+		MaxBodyBytes: 32 << 20, MaxConcurrentRequests: 4,
 		StateTTLHours: 168, MaxStateBytes: 1 << 30,
 	}
 }

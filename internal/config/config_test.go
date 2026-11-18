@@ -42,7 +42,6 @@ max_body_bytes = 67_108_864
 max_concurrent_requests = 2
 state_ttl_hours = 24
 max_state_bytes = 134_217_728
-sanitize_client_markers = false
 `
 	want := Config{Listen: "0.0.0.0:9000", DataDir: "./private data", ProxyURL: "socks5h://127.0.0.1:1080", MaxBodyBytes: 64 << 20, MaxConcurrentRequests: 2, StateTTLHours: 24, MaxStateBytes: 128 << 20}
 	got, err := Load(writeConfig(t, body))
@@ -52,16 +51,6 @@ sanitize_client_markers = false
 	// Every request needs an account's key, so any address may be served.
 	if got, err := Load(writeConfig(t, "listen = '0.0.0.0:8080'")); err != nil || got.Listen != "0.0.0.0:8080" {
 		t.Fatalf("public listen address: %v", err)
-	}
-	for _, enabled := range []bool{true, false} {
-		value := "true"
-		if !enabled {
-			value = "false"
-		}
-		got, err := Load(writeConfig(t, "sanitize_client_markers = "+value))
-		if err != nil || got.SanitizeClientMarkers != enabled {
-			t.Fatalf("explicit boolean %v: %+v, %v", enabled, got, err)
-		}
 	}
 }
 

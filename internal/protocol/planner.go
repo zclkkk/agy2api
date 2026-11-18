@@ -33,9 +33,8 @@ type PreparedRequest struct{ requestFields }
 // Planner is the only entry point from a decoded request to an upstream request.
 // All endpoints share this ordering, including counts and compaction.
 type Planner struct {
-	State                 *state.Store
-	SanitizeClientMarkers bool
-	ResolveMedia          func(context.Context, *ag.Request) error
+	State        *state.Store
+	ResolveMedia func(context.Context, *ag.Request) error
 }
 
 func (p Planner) Prepare(ctx context.Context, intent RequestIntent, catalog ag.Catalog, operation Operation, headers http.Header) (PreparedRequest, error) {
@@ -76,9 +75,6 @@ func (p Planner) Prepare(ctx context.Context, intent RequestIntent, catalog ag.C
 		return finish(), err
 	}
 	in.Request.System = joinSystem(in.Instructions, in.HistorySystem)
-	if p.SanitizeClientMarkers {
-		in.SanitizeClientMarkers()
-	}
 	if err := (replayStore{p.State}).restore(ctx, &in); err != nil {
 		return finish(), err
 	}
